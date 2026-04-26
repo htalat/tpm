@@ -100,6 +100,7 @@ tpm new task <project> <slug> [--title "Pretty Title"]
 tpm ls [--all] [--archived] [--status open] [--project <slug>]
 tpm context <task | project/task>
 tpm archive <task | project/task>          # move a done/dropped task to tasks/archive/
+tpm next [--project <slug>] [--autonomous]  # print the next ready task (oldest first); exits non-zero if none
 tpm report [--md]
 tpm root                                  # print the tree root
 tpm path <project | task | project/task>  # print the local checkout path
@@ -181,6 +182,20 @@ tpm context my-project/refactor-auth | claude
 ```
 
 `tpm context` emits a self-contained briefing: project goal, task body, file path, and a working agreement that tells the agent where to log progress and update status.
+
+### `open` vs `ready`: the agent gate
+
+`open` is the author's queue — newly-created tasks land here. `ready` is the agent's queue — the Plan is well-specified and an agent can pick up the task without further shaping.
+
+Promotion `open` → `ready` is a deliberate human act. The canonical way is the `/tpm discuss <slug>` skill mode, which shapes the task body via conversation and only flips status on explicit confirmation. Manual frontmatter edits also work.
+
+```sh
+tpm next                       # print the next ready task across all projects
+tpm next --project my-project  # restrict to one project
+tpm next --autonomous          # only ready tasks with `allow_orchestrator: true`
+```
+
+`tpm next` exits non-zero with a stderr message if nothing is eligible, so it composes cleanly: `task=$(tpm next) && claude -p "/tpm $task"`.
 
 ## Reports
 
