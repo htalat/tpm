@@ -6,7 +6,8 @@ If you (an AI coding agent) are dropped into a tpm tree, here's how to interact 
 - Each project lives at `projects/<slug>/project.md` with YAML frontmatter (`name`, `slug`, `status`, `created`, `repo: {remote, local}`, `tags`) and markdown body (`## Goal`, `## Context`, `## Notes`).
 - Each active task lives at `projects/<slug>/tasks/NNN-<slug>.md`; archived tasks live at `projects/<slug>/tasks/archive/NNN-<slug>.md`. Both use frontmatter (`title`, `slug`, `project`, `status`, `type`, `created`, `closed`, `prs`, `tags`) and body (`## Context`, `## Plan`, `## Log`, `## Outcome`). Tasks inherit `repo` from their project unless they declare their own.
 - Code work happens in `repo.local`. `tpm context` calls this out; `tpm path <target>` prints it for shell composition (`cd $(tpm path my-task)`).
-- Statuses: `open | in-progress | blocked | done | dropped`. Types: `pr | investigation | spike | chore`.
+- Statuses: `open | ready | in-progress | blocked | done | dropped`. Types: `pr | investigation | spike | chore`.
+  - `open` = author's queue (not yet specified for an agent). `ready` = agent's queue (Plan is well-formed, an agent can pick it up).
 - For an agent-friendly briefing on a single task, run `tpm context <task>` or `tpm context <project>/<task>`.
 
 ## Writing state

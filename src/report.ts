@@ -25,7 +25,7 @@ function renderHtml(projects: Project[]): string {
   const archivedCount = projects.reduce((n, p) => n + p.tasks.filter(t => t.archived).length, 0);
   const totals = countByStatus(allTasks);
   const generated = now();
-  const openCount = (totals["open"] ?? 0) + (totals["in-progress"] ?? 0) + (totals["blocked"] ?? 0);
+  const openCount = (totals["open"] ?? 0) + (totals["ready"] ?? 0) + (totals["in-progress"] ?? 0) + (totals["blocked"] ?? 0);
 
   let body = `<header><h1>tpm</h1>`;
   body += `<p class="meta">${generated} · ${projects.length} project${projects.length === 1 ? "" : "s"} · ${allTasks.length} active task${allTasks.length === 1 ? "" : "s"} · ${archivedCount} archived · <strong>${openCount} open</strong></p>`;
@@ -98,6 +98,7 @@ th { font-weight: 600; color: #57606a; font-size: .78em; text-transform: upperca
 tr:hover td { background: #f6f8fa; }
 .badge { display: inline-block; padding: 1px 9px; border-radius: 12px; font-size: .78em; font-weight: 500; }
 .s-open { background: #ddf4ff; color: #0969da; }
+.s-ready { background: #ddf0ff; color: #6639ba; }
 .s-in-progress { background: #fff8c5; color: #9a6700; }
 .s-blocked { background: #ffebe9; color: #cf222e; }
 .s-done, .s-active { background: #dafbe1; color: #1a7f37; }
@@ -122,6 +123,7 @@ a.repo:hover { background: #eaeef2; text-decoration: none; }
   a.repo { background: #161b22; color: #8d96a0; }
   a.repo:hover { background: #21262d; }
   .s-open { background: #033158; color: #79c0ff; }
+  .s-ready { background: #2e1a5e; color: #b392f0; }
   .s-in-progress { background: #4d3a00; color: #e3b341; }
   .s-blocked { background: #5d1a1a; color: #ff7b72; }
   .s-done, .s-active { background: #0f3d1f; color: #56d364; }
@@ -130,7 +132,7 @@ a.repo:hover { background: #eaeef2; text-decoration: none; }
 `;
 
 function renderSummary(counts: Record<string, number>): string {
-  const order = ["open", "in-progress", "blocked", "done", "dropped"];
+  const order = ["open", "ready", "in-progress", "blocked", "done", "dropped"];
   const known = new Set(order);
   const parts = order.filter(k => counts[k]).map(k => `<div><strong>${counts[k]}</strong> ${k}</div>`);
   for (const [k, v] of Object.entries(counts)) {
