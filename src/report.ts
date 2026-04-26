@@ -1,6 +1,6 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { loadProjects, flatTasks } from "./tree.ts";
+import { loadProjects, flatTasks, isParent, rollupStatus } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
 import { resolveRepo } from "./context.ts";
 import { now } from "./time.ts";
@@ -86,7 +86,7 @@ function renderTaskRow(t: Task, depth: number): string {
   const prs = (Array.isArray(t.data.prs) ? t.data.prs : [])
     .map(pr => `<a href="${esc(String(pr))}">${esc(prShort(String(pr)))}</a>`)
     .join(", ");
-  const status = isContainer(t) ? rollupStatus(t) : (str(t.data.status) ?? "?");
+  const status = rollupStatus(t);
   const indent = depth > 0 ? `<span class="indent">↳</span> ` : "";
   let row = `<tr>`;
   row += `<td>${indent}<strong>${esc(str(t.data.title) ?? t.slug)}</strong><br><span class="meta">${esc(t.slug)}</span></td>`;
@@ -99,21 +99,8 @@ function renderTaskRow(t: Task, depth: number): string {
   return row;
 }
 
-function isContainer(t: Task): boolean {
-  return !!(t.children && t.children.length > 0);
-}
-
-function rollupStatus(parent: Task): string {
-  if (!parent.children?.length) return str(parent.data.status) ?? "?";
-  const live = parent.children.filter(c => !c.archived);
-  if (live.length === 0) return str(parent.data.status) ?? "?";
-  if (live.every(c => c.data.status === "done")) return "done";
-  if (live.some(c => c.data.status === "in-progress")) return "in-progress";
-  return str(parent.data.status) ?? "?";
-}
-
 function leafTasks(tasks: Task[]): Task[] {
-  return flatTasks(tasks).filter(t => !isContainer(t));
+  return flatTasks(tasks).filter(t => !isParent(t));
 }
 
 const CSS = `
@@ -247,7 +234,7 @@ function renderMd(projects: Project[]): string {
 
 function renderMdRow(t: Task, depth: number): string {
   const prs = (Array.isArray(t.data.prs) ? t.data.prs : []).join(", ");
-  const status = isContainer(t) ? rollupStatus(t) : (str(t.data.status) ?? "?");
+  const status = rollupStatus(t);
   const indent = depth > 0 ? "↳ " : "";
   return `| ${indent}${str(t.data.title) ?? t.slug} | ${status} | ${str(t.data.type) ?? "?"} | ${prs} |\n`;
 }

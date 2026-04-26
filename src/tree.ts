@@ -144,6 +144,16 @@ export function flatTasks(tasks: Task[]): Task[] {
   return out;
 }
 
+export function rollupStatus(task: Task): string {
+  const declared = typeof task.data.status === "string" && task.data.status ? task.data.status : "?";
+  if (!task.children?.length) return declared;
+  const live = task.children.filter(c => !c.archived);
+  if (live.length === 0) return declared;
+  if (live.every(c => c.data.status === "done")) return "done";
+  if (live.some(c => c.data.status === "in-progress")) return "in-progress";
+  return declared;
+}
+
 export function archiveTask(task: Task): string {
   const status = String(task.data.status ?? "");
   if (status !== "done" && status !== "dropped") {

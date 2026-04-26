@@ -5,7 +5,7 @@ import { findRoot } from "./root.ts";
 import { newProject, newTask } from "./new.ts";
 import { context, repoPath } from "./context.ts";
 import { report } from "./report.ts";
-import { archiveTask, foldTask, isParent, loadProjects, flatTasks } from "./tree.ts";
+import { archiveTask, foldTask, isParent, loadProjects, flatTasks, rollupStatus } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
 import { findTask } from "./resolve.ts";
 import { init } from "./init.ts";
@@ -228,15 +228,6 @@ function filterTaskTree(tasks: Task[], passes: (t: Task) => boolean, flat: boole
     }
   }
   return out;
-}
-
-function rollupStatus(task: Task): string {
-  if (!task.children?.length) return strOr(task.data.status, "?");
-  const live = task.children.filter(c => !c.archived);
-  if (live.length === 0) return strOr(task.data.status, "?");
-  if (live.every(c => c.data.status === "done")) return "done";
-  if (live.some(c => c.data.status === "in-progress")) return "in-progress";
-  return strOr(task.data.status, "?");
 }
 
 function formatTaskLine(t: Task, depth: number, displayStatus?: string): string {

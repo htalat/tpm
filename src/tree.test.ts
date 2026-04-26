@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
-import { loadProjects, archiveTask, foldTask, flatTasks, isParent } from "./tree.ts";
+import { loadProjects, archiveTask, foldTask, flatTasks, isParent, rollupStatus } from "./tree.ts";
 
 function projectMd(slug: string, name = slug): string {
   return `---
@@ -438,6 +438,76 @@ test("archiveTask: child -> moves to tasks/archive/<parent>/<child>.md", () => {
     assert.ok(!existsSync(join(dir, "tasks", "002-parent", "001-shipped.md")));
     // Live parent dir is still around.
     assert.ok(statSync(join(dir, "tasks", "002-parent")).isDirectory());
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("rollupStatus: childless task returns its declared status", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-leaf.md", "ready");
+    const [proj] = loadProjects(root);
+    assert.equal(rollupStatus(proj.tasks[0]), "ready");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("rollupStatus: parent with all children done -> done", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeFolderTask(dir, "002-parent", "open");
+    writeChildTask(dir, "002-parent", "001-a.md", "done");
+    writeChildTask(dir, "002-parent", "002-b.md", "done");
+    const [proj] = loadProjects(root);
+    assert.equal(rollupStatus(proj.tasks[0]), "done");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("rollupStatus: parent with any in-progress child -> in-progress", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeFolderTask(dir, "002-parent", "open");
+    writeChildTask(dir, "002-parent", "001-a.md", "done");
+    writeChildTask(dir, "002-parent", "002-b.md", "in-progress");
+    writeChildTask(dir, "002-parent", "003-c.md", "ready");
+    const [proj] = loadProjects(root);
+    assert.equal(rollupStatus(proj.tasks[0]), "in-progress");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("rollupStatus: mixed open/ready children -> falls back to parent's declared status", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeFolderTask(dir, "002-parent", "blocked");
+    writeChildTask(dir, "002-parent", "001-a.md", "ready");
+    writeChildTask(dir, "002-parent", "002-b.md", "open");
+    const [proj] = loadProjects(root);
+    assert.equal(rollupStatus(proj.tasks[0]), "blocked");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("rollupStatus: only archived children present -> declared status", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeFolderTask(dir, "002-parent", "ready");
+    const archChildDir = join(dir, "tasks", "archive", "002-parent");
+    mkdirSync(archChildDir, { recursive: true });
+    writeFileSync(join(archChildDir, "001-old.md"), taskMd("001-old", "done", "002-parent"));
+    const [proj] = loadProjects(root, { archived: true });
+    assert.equal(rollupStatus(proj.tasks[0]), "ready");
   } finally {
     rmTempDir(root);
   }
