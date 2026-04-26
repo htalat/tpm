@@ -11,7 +11,7 @@ You are operating Hassan's `tpm` — a markdown-based task & project tracker. Th
 
 ```
 tpm root                                            print the tree root
-tpm ls [--all] [--archived] [--status open|in-progress|blocked|done|dropped] [--project <slug>]
+tpm ls [--all] [--archived] [--status open|ready|in-progress|blocked|done|dropped] [--project <slug>]
 tpm context <task | project/task>                   full briefing (file path, project goal, body, working agreement)
 tpm path <project | task | project/task>            print local repo checkout
 tpm archive <task | project/task>                   move a done/dropped task to tasks/archive/
@@ -26,7 +26,9 @@ tpm init [<dir>]                                    bootstrap a tree (default ~/
 
 - **Project frontmatter**: `name, slug, status, created, repo: {remote, local}, tags`
 - **Task frontmatter**: `title, slug, project, status, type, created, closed, prs, tags` (inherits `repo` from project; can override by adding own `repo:` block)
-- **Statuses**: `open | in-progress | blocked | done | dropped`
+- **Statuses**: `open | ready | in-progress | blocked | done | dropped`
+  - `open` = Hassan's queue (not yet shaped for an agent).
+  - `ready` = agent's queue (Plan is well-specified, an agent can pick it up). Promoted via `/tpm discuss`.
 - **Types**: `pr | investigation | spike | chore`
 - **Task body**: `## Context`, `## Plan`, `## Log`, `## Outcome`
 
@@ -35,19 +37,31 @@ tpm init [<dir>]                                    bootstrap a tree (default ~/
 Read `$ARGUMENTS` and pick a mode. If empty, default to "no args".
 
 ### No args — situational awareness
-1. Run `tpm ls --status in-progress` then `tpm ls --status open`.
-2. Show a one-screen summary of what's live and what's queued.
+1. Run `tpm ls --status in-progress`, then `tpm ls --status ready`, then `tpm ls --status open`.
+2. Show a one-screen summary: what's live (`in-progress`), what's queued for an agent (`ready`), and what's awaiting shaping (`open`).
 3. Ask which task to work on, or whether to scaffold a new one.
 
 ### `<task>` or `<project>/<task>` — start working on a task
 This is the primary mode.
 1. Run `tpm context <arg>`. Read the briefing in full.
-2. If the task's status is `open`, edit the task file (path is in the briefing): set `status: in-progress` in frontmatter and append `- $(tpm now): started` to the `## Log` section.
+2. If the task's status is `open` or `ready`, edit the task file (path is in the briefing): set `status: in-progress` in frontmatter and append `- $(tpm now): started` to the `## Log` section.
 3. `cd "$(tpm path <arg>)"` — that's where the work happens. If `tpm path` errors because no local path is set, ask the user for the path and offer to populate `repo.local` in the project (or task) file.
 4. Read the task body and execute the Plan. If the type is `investigation`, your output is findings — write them into the body, not just chat.
 5. As you make meaningful progress, append `- $(tpm now): <what changed>` to `## Log`.
 6. If you open a PR, append its URL to the `prs:` list in the task's frontmatter.
 7. If you hit a blocker you can't resolve: set `status: blocked`, log why, and surface it to the user instead of guessing.
+
+### `discuss <task>` or `discuss <project>/<task>` — pre-execution discussion
+Shape a task's Plan before any execution. Pure conversation that lands in the task body — never edits code, never `cd`s into the repo, never flips status to `in-progress`.
+1. Run `tpm context <arg>`. Read the briefing in full.
+2. **Do not** `cd`. **Do not** edit code in `repo.local`. **Do not** set `status: in-progress`.
+3. Read `## Context` and `## Plan`. If thin or missing key details, ask clarifying questions: scope, constraints, what "done" looks like, dependencies on other tasks, open decisions.
+4. As alignment forms, write back to the task body — `## Context` for facts and background, `## Plan` for the agreed approach, optionally a `## Done =` section. Append `- $(tpm now): <what was discussed/decided>` to `## Log` when meaningful progress lands.
+5. (Optional) Ask whether the task is safe to run unattended. If yes, set `allow_orchestrator: true` in the frontmatter — relevant once scheduled orchestration ships, harmless before then.
+6. End condition: the user signals alignment ("okay let's go", "that looks right", "yes start it"). At that point, edit the frontmatter to `status: ready`, append `- $(tpm now): promoted to ready` to `## Log`, and stop. Final hand-off message: `Ready. Run /tpm <slug> to execute.`
+7. If discussion concludes the task isn't worth doing: set `status: dropped`, fill `## Outcome` with the reason, log it, and don't promote.
+
+Discuss mode is the canonical way to move a task from `open` to `ready`. A human can also flip the status manually, but `/tpm discuss` encodes the discipline (Context/Plan populated, Log timestamped, explicit confirmation).
 
 ### `done <task>` — close out
 1. Read the task file.

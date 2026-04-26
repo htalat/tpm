@@ -159,7 +159,7 @@ tags: []
 title: Refactor auth middleware
 slug: refactor-auth
 project: my-project
-status: open          # open | in-progress | blocked | done | dropped
+status: open          # open | ready | in-progress | blocked | done | dropped
 type: pr              # pr | investigation | spike | chore
 created: 2026-04-25 09:30 PDT
 closed:               # YYYY-MM-DD HH:MM ZZZ when status flips to done
