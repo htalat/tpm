@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { findRoot } from "./root.ts";
 import { newProject, newTask } from "./new.ts";
 import { context, repoPath } from "./context.ts";
@@ -5,6 +8,8 @@ import { report } from "./report.ts";
 import { loadProjects } from "./tree.ts";
 import { init } from "./init.ts";
 import { CONFIG_PATH } from "./config.ts";
+
+const VERSION = readVersion();
 
 const args = process.argv.slice(2);
 const cmd = args[0];
@@ -95,6 +100,11 @@ try {
       console.log(repoPath(root, query));
       break;
     }
+    case "version":
+    case "--version":
+    case "-V":
+      console.log(VERSION);
+      break;
     case "help":
     case "--help":
     case "-h":
@@ -129,8 +139,14 @@ function usage(msg: string): never {
   process.exit(1);
 }
 
+function readVersion(): string {
+  const pkgPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+  return typeof pkg.version === "string" ? pkg.version : "0.0.0";
+}
+
 function help(): void {
-  console.log(`tpm — task & project manager
+  console.log(`tpm ${VERSION} — task & project manager
 
 Usage:
   tpm init [<dir>]                          bootstrap a tree (default: ~/tpm)
@@ -141,6 +157,7 @@ Usage:
   tpm report [--md]
   tpm root                                  print the tree root
   tpm path <project | task | project/task>  print the local repo path
+  tpm version                               print the installed version
 
 Layout (inside a tree):
   <slug>/project.md      project goals + context
