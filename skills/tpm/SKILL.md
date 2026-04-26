@@ -15,6 +15,7 @@ tpm ls [--all] [--archived] [--status open|ready|in-progress|blocked|done|droppe
 tpm context <task | project/task>                   full briefing (file path, project goal, body, working agreement)
 tpm path <project | task | project/task>            print local repo checkout
 tpm archive <task | project/task>                   move a done/dropped task to tasks/archive/
+tpm next [--project <slug>] [--autonomous]          print the next ready task (oldest first)
 tpm new project <slug> [--name "..."] [--repo <url>] [--path <local-dir>]
 tpm new task <project> <slug> [--title "..."]
 tpm report [--md]                                   reports/index.html
@@ -62,6 +63,14 @@ Shape a task's Plan before any execution. Pure conversation that lands in the ta
 7. If discussion concludes the task isn't worth doing: set `status: dropped`, fill `## Outcome` with the reason, log it, and don't promote.
 
 Discuss mode is the canonical way to move a task from `open` to `ready`. A human can also flip the status manually, but `/tpm discuss` encodes the discipline (Context/Plan populated, Log timestamped, explicit confirmation).
+
+### `next` — pick the next ready task and run it
+Auto-select mode. Resolves the next eligible task and dispatches the primary `<task>` mode on it.
+1. Run `tpm next` (optionally with `--project <slug>`). It prints `<project>/<slug>` on success or exits non-zero if nothing is ready.
+2. If non-zero, surface the message ("No ready tasks…") and stop. Don't fall back to `open` tasks — the human needs to promote one via `/tpm discuss` first.
+3. On success, dispatch the primary `<task>` mode on the returned slug — same flow as if the user had typed `/tpm <slug>` directly (flip status to `in-progress`, `cd`, execute Plan, log progress, open PR).
+
+`/tpm next` is the manual path. Use `tpm next --autonomous` only from scheduled/unattended runs (filters to tasks with `allow_orchestrator: true`); the manual `/tpm next` skill mode does not pass `--autonomous`.
 
 ### `done <task>` — close out
 1. Read the task file.

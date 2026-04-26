@@ -6,6 +6,7 @@ import { newProject, newTask } from "./new.ts";
 import { context, repoPath } from "./context.ts";
 import { report } from "./report.ts";
 import { archiveTask, loadProjects } from "./tree.ts";
+import type { Project, Task } from "./tree.ts";
 import { init } from "./init.ts";
 import { CONFIG_PATH } from "./config.ts";
 import { now } from "./time.ts";
@@ -125,6 +126,36 @@ try {
       console.log(now());
       break;
     }
+    case "next": {
+      const root = findRoot();
+      const projects = loadProjects(root);
+      const projectFilter = parseFlag(args, "--project");
+      const autonomous = args.includes("--autonomous");
+      const candidates: Array<{ project: Project; task: Task }> = [];
+      for (const p of projects) {
+        if (projectFilter && p.slug !== projectFilter) continue;
+        for (const t of p.tasks) {
+          if (t.archived) continue;
+          if (t.data.status !== "ready") continue;
+          if (autonomous && t.data.allow_orchestrator !== true) continue;
+          candidates.push({ project: p, task: t });
+        }
+      }
+      if (candidates.length === 0) {
+        const where = projectFilter ? ` in project "${projectFilter}"` : "";
+        const gate = autonomous ? " with allow_orchestrator: true" : "";
+        console.error(`No ready tasks${where}${gate}.`);
+        process.exit(1);
+      }
+      candidates.sort((a, b) => {
+        const ac = String(a.task.data.created ?? "");
+        const bc = String(b.task.data.created ?? "");
+        return ac.localeCompare(bc);
+      });
+      const pick = candidates[0];
+      console.log(`${pick.project.slug}/${pick.task.slug}`);
+      break;
+    }
     case "version":
     case "--version":
     case "-V":
@@ -207,6 +238,7 @@ Usage:
   tpm ls [--all] [--archived] [--status open] [--project <slug>]
   tpm context <task | project/task>
   tpm archive <task | project/task>          move a done/dropped task to tasks/archive/
+  tpm next [--project <slug>] [--autonomous] print the next ready task (oldest first)
   tpm report [--md]
   tpm root                                  print the tree root
   tpm path <project | task | project/task>  print the local repo path
