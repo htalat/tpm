@@ -14,12 +14,17 @@ skills/tpm/SKILL.md                Claude Code skill (symlink target)
 
 A tpm tree (data — lives wherever `tpm init` was run, e.g. `~/Documents/projects/`):
 ```
-<root>/.tpm/templates/             per-tree templates (copied from defaults)
-<root>/reports/index.html          generated rollup
-<root>/<slug>/project.md           goals, context, notes
-<root>/<slug>/tasks/NNN-*.md       one task per file
-<root>/<slug>/tasks/archive/NNN-*.md completed/dropped tasks, still queryable
-<root>/<slug>/notes/               free-form scratch
+<root>/.tpm/templates/                          per-tree templates (copied from defaults)
+<root>/reports/index.html                       generated rollup
+<root>/<slug>/project.md                        goals, context, notes
+<root>/<slug>/tasks/NNN-*.md                    file-form task (one file)
+<root>/<slug>/tasks/NNN-*/task.md               folder-form task (a parent)
+<root>/<slug>/tasks/NNN-*/NNN-*.md              subtasks (`parent:` in frontmatter)
+<root>/<slug>/tasks/NNN-*/...                   any other supporting files
+<root>/<slug>/tasks/archive/NNN-*.md            archived file-form task
+<root>/<slug>/tasks/archive/NNN-*/              archived folder-form parent (whole folder moved)
+<root>/<slug>/tasks/archive/NNN-*/NNN-*.md      archived child of a still-live parent
+<root>/<slug>/notes/                            free-form scratch
 ```
 
 Project directories sit as siblings to `.tpm/` and `reports/` — no inner `projects/` nesting.
@@ -96,11 +101,12 @@ tpm init
 ```sh
 tpm init [<dir>]                          # bootstrap a tree (default: ~/tpm)
 tpm new project <slug> [--name "Pretty Name"] [--repo <url>] [--path <local-dir>]
-tpm new task <project> <slug> [--title "Pretty Title"]
-tpm ls [--all] [--archived] [--status open] [--project <slug>]
-tpm context <task | project/task>
-tpm archive <task | project/task>          # move a done/dropped task to tasks/archive/
-tpm next [--project <slug>] [--autonomous]  # print the next ready task (oldest first); exits non-zero if none
+tpm new task <project> <slug> [--title "Pretty Title"] [--parent <parent-slug>]
+tpm ls [--all] [--archived] [--flat] [--status open] [--project <slug>]
+tpm context <task | project/task | parent/child>
+tpm archive <task | project/task>          # move a done/dropped task (or whole folder-form parent) to tasks/archive/
+tpm fold <task | project/task>             # promote a file-form task to folder-form (idempotent)
+tpm next [--project <slug>] [--autonomous]  # print the next ready leaf task (oldest first); exits non-zero if none
 tpm report [--md]
 tpm root                                  # print the tree root
 tpm path <project | task | project/task>  # print the local checkout path
@@ -166,6 +172,7 @@ created: 2026-04-25 09:30 PDT
 closed:               # YYYY-MM-DD HH:MM ZZZ when status flips to done
 prs: []               # list of PR URLs
 tags: []
+parent: NNN-foo       # optional: marks this as a child within a folder-form parent
 ```
 
 Timestamps are written in the timezone from `~/.tpm/config.json` (default `America/Los_Angeles`). Old date-only values (`2026-04-25`) keep parsing — values are display strings only.
@@ -173,6 +180,51 @@ Timestamps are written in the timezone from `~/.tpm/config.json` (default `Ameri
 Edit the markdown freely — frontmatter is the source of truth for `tpm ls` and `tpm report`. The body uses `## Context / ## Plan / ## Log / ## Outcome` sections.
 
 `tpm ls` hides `done` and `dropped` tasks by default. Use `--all` to include every active task status, `--status done` to query a specific status, or `--archived` to include tasks moved under `tasks/archive/`. `tpm context` and `tpm path` still resolve archived tasks, and new task numbering counts both active and archived task files.
+
+## Hierarchical tasks (folder form)
+
+A task is one of two shapes:
+
+- **File form** (default): `tasks/NNN-slug.md`. One file. Most tasks live here.
+- **Folder form**: `tasks/NNN-slug/task.md`. Use this when a task needs more than one file — subtasks, scratch notes, screenshots, supporting design docs.
+
+Subtasks are first-class tasks with their own status, PRs, and log. They live alongside `task.md` inside the parent's folder, with `parent: <parent-slug>` in their frontmatter:
+
+```
+tasks/004-orchestrator-hardening/
+  task.md                    # parent: high-level overview, links to children
+  001-lock-file.md           # parent: 004-orchestrator-hardening
+  002-drift-check.md         # parent: 004-orchestrator-hardening
+  003-time-bound.md          # parent: 004-orchestrator-hardening
+  notes-from-call.md         # arbitrary supporting file — tpm doesn't care
+```
+
+A task with any children is a **container**: it isn't actionable, never appears in `tpm next`, and `tpm ls` shows a roll-up status (any child in-progress → in-progress; all children done → done; otherwise the parent's own declared status). The roll-up is display only — `tpm` never auto-changes the parent's frontmatter.
+
+### Working with folder form
+
+```sh
+tpm fold <task>                                  # promote NNN-slug.md → NNN-slug/task.md (idempotent)
+tpm new task <project> <child> --parent <slug>   # creates a child inside the parent's folder
+                                                 # folds the parent automatically if needed
+                                                 # numbering is scoped to the parent folder
+tpm ls --flat                                    # flatten the tree (skip indentation)
+```
+
+Only one level of nesting is supported — `--parent` rejects an attempt to nest under a child task.
+
+### Slug resolution
+
+A bare slug (`/tpm hierarchical-tasks`) works when it's globally unambiguous. If two tasks could match (e.g., two children named `discuss` under different parents), the CLI errors and asks you to qualify it. Qualified forms:
+
+- `<project>/<task>` — top-level task
+- `<parent>/<child>` — child within a single project
+- `<project>/<parent>/<child>` — fully qualified
+
+### Archive layout
+
+- `tpm archive <task>` on a folder-form parent moves the whole folder to `tasks/archive/<parent>/`. The parent must have no live children.
+- `tpm archive <child>` moves just the child file to `tasks/archive/<parent>/<child>.md`. The live parent stays in place.
 
 ## Delegating to a coding agent
 

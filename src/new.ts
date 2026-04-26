@@ -2,6 +2,10 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from 
 import { join, resolve } from "node:path";
 import { PROJECT_TEMPLATE, TASK_TEMPLATE } from "./defaults.ts";
 import { now } from "./time.ts";
+import { loadProjects, foldTask } from "./tree.ts";
+import type { Task } from "./tree.ts";
+import { findTask } from "./resolve.ts";
+import { parse, stringify } from "./frontmatter.ts";
 
 function loadTemplate(root: string, kind: "project" | "task"): string {
   const path = join(root, ".tpm", "templates", `${kind}.md`);
@@ -35,7 +39,12 @@ export function newProject(root: string, slug: string, opts: NewProjectOpts = {}
   return path;
 }
 
-export function newTask(root: string, projectSlug: string, taskSlug: string, title?: string): string {
+export interface NewTaskOpts {
+  title?: string;
+  parent?: string;
+}
+
+export function newTask(root: string, projectSlug: string, taskSlug: string, opts: NewTaskOpts = {}): string {
   validateSlug(taskSlug);
   const projectDir = join(root, projectSlug);
   if (!existsSync(join(projectDir, "project.md"))) {
@@ -44,9 +53,21 @@ export function newTask(root: string, projectSlug: string, taskSlug: string, tit
   const tasksDir = join(projectDir, "tasks");
   mkdirSync(tasksDir, { recursive: true });
 
+  let containerDir = tasksDir;
+  let archiveContainer = join(tasksDir, "archive");
+  let parentSlug: string | null = null;
+
+  if (opts.parent) {
+    const parent = resolveParent(root, projectSlug, opts.parent);
+    parentSlug = parent.slug;
+    if (!parent.dir) foldTask(parent);
+    containerDir = join(tasksDir, parentSlug);
+    archiveContainer = join(tasksDir, "archive", parentSlug);
+  }
+
   const existing = [
-    ...taskFiles(tasksDir),
-    ...taskFiles(join(tasksDir, "archive")),
+    ...taskFiles(containerDir).filter(f => f !== "task.md"),
+    ...taskFiles(archiveContainer),
   ];
   let max = 0;
   for (const f of existing) {
@@ -55,18 +76,44 @@ export function newTask(root: string, projectSlug: string, taskSlug: string, tit
   }
   const next = String(max + 1).padStart(3, "0");
   const filename = `${next}-${taskSlug}.md`;
-  const path = join(tasksDir, filename);
+  const path = join(containerDir, filename);
   if (existsSync(path)) throw new Error(`Task file exists: ${filename}`);
 
   const tmpl = loadTemplate(root, "task");
-  const content = render(tmpl, {
-    title: title ?? humanize(taskSlug),
+  const rendered = render(tmpl, {
+    title: opts.title ?? humanize(taskSlug),
     slug: taskSlug,
     project: projectSlug,
     date: now(),
   });
+  const content = parentSlug ? injectParent(rendered, parentSlug) : rendered;
   writeFileSync(path, content);
   return path;
+}
+
+function resolveParent(root: string, projectSlug: string, parentQuery: string): Task {
+  const projects = loadProjects(root);
+  const project = projects.find(p => p.slug === projectSlug);
+  if (!project) throw new Error(`Unknown project: ${projectSlug}`);
+  const match = findTask([project], parentQuery);
+  if (!match) throw new Error(`No task matched --parent "${parentQuery}" in project ${projectSlug}.`);
+  const parent = match.task;
+  if (parent.parent) {
+    throw new Error(`Cannot nest under "${parent.slug}" — it is itself a child. Only one level of nesting is supported.`);
+  }
+  if (parent.archived) throw new Error(`Cannot add child to archived parent: ${parent.slug}`);
+  return parent;
+}
+
+function injectParent(rendered: string, parentSlug: string): string {
+  const { data, body } = parse(rendered);
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(data)) {
+    out[k] = v;
+    if (k === "project" && !("parent" in out)) out.parent = parentSlug;
+  }
+  if (!("parent" in out)) out.parent = parentSlug;
+  return stringify(out, body);
 }
 
 function taskFiles(dir: string): string[] {

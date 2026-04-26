@@ -5,8 +5,9 @@ import { findRoot } from "./root.ts";
 import { newProject, newTask } from "./new.ts";
 import { context, repoPath } from "./context.ts";
 import { report } from "./report.ts";
-import { archiveTask, loadProjects } from "./tree.ts";
+import { archiveTask, foldTask, isParent, loadProjects, flatTasks, rollupStatus } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
+import { findTask } from "./resolve.ts";
 import { init } from "./init.ts";
 import { CONFIG_PATH } from "./config.ts";
 import { now } from "./time.ts";
@@ -33,8 +34,11 @@ try {
       } else if (what === "task") {
         const project = args[2];
         const slug = args[3];
-        if (!project || !slug) usage("tpm new task <project> <slug> [--title 'Title']");
-        const path = newTask(root, project, slug, parseFlag(args, "--title"));
+        if (!project || !slug) usage("tpm new task <project> <slug> [--title 'Title'] [--parent <parent-slug>]");
+        const path = newTask(root, project, slug, {
+          title: parseFlag(args, "--title"),
+          parent: parseFlag(args, "--parent"),
+        });
         console.log(`Created ${path}`);
       } else {
         usage("tpm new project|task ...");
@@ -46,30 +50,33 @@ try {
       const filter = parseFlag(args, "--status");
       const showAll = args.includes("--all");
       const includeArchived = showAll || args.includes("--archived");
+      const flat = args.includes("--flat");
       const projects = loadProjects(root, { archived: includeArchived });
       const projectFilter = parseFlag(args, "--project");
       if (projects.length === 0) {
         console.log("No projects yet. Run: tpm new project <slug>");
         break;
       }
+      const passes = (t: Task) => {
+        if (filter) return t.data.status === filter;
+        if (showAll || includeArchived) return true;
+        return !isHiddenStatus(t.data.status) && !t.archived;
+      };
       for (const p of projects) {
         if (projectFilter && p.slug !== projectFilter) continue;
-        const tasks = filter
-          ? p.tasks.filter(t => t.data.status === filter)
-          : showAll
-            ? p.tasks
-            : includeArchived
-              ? p.tasks
-              : p.tasks.filter(t => !isHiddenStatus(t.data.status) && !t.archived);
-        if (tasks.length === 0 && filter) continue;
+        const visible = filterTaskTree(p.tasks, passes, flat);
+        if (filter && visible.length === 0 && !flat) continue;
         const name = strOr(p.data.name, p.slug);
         const status = strOr(p.data.status, "?");
         console.log(`\n${name}  (${p.slug})  [${status}]`);
-        if (tasks.length === 0) console.log(`  (no tasks)`);
-        for (const t of tasks) {
-          const prs = Array.isArray(t.data.prs) ? t.data.prs.join(", ") : "";
-          const archived = t.archived ? "  [archived]" : "";
-          console.log(`  · ${pad(strOr(t.data.status, "?"), 12)} ${pad(strOr(t.data.type, "?"), 14)} ${t.slug}${archived}${prs ? "  " + prs : ""}`);
+        if (visible.length === 0 && (!filter || flat)) console.log(`  (no tasks)`);
+        if (flat) {
+          for (const t of visible) console.log(formatTaskLine(t, 0));
+        } else {
+          for (const t of visible) {
+            console.log(formatTaskLine(t, 0, rollupStatus(t)));
+            for (const c of t.children ?? []) console.log(formatTaskLine(c, 1));
+          }
         }
       }
       break;
@@ -82,7 +89,18 @@ try {
       const match = findTask(projects, query);
       if (!match) throw new Error(`No task matched "${query}". Try \`tpm ls --all\`.`);
       const path = archiveTask(match.task);
-      console.log(`Archived ${match.project.slug}/${match.task.slug} -> ${path}`);
+      console.log(`Archived ${qualifySlug(match.project.slug, match.task)} -> ${path}`);
+      break;
+    }
+    case "fold": {
+      const root = findRoot();
+      const query = args[1];
+      if (!query) usage("tpm fold <task | project/task>");
+      const projects = loadProjects(root);
+      const match = findTask(projects, query);
+      if (!match) throw new Error(`No task matched "${query}". Try \`tpm ls\`.`);
+      const path = foldTask(match.task);
+      console.log(`Folded ${qualifySlug(match.project.slug, match.task)} -> ${path}`);
       break;
     }
     case "context": {
@@ -134,8 +152,9 @@ try {
       const candidates: Array<{ project: Project; task: Task }> = [];
       for (const p of projects) {
         if (projectFilter && p.slug !== projectFilter) continue;
-        for (const t of p.tasks) {
+        for (const t of flatTasks(p.tasks)) {
           if (t.archived) continue;
+          if (isParent(t)) continue;
           if (t.data.status !== "ready") continue;
           if (autonomous && t.data.allow_orchestrator !== true) continue;
           candidates.push({ project: p, task: t });
@@ -153,7 +172,7 @@ try {
         return ac.localeCompare(bc);
       });
       const pick = candidates[0];
-      console.log(`${pick.project.slug}/${pick.task.slug}`);
+      console.log(qualifySlug(pick.project.slug, pick.task));
       break;
     }
     case "version":
@@ -194,27 +213,31 @@ function isHiddenStatus(status: unknown): boolean {
   return status === "done" || status === "dropped";
 }
 
-function findTask(projects: ReturnType<typeof loadProjects>, query: string) {
-  if (query.includes("/")) {
-    const [p, t] = query.split("/", 2);
-    const project = projects.find(pr => pr.slug === p);
-    const task = project?.tasks.find(task => matchTask(task.slug, t));
-    return project && task ? { project, task } : null;
-  }
-  const matches = projects.flatMap(project => {
-    const task = project.tasks.find(t => matchTask(t.slug, query));
-    return task ? [{ project, task }] : [];
-  });
-  if (matches.length === 1) return matches[0];
-  if (matches.length > 1) {
-    const list = matches.map(m => `  ${m.project.slug}/${m.task.slug}`).join("\n");
-    throw new Error(`Ambiguous task "${query}". Use project/task. Matches:\n${list}`);
-  }
-  return null;
+function qualifySlug(projectSlug: string, task: Task): string {
+  return task.parent ? `${projectSlug}/${task.parent}/${task.slug}` : `${projectSlug}/${task.slug}`;
 }
 
-function matchTask(slug: string, query: string): boolean {
-  return slug === query || slug.endsWith(`-${query}`) || slug.replace(/^\d+-/, "") === query;
+function filterTaskTree(tasks: Task[], passes: (t: Task) => boolean, flat: boolean): Task[] {
+  if (flat) return flatTasks(tasks).filter(passes);
+  const out: Task[] = [];
+  for (const t of tasks) {
+    const children = t.children ? t.children.filter(passes) : [];
+    const selfPasses = passes(t);
+    if (selfPasses || children.length) {
+      out.push({ ...t, children });
+    }
+  }
+  return out;
+}
+
+function formatTaskLine(t: Task, depth: number, displayStatus?: string): string {
+  const prs = Array.isArray(t.data.prs) ? t.data.prs.join(", ") : "";
+  const archived = t.archived ? "  [archived]" : "";
+  const indent = "  ".repeat(depth + 1);
+  const status = displayStatus ?? strOr(t.data.status, "?");
+  const isContainer = (t.children?.length ?? 0) > 0;
+  const marker = isContainer ? "▸" : "·";
+  return `${indent}${marker} ${pad(status, 12)} ${pad(strOr(t.data.type, "?"), 14)} ${t.slug}${archived}${prs ? "  " + prs : ""}`;
 }
 
 function usage(msg: string): never {
@@ -234,24 +257,27 @@ function help(): void {
 Usage:
   tpm init [<dir>]                          bootstrap a tree (default: ~/tpm)
   tpm new project <slug> [--name "Name"] [--repo <url>] [--path <dir>]
-  tpm new task <project> <slug> [--title "Title"]
-  tpm ls [--all] [--archived] [--status open] [--project <slug>]
-  tpm context <task | project/task>
+  tpm new task <project> <slug> [--title "Title"] [--parent <parent-slug>]
+  tpm ls [--all] [--archived] [--flat] [--status open] [--project <slug>]
+  tpm context <task | project/task | parent/child>
   tpm archive <task | project/task>          move a done/dropped task to tasks/archive/
-  tpm next [--project <slug>] [--autonomous] print the next ready task (oldest first)
+  tpm fold <task | project/task>             promote a file-form task to folder-form (idempotent)
+  tpm next [--project <slug>] [--autonomous] print the next ready leaf task (oldest first)
   tpm report [--md]
-  tpm root                                  print the tree root
-  tpm path <project | task | project/task>  print the local repo path
-  tpm now                                   timestamp in the configured timezone
-  tpm version                               print the installed version
+  tpm root                                   print the tree root
+  tpm path <project | task | project/task>   print the local repo path
+  tpm now                                    timestamp in the configured timezone
+  tpm version                                print the installed version
 
 Layout (inside a tree):
-  <slug>/project.md              project goals + context
-  <slug>/tasks/NNN-*.md          active task files
-  <slug>/tasks/archive/NNN-*.md  archived done/dropped task files
-  <slug>/notes/                  free-form scratch
-  reports/index.html             generated rollup
-  .tpm/templates/                task & project templates
+  <slug>/project.md                          project goals + context
+  <slug>/tasks/NNN-*.md                      file-form task
+  <slug>/tasks/NNN-*/task.md                 folder-form task (parent)
+  <slug>/tasks/NNN-*/NNN-*.md                child of a folder-form parent
+  <slug>/tasks/archive/...                   archived tasks (mirrors live layout)
+  <slug>/notes/                              free-form scratch
+  reports/index.html                         generated rollup
+  .tpm/templates/                            task & project templates
 
 Tree root: ${CONFIG_PATH} -> root  (set by \`tpm init\`).
 `);
