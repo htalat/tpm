@@ -22,7 +22,6 @@ export function init(dir?: string): InitResult {
   };
 
   ensureDir(root);
-  ensureDir(join(root, "projects"));
   ensureDir(join(root, "reports"));
   ensureDir(join(root, ".tpm", "templates"));
   ensureFile(join(root, ".tpm", "templates", "project.md"), PROJECT_TEMPLATE);

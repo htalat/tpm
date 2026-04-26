@@ -16,7 +16,7 @@ export interface NewProjectOpts {
 
 export function newProject(root: string, slug: string, opts: NewProjectOpts = {}): string {
   validateSlug(slug);
-  const dir = join(root, "projects", slug);
+  const dir = join(root, slug);
   if (existsSync(dir)) throw new Error(`Project already exists: ${slug}`);
   mkdirSync(join(dir, "tasks"), { recursive: true });
   mkdirSync(join(dir, "notes"), { recursive: true });
@@ -36,7 +36,7 @@ export function newProject(root: string, slug: string, opts: NewProjectOpts = {}
 
 export function newTask(root: string, projectSlug: string, taskSlug: string, title?: string): string {
   validateSlug(taskSlug);
-  const projectDir = join(root, "projects", projectSlug);
+  const projectDir = join(root, projectSlug);
   if (!existsSync(join(projectDir, "project.md"))) {
     throw new Error(`Unknown project: ${projectSlug}`);
   }

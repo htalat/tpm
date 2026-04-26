@@ -4,16 +4,24 @@ Markdown-based task & project manager. CLI-driven, agent-friendly. Zero deps —
 
 ## Layout
 
+This repo (the CLI install):
 ```
-bin/tpm                            CLI entry (bash shim → src/cli.ts)
+bin/tpm                            entry (bash shim → src/cli.ts)
 src/                               TypeScript implementation
-.tpm/templates/                    project & task templates (in this repo, the install-default tree)
+.tpm/templates/                    distributed default templates
 skills/tpm/SKILL.md                Claude Code skill (symlink target)
-projects/<slug>/project.md         goals, context, notes  (data lives in your tree, not the repo)
-projects/<slug>/tasks/NNN-*.md     one task per file (frontmatter + markdown)
-projects/<slug>/notes/             free-form scratch
-reports/index.html                 generated rollup
 ```
+
+A tpm tree (data — lives wherever `tpm init` was run, e.g. `~/Documents/projects/`):
+```
+<root>/.tpm/templates/             per-tree templates (copied from defaults)
+<root>/reports/index.html          generated rollup
+<root>/<slug>/project.md           goals, context, notes
+<root>/<slug>/tasks/NNN-*.md       one task per file
+<root>/<slug>/notes/               free-form scratch
+```
+
+Project directories sit as siblings to `.tpm/` and `reports/` — no inner `projects/` nesting.
 
 ## Setup on a new device
 
@@ -33,8 +41,9 @@ ln -sf "$PWD/bin/tpm" ~/.local/bin/tpm
 tpm --help                                    # sanity check
 
 # 3. Bootstrap a data tree and write the user config.
-tpm init                                      # default: ~/tpm  →  ~/.tpm/config.json
-# or: tpm init ~/Dropbox/tpm                  # put data wherever you want it synced
+tpm init ~/Documents/projects                 # writes ~/.tpm/config.json -> ~/Documents/projects
+# or: tpm init                                # default ~/tpm
+# or: tpm init ~/Dropbox/projects             # put data wherever you want it synced
 tpm root                                      # confirms the tree root
 
 # 4. (Optional) Install the Claude Code skill.
@@ -118,7 +127,7 @@ cat ~/.tpm/config.json
 
 ## Frontmatter schema
 
-**project.md**
+**`<root>/<slug>/project.md`**
 ```yaml
 name: Pretty Name
 slug: my-project
@@ -130,7 +139,7 @@ repo:
 tags: []
 ```
 
-**task.md**
+**`<root>/<slug>/tasks/NNN-<slug>.md`**
 ```yaml
 title: Refactor auth middleware
 slug: refactor-auth

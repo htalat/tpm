@@ -143,11 +143,11 @@ Usage:
   tpm path <project | task | project/task>  print the local repo path
 
 Layout (inside a tree):
-  projects/<slug>/project.md      project goals + context
-  projects/<slug>/tasks/NNN-*.md  one task per file
-  projects/<slug>/notes/          free-form scratch
-  reports/index.html              generated rollup
-  .tpm/templates/                 task & project templates
+  <slug>/project.md      project goals + context
+  <slug>/tasks/NNN-*.md  one task per file
+  <slug>/notes/          free-form scratch
+  reports/index.html     generated rollup
+  .tpm/templates/        task & project templates
 
 Tree root: ${CONFIG_PATH} -> root  (set by \`tpm init\`).
 `);

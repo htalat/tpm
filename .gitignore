@@ -1,5 +1,4 @@
 node_modules/
 .DS_Store
-projects/
 reports/
 .claude/settings.local.json

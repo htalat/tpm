@@ -18,13 +18,15 @@ export interface Task {
   body: string;
 }
 
+const RESERVED = new Set(["reports", "node_modules"]);
+
 export function loadProjects(root: string): Project[] {
-  const projectsDir = join(root, "projects");
-  if (!isDir(projectsDir)) return [];
+  if (!isDir(root)) return [];
   const projects: Project[] = [];
-  for (const entry of readdirSync(projectsDir).sort()) {
+  for (const entry of readdirSync(root).sort()) {
     if (entry.startsWith(".")) continue;
-    const dir = join(projectsDir, entry);
+    if (RESERVED.has(entry)) continue;
+    const dir = join(root, entry);
     if (!isDir(dir)) continue;
     const projectFile = join(dir, "project.md");
     if (!isFile(projectFile)) continue;
