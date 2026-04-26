@@ -234,3 +234,13 @@ tpm report --md      # writes reports/index.md
 ```
 
 The HTML report is one self-contained file with no external assets. Dark mode supported via `prefers-color-scheme`.
+
+## Tests
+
+```sh
+npm test                                  # runs every src/**/*.test.ts
+node --test src/frontmatter.test.ts       # one file
+node --test --test-name-pattern=archive src/tree.test.ts
+```
+
+Uses Node's built-in test runner (`node --test`) and `node:assert/strict`. No install step — the suite has zero dependencies, same as the CLI. Tests are colocated with source as `*.test.ts` and create their own temp dirs; nothing touches `~/.tpm` because each test file re-homes the process via `src/_test_helpers.ts`.
