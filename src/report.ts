@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { loadProjects } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
 import { resolveRepo } from "./context.ts";
+import { now } from "./time.ts";
 
 export function report(root: string, opts: { format: "html" | "md" }): string {
   const projects = loadProjects(root);
@@ -22,7 +23,7 @@ export function report(root: string, opts: { format: "html" | "md" }): string {
 function renderHtml(projects: Project[]): string {
   const allTasks = projects.flatMap(p => p.tasks);
   const totals = countByStatus(allTasks);
-  const generated = new Date().toISOString().replace("T", " ").slice(0, 16) + " UTC";
+  const generated = now();
   const openCount = (totals["open"] ?? 0) + (totals["in-progress"] ?? 0) + (totals["blocked"] ?? 0);
 
   let body = `<header><h1>tpm</h1>`;
@@ -184,7 +185,7 @@ function extractSection(body: string, heading: string): string | null {
 }
 
 function renderMd(projects: Project[]): string {
-  let s = `# tpm report\n\nGenerated ${new Date().toISOString()}\n\n`;
+  let s = `# tpm report\n\nGenerated ${now()}\n\n`;
   for (const p of projects) {
     s += `## ${str(p.data.name) ?? p.slug} (\`${p.slug}\`) — ${str(p.data.status) ?? "?"}\n\n`;
     if (p.tasks.length === 0) { s += "_No tasks._\n\n"; continue; }

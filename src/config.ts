@@ -7,7 +7,10 @@ export const CONFIG_PATH = resolve(CONFIG_DIR, "config.json");
 
 export interface Config {
   root?: string;
+  timezone?: string;
 }
+
+export const DEFAULT_TIMEZONE = "America/Los_Angeles";
 
 export function readConfig(): Config {
   if (!existsSync(CONFIG_PATH)) return {};

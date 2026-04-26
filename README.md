@@ -101,6 +101,7 @@ tpm context <task | project/task>
 tpm report [--md]
 tpm root                                  # print the tree root
 tpm path <project | task | project/task>  # print the local checkout path
+tpm now                                   # timestamp in the configured timezone
 ```
 
 ### Linking projects to repos
@@ -125,6 +126,18 @@ tpm root              # /Users/you/tpm
 cat ~/.tpm/config.json
 ```
 
+### Config fields
+
+```json
+{
+  "root": "/Users/you/Documents/projects",
+  "timezone": "America/Los_Angeles"
+}
+```
+
+- `root` — tree root, set by `tpm init <dir>`.
+- `timezone` — IANA name (e.g. `America/Los_Angeles`, `Europe/Berlin`, `UTC`); used for `created`, `closed`, log entries, and report timestamps. Handles DST automatically (PST/PDT). Defaults to `America/Los_Angeles` if absent. Run `tpm now` to see the current timestamp in the configured zone.
+
 ## Frontmatter schema
 
 **`<root>/<slug>/project.md`**
@@ -132,7 +145,7 @@ cat ~/.tpm/config.json
 name: Pretty Name
 slug: my-project
 status: active        # active | paused | done | archived
-created: 2026-04-25
+created: 2026-04-25 09:30 PDT
 repo:
   remote: https://github.com/owner/repo
   local:  /Users/you/code/repo
@@ -146,11 +159,13 @@ slug: refactor-auth
 project: my-project
 status: open          # open | in-progress | blocked | done | dropped
 type: pr              # pr | investigation | spike | chore
-created: 2026-04-25
-closed:               # YYYY-MM-DD when status flips to done
+created: 2026-04-25 09:30 PDT
+closed:               # YYYY-MM-DD HH:MM ZZZ when status flips to done
 prs: []               # list of PR URLs
 tags: []
 ```
+
+Timestamps are written in the timezone from `~/.tpm/config.json` (default `America/Los_Angeles`). Old date-only values (`2026-04-25`) keep parsing — values are display strings only.
 
 Edit the markdown freely — frontmatter is the source of truth for `tpm ls` and `tpm report`. The body uses `## Context / ## Plan / ## Log / ## Outcome` sections.
 

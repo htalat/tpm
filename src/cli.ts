@@ -8,6 +8,7 @@ import { report } from "./report.ts";
 import { loadProjects } from "./tree.ts";
 import { init } from "./init.ts";
 import { CONFIG_PATH } from "./config.ts";
+import { now } from "./time.ts";
 
 const VERSION = readVersion();
 
@@ -100,6 +101,10 @@ try {
       console.log(repoPath(root, query));
       break;
     }
+    case "now": {
+      console.log(now());
+      break;
+    }
     case "version":
     case "--version":
     case "-V":
@@ -157,6 +162,7 @@ Usage:
   tpm report [--md]
   tpm root                                  print the tree root
   tpm path <project | task | project/task>  print the local repo path
+  tpm now                                   timestamp in the configured timezone
   tpm version                               print the installed version
 
 Layout (inside a tree):
