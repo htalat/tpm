@@ -6,5 +6,8 @@
   "private": true,
   "bin": {
     "tpm": "./bin/tpm"
+  },
+  "scripts": {
+    "test": "node --test 'src/**/*.test.ts'"
   }
 }
