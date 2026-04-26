@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { PROJECT_TEMPLATE, TASK_TEMPLATE } from "./defaults.ts";
+import { now } from "./time.ts";
 
 function loadTemplate(root: string, kind: "project" | "task"): string {
   const path = join(root, ".tpm", "templates", `${kind}.md`);
@@ -25,7 +26,7 @@ export function newProject(root: string, slug: string, opts: NewProjectOpts = {}
   const content = render(tmpl, {
     name: opts.name ?? humanize(slug),
     slug,
-    date: today(),
+    date: now(),
     repo_remote: opts.repoRemote ?? "",
     repo_local: opts.repoLocal ? resolve(opts.repoLocal) : "",
   });
@@ -59,7 +60,7 @@ export function newTask(root: string, projectSlug: string, taskSlug: string, tit
     title: title ?? humanize(taskSlug),
     slug: taskSlug,
     project: projectSlug,
-    date: today(),
+    date: now(),
   });
   writeFileSync(path, content);
   return path;
@@ -67,10 +68,6 @@ export function newTask(root: string, projectSlug: string, taskSlug: string, tit
 
 function render(tmpl: string, vars: Record<string, string>): string {
   return tmpl.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? "");
-}
-
-function today(): string {
-  return new Date().toISOString().slice(0, 10);
 }
 
 function validateSlug(slug: string): void {

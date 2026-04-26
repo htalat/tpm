@@ -17,6 +17,7 @@ tpm path <project | task | project/task>            print local repo checkout
 tpm new project <slug> [--name "..."] [--repo <url>] [--path <local-dir>]
 tpm new task <project> <slug> [--title "..."]
 tpm report [--md]                                   reports/index.html
+tpm now                                             timestamp in the configured timezone
 tpm init [<dir>]                                    bootstrap a tree (default ~/tpm)
 ```
 
@@ -40,18 +41,18 @@ Read `$ARGUMENTS` and pick a mode. If empty, default to "no args".
 ### `<task>` or `<project>/<task>` — start working on a task
 This is the primary mode.
 1. Run `tpm context <arg>`. Read the briefing in full.
-2. If the task's status is `open`, edit the task file (path is in the briefing): set `status: in-progress` in frontmatter and append `- $(date +%F): started` to the `## Log` section.
+2. If the task's status is `open`, edit the task file (path is in the briefing): set `status: in-progress` in frontmatter and append `- $(tpm now): started` to the `## Log` section.
 3. `cd "$(tpm path <arg>)"` — that's where the work happens. If `tpm path` errors because no local path is set, ask the user for the path and offer to populate `repo.local` in the project (or task) file.
 4. Read the task body and execute the Plan. If the type is `investigation`, your output is findings — write them into the body, not just chat.
-5. As you make meaningful progress, append `- $(date +%F): <what changed>` to `## Log`.
+5. As you make meaningful progress, append `- $(tpm now): <what changed>` to `## Log`.
 6. If you open a PR, append its URL to the `prs:` list in the task's frontmatter.
 7. If you hit a blocker you can't resolve: set `status: blocked`, log why, and surface it to the user instead of guessing.
 
 ### `done <task>` — close out
 1. Read the task file.
 2. Fill `## Outcome` with what shipped, what changed, what was learned. Reference PRs.
-3. Set `status: done` and `closed: $(date +%F)` in frontmatter.
-4. Append `- $(date +%F): closed` to `## Log`.
+3. Set `status: done` and `closed: $(tpm now)` in frontmatter.
+4. Append `- $(tpm now): closed` to `## Log`.
 5. Print a one-line confirmation with the new status.
 
 ### `new <project> <slug>` — scaffold a task (shorthand)
@@ -66,7 +67,7 @@ Just run the corresponding `tpm` subcommand and print the result.
 ## Conventions
 
 - When editing task files, only touch the frontmatter and the four canonical sections. Preserve key order in frontmatter.
-- Dates: `YYYY-MM-DD` system local. Use `date +%F` from bash, not your own guess.
+- Timestamps: use `tpm now` (format `YYYY-MM-DD HH:MM <ZZZ>` in the configured TZ — defaults to Pacific). Don't guess or hand-format.
 - Don't manually create project/task files where `tpm new` would do it.
 - If `tpm` errors with "No tpm tree configured", offer to run `tpm init` (default `~/tpm`).
 - Keep edits to the user's actual code repos separate from edits to task files — task files are tracker state, not code.
