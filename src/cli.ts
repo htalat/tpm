@@ -5,7 +5,7 @@ import { findRoot } from "./root.ts";
 import { newProject, newTask } from "./new.ts";
 import { context, repoPath } from "./context.ts";
 import { report } from "./report.ts";
-import { loadProjects } from "./tree.ts";
+import { archiveTask, loadProjects } from "./tree.ts";
 import { init } from "./init.ts";
 import { CONFIG_PATH } from "./config.ts";
 import { now } from "./time.ts";
@@ -42,8 +42,10 @@ try {
     }
     case "ls": {
       const root = findRoot();
-      const projects = loadProjects(root);
       const filter = parseFlag(args, "--status");
+      const showAll = args.includes("--all");
+      const includeArchived = showAll || args.includes("--archived");
+      const projects = loadProjects(root, { archived: includeArchived });
       const projectFilter = parseFlag(args, "--project");
       if (projects.length === 0) {
         console.log("No projects yet. Run: tpm new project <slug>");
@@ -51,7 +53,13 @@ try {
       }
       for (const p of projects) {
         if (projectFilter && p.slug !== projectFilter) continue;
-        const tasks = filter ? p.tasks.filter(t => t.data.status === filter) : p.tasks;
+        const tasks = filter
+          ? p.tasks.filter(t => t.data.status === filter)
+          : showAll
+            ? p.tasks
+            : includeArchived
+              ? p.tasks
+              : p.tasks.filter(t => !isHiddenStatus(t.data.status) && !t.archived);
         if (tasks.length === 0 && filter) continue;
         const name = strOr(p.data.name, p.slug);
         const status = strOr(p.data.status, "?");
@@ -59,9 +67,21 @@ try {
         if (tasks.length === 0) console.log(`  (no tasks)`);
         for (const t of tasks) {
           const prs = Array.isArray(t.data.prs) ? t.data.prs.join(", ") : "";
-          console.log(`  · ${pad(strOr(t.data.status, "?"), 12)} ${pad(strOr(t.data.type, "?"), 14)} ${t.slug}${prs ? "  " + prs : ""}`);
+          const archived = t.archived ? "  [archived]" : "";
+          console.log(`  · ${pad(strOr(t.data.status, "?"), 12)} ${pad(strOr(t.data.type, "?"), 14)} ${t.slug}${archived}${prs ? "  " + prs : ""}`);
         }
       }
+      break;
+    }
+    case "archive": {
+      const root = findRoot();
+      const query = args[1];
+      if (!query) usage("tpm archive <task | project/task>");
+      const projects = loadProjects(root, { archived: true });
+      const match = findTask(projects, query);
+      if (!match) throw new Error(`No task matched "${query}". Try \`tpm ls --all\`.`);
+      const path = archiveTask(match.task);
+      console.log(`Archived ${match.project.slug}/${match.task.slug} -> ${path}`);
       break;
     }
     case "context": {
@@ -139,6 +159,33 @@ function strOr(v: unknown, fallback: string): string {
   return typeof v === "string" && v.length ? v : fallback;
 }
 
+function isHiddenStatus(status: unknown): boolean {
+  return status === "done" || status === "dropped";
+}
+
+function findTask(projects: ReturnType<typeof loadProjects>, query: string) {
+  if (query.includes("/")) {
+    const [p, t] = query.split("/", 2);
+    const project = projects.find(pr => pr.slug === p);
+    const task = project?.tasks.find(task => matchTask(task.slug, t));
+    return project && task ? { project, task } : null;
+  }
+  const matches = projects.flatMap(project => {
+    const task = project.tasks.find(t => matchTask(t.slug, query));
+    return task ? [{ project, task }] : [];
+  });
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) {
+    const list = matches.map(m => `  ${m.project.slug}/${m.task.slug}`).join("\n");
+    throw new Error(`Ambiguous task "${query}". Use project/task. Matches:\n${list}`);
+  }
+  return null;
+}
+
+function matchTask(slug: string, query: string): boolean {
+  return slug === query || slug.endsWith(`-${query}`) || slug.replace(/^\d+-/, "") === query;
+}
+
 function usage(msg: string): never {
   console.error(msg);
   process.exit(1);
@@ -157,8 +204,9 @@ Usage:
   tpm init [<dir>]                          bootstrap a tree (default: ~/tpm)
   tpm new project <slug> [--name "Name"] [--repo <url>] [--path <dir>]
   tpm new task <project> <slug> [--title "Title"]
-  tpm ls [--status open] [--project <slug>]
+  tpm ls [--all] [--archived] [--status open] [--project <slug>]
   tpm context <task | project/task>
+  tpm archive <task | project/task>          move a done/dropped task to tasks/archive/
   tpm report [--md]
   tpm root                                  print the tree root
   tpm path <project | task | project/task>  print the local repo path
@@ -166,11 +214,12 @@ Usage:
   tpm version                               print the installed version
 
 Layout (inside a tree):
-  <slug>/project.md      project goals + context
-  <slug>/tasks/NNN-*.md  one task per file
-  <slug>/notes/          free-form scratch
-  reports/index.html     generated rollup
-  .tpm/templates/        task & project templates
+  <slug>/project.md              project goals + context
+  <slug>/tasks/NNN-*.md          active task files
+  <slug>/tasks/archive/NNN-*.md  archived done/dropped task files
+  <slug>/notes/                  free-form scratch
+  reports/index.html             generated rollup
+  .tpm/templates/                task & project templates
 
 Tree root: ${CONFIG_PATH} -> root  (set by \`tpm init\`).
 `);

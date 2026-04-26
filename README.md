@@ -18,6 +18,7 @@ A tpm tree (data — lives wherever `tpm init` was run, e.g. `~/Documents/projec
 <root>/reports/index.html          generated rollup
 <root>/<slug>/project.md           goals, context, notes
 <root>/<slug>/tasks/NNN-*.md       one task per file
+<root>/<slug>/tasks/archive/NNN-*.md completed/dropped tasks, still queryable
 <root>/<slug>/notes/               free-form scratch
 ```
 
@@ -96,8 +97,9 @@ tpm init
 tpm init [<dir>]                          # bootstrap a tree (default: ~/tpm)
 tpm new project <slug> [--name "Pretty Name"] [--repo <url>] [--path <local-dir>]
 tpm new task <project> <slug> [--title "Pretty Title"]
-tpm ls [--status open] [--project <slug>]
+tpm ls [--all] [--archived] [--status open] [--project <slug>]
 tpm context <task | project/task>
+tpm archive <task | project/task>          # move a done/dropped task to tasks/archive/
 tpm report [--md]
 tpm root                                  # print the tree root
 tpm path <project | task | project/task>  # print the local checkout path
@@ -168,6 +170,8 @@ tags: []
 Timestamps are written in the timezone from `~/.tpm/config.json` (default `America/Los_Angeles`). Old date-only values (`2026-04-25`) keep parsing — values are display strings only.
 
 Edit the markdown freely — frontmatter is the source of truth for `tpm ls` and `tpm report`. The body uses `## Context / ## Plan / ## Log / ## Outcome` sections.
+
+`tpm ls` hides `done` and `dropped` tasks by default. Use `--all` to include every active task status, `--status done` to query a specific status, or `--archived` to include tasks moved under `tasks/archive/`. `tpm context` and `tpm path` still resolve archived tasks, and new task numbering counts both active and archived task files.
 
 ## Delegating to a coding agent
 

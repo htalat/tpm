@@ -22,7 +22,7 @@ function readRepo(v: unknown): Repo {
 }
 
 export function context(root: string, query: string): string {
-  const projects = loadProjects(root);
+  const projects = loadProjects(root, { archived: true });
   const match = findTask(projects, query);
   if (!match) throw new Error(`No task matched "${query}". Try \`tpm ls\`.`);
   const { project, task } = match;
@@ -77,7 +77,7 @@ export function context(root: string, query: string): string {
 }
 
 export function repoPath(root: string, query: string): string {
-  const projects = loadProjects(root);
+  const projects = loadProjects(root, { archived: true });
   const target = findRepoTarget(projects, query);
   if (!target) throw new Error(`No project or task matched "${query}". Try \`tpm ls\`.`);
   const repo = resolveRepo(target.project, target.task);
