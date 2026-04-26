@@ -11,9 +11,10 @@ You are operating Hassan's `tpm` — a markdown-based task & project tracker. Th
 
 ```
 tpm root                                            print the tree root
-tpm ls [--status open|in-progress|blocked|done|dropped] [--project <slug>]
+tpm ls [--all] [--archived] [--status open|in-progress|blocked|done|dropped] [--project <slug>]
 tpm context <task | project/task>                   full briefing (file path, project goal, body, working agreement)
 tpm path <project | task | project/task>            print local repo checkout
+tpm archive <task | project/task>                   move a done/dropped task to tasks/archive/
 tpm new project <slug> [--name "..."] [--repo <url>] [--path <local-dir>]
 tpm new task <project> <slug> [--title "..."]
 tpm report [--md]                                   reports/index.html
@@ -53,7 +54,8 @@ This is the primary mode.
 2. Fill `## Outcome` with what shipped, what changed, what was learned. Reference PRs.
 3. Set `status: done` and `closed: $(tpm now)` in frontmatter.
 4. Append `- $(tpm now): closed` to `## Log`.
-5. Print a one-line confirmation with the new status.
+5. Run `tpm archive <task>` to move the completed task under `tasks/archive/`.
+6. Print a one-line confirmation with the new status and archive path.
 
 ### `new <project> <slug>` — scaffold a task (shorthand)
 Two args after `new` ⇒ task. Three with leading `project` ⇒ project.

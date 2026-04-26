@@ -44,7 +44,10 @@ export function newTask(root: string, projectSlug: string, taskSlug: string, tit
   const tasksDir = join(projectDir, "tasks");
   mkdirSync(tasksDir, { recursive: true });
 
-  const existing = readdirSync(tasksDir).filter(f => f.endsWith(".md"));
+  const existing = [
+    ...taskFiles(tasksDir),
+    ...taskFiles(join(tasksDir, "archive")),
+  ];
   let max = 0;
   for (const f of existing) {
     const m = f.match(/^(\d{3,})-/);
@@ -64,6 +67,10 @@ export function newTask(root: string, projectSlug: string, taskSlug: string, tit
   });
   writeFileSync(path, content);
   return path;
+}
+
+function taskFiles(dir: string): string[] {
+  return existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith(".md")) : [];
 }
 
 function render(tmpl: string, vars: Record<string, string>): string {

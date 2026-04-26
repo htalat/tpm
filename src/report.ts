@@ -6,7 +6,7 @@ import { resolveRepo } from "./context.ts";
 import { now } from "./time.ts";
 
 export function report(root: string, opts: { format: "html" | "md" }): string {
-  const projects = loadProjects(root);
+  const projects = loadProjects(root, { archived: true });
   const reportsDir = join(root, "reports");
   mkdirSync(reportsDir, { recursive: true });
 
@@ -21,13 +21,14 @@ export function report(root: string, opts: { format: "html" | "md" }): string {
 }
 
 function renderHtml(projects: Project[]): string {
-  const allTasks = projects.flatMap(p => p.tasks);
+  const allTasks = projects.flatMap(p => p.tasks.filter(t => !t.archived));
+  const archivedCount = projects.reduce((n, p) => n + p.tasks.filter(t => t.archived).length, 0);
   const totals = countByStatus(allTasks);
   const generated = now();
   const openCount = (totals["open"] ?? 0) + (totals["in-progress"] ?? 0) + (totals["blocked"] ?? 0);
 
   let body = `<header><h1>tpm</h1>`;
-  body += `<p class="meta">${generated} · ${projects.length} project${projects.length === 1 ? "" : "s"} · ${allTasks.length} task${allTasks.length === 1 ? "" : "s"} · <strong>${openCount} open</strong></p>`;
+  body += `<p class="meta">${generated} · ${projects.length} project${projects.length === 1 ? "" : "s"} · ${allTasks.length} active task${allTasks.length === 1 ? "" : "s"} · ${archivedCount} archived · <strong>${openCount} open</strong></p>`;
   body += `<div class="summary">${renderSummary(totals)}</div></header>`;
 
   if (projects.length === 0) {
@@ -35,25 +36,27 @@ function renderHtml(projects: Project[]): string {
   }
 
   for (const p of projects) {
-    const counts = countByStatus(p.tasks);
+    const activeTasks = p.tasks.filter(t => !t.archived);
+    const projectArchivedCount = p.tasks.length - activeTasks.length;
+    const counts = countByStatus(activeTasks);
     const repo = resolveRepo(p);
     const repoLink = repo.remote
       ? ` <a class="repo" href="${esc(repo.remote)}">${esc(repoShort(repo.remote))}</a>`
       : "";
     body += `<section><h2>${esc(str(p.data.name) ?? p.slug)} <span class="badge s-${cls(p.data.status)}">${esc(str(p.data.status) ?? "?")}</span>${repoLink}</h2>`;
     const localBit = repo.local ? ` · <code title="local checkout">${esc(repo.local)}</code>` : "";
-    body += `<p class="meta"><code>${esc(p.slug)}</code> · ${p.tasks.length} task${p.tasks.length === 1 ? "" : "s"}${localBit}</p>`;
-    if (p.tasks.length) body += `<div class="summary">${renderSummary(counts)}</div>`;
+    body += `<p class="meta"><code>${esc(p.slug)}</code> · ${activeTasks.length} active task${activeTasks.length === 1 ? "" : "s"} · ${projectArchivedCount} archived${localBit}</p>`;
+    if (activeTasks.length) body += `<div class="summary">${renderSummary(counts)}</div>`;
 
     const goal = extractSection(p.body, "Goal");
     if (goal) body += `<blockquote>${esc(goal).replace(/\n/g, "<br>")}</blockquote>`;
 
-    if (p.tasks.length === 0) {
-      body += `<p class="meta">No tasks yet.</p></section>`;
+    if (activeTasks.length === 0) {
+      body += `<p class="meta">No active tasks.</p></section>`;
       continue;
     }
     body += `<table><thead><tr><th>Task</th><th>Status</th><th>Type</th><th>PRs</th><th>Created</th><th>Closed</th></tr></thead><tbody>`;
-    for (const t of p.tasks) {
+    for (const t of activeTasks) {
       const prs = (Array.isArray(t.data.prs) ? t.data.prs : [])
         .map(pr => `<a href="${esc(String(pr))}">${esc(prShort(String(pr)))}</a>`)
         .join(", ");
@@ -187,10 +190,13 @@ function extractSection(body: string, heading: string): string | null {
 function renderMd(projects: Project[]): string {
   let s = `# tpm report\n\nGenerated ${now()}\n\n`;
   for (const p of projects) {
+    const activeTasks = p.tasks.filter(t => !t.archived);
+    const archivedCount = p.tasks.length - activeTasks.length;
     s += `## ${str(p.data.name) ?? p.slug} (\`${p.slug}\`) — ${str(p.data.status) ?? "?"}\n\n`;
-    if (p.tasks.length === 0) { s += "_No tasks._\n\n"; continue; }
+    if (archivedCount) s += `_${archivedCount} archived._\n\n`;
+    if (activeTasks.length === 0) { s += "_No active tasks._\n\n"; continue; }
     s += "| Task | Status | Type | PRs |\n|---|---|---|---|\n";
-    for (const t of p.tasks) {
+    for (const t of activeTasks) {
       const prs = (Array.isArray(t.data.prs) ? t.data.prs : []).join(", ");
       s += `| ${str(t.data.title) ?? t.slug} | ${str(t.data.status) ?? "?"} | ${str(t.data.type) ?? "?"} | ${prs} |\n`;
     }
