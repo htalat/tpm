@@ -46,7 +46,7 @@ try {
       for (const p of projects) {
         if (projectFilter && p.slug !== projectFilter) continue;
         const tasks = filter ? p.tasks.filter(t => t.data.status === filter) : p.tasks;
-        if (tasks.length === 0 && (filter || projectFilter)) continue;
+        if (tasks.length === 0 && filter) continue;
         const name = strOr(p.data.name, p.slug);
         const status = strOr(p.data.status, "?");
         console.log(`\n${name}  (${p.slug})  [${status}]`);
