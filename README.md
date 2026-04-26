@@ -197,6 +197,35 @@ tpm next --autonomous          # only ready tasks with `allow_orchestrator: true
 
 `tpm next` exits non-zero with a stderr message if nothing is eligible, so it composes cleanly: `task=$(tpm next) && claude -p "/tpm $task"`.
 
+### Scheduling unattended runs (cron)
+
+`tpm next` composes with cron for hands-off orchestration. To set up:
+
+```sh
+which tpm                    # e.g. /opt/homebrew/bin/tpm
+which claude                 # e.g. /opt/homebrew/bin/claude
+crontab -e
+```
+
+Add an entry like:
+
+```cron
+# Run tpm orchestrator every 4 hours
+0 */4 * * * task=$(/opt/homebrew/bin/tpm next --autonomous) && /opt/homebrew/bin/claude -p "/tpm $task" >> /tmp/tpm-cron.log 2>&1
+```
+
+Substitute the absolute paths from `which`. cron has a minimal `PATH`, so absolute paths are required. If `tpm next --autonomous` finds nothing eligible it exits non-zero, the `&&` short-circuits, and Claude isn't invoked.
+
+To opt a task in for unattended runs, set `allow_orchestrator: true` in its frontmatter. Without that flag, `tpm next --autonomous` skips the task even if its status is `ready` — that's the safety boundary between "an agent can run this when I ask" and "an agent can run this while I'm asleep".
+
+The machine must be awake and logged in for cron to fire.
+
+**No safety rails yet.** Cron currently runs without a lock file, drift check, time bound, or notifications — those land in follow-up tasks. Until they ship, be aware:
+- A polluted working tree on `main` will be inherited by the agent.
+- Two overlapping firings can collide on the same task (use a sparse schedule).
+- Wedged runs burn credits until Claude's own session limits trigger.
+- Failures are silent — check status via `tpm ls` and `/tmp/tpm-cron.log`.
+
 ## Reports
 
 ```sh
