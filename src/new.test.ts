@@ -152,7 +152,7 @@ test("newTask: substitutes title and slug into template", () => {
   const root = mkTempDir();
   try {
     setupProject(root, "alpha");
-    const path = newTask(root, "alpha", "do-stuff", "Do the stuff");
+    const path = newTask(root, "alpha", "do-stuff", { title: "Do the stuff" });
     const { data, body } = parse(readFileSync(path, "utf8"));
     assert.equal(data.title, "Do the stuff");
     assert.equal(data.slug, "do-stuff");
@@ -171,6 +171,69 @@ test("newTask: humanizes title when none given", () => {
     const path = newTask(root, "alpha", "do-the-thing");
     const { data } = parse(readFileSync(path, "utf8"));
     assert.equal(data.title, "Do The Thing");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("newTask --parent: folds parent and creates child with parent: in frontmatter", () => {
+  const root = mkTempDir();
+  try {
+    setupProject(root, "alpha");
+    const parentPath = newTask(root, "alpha", "big-thing");
+    const childPath = newTask(root, "alpha", "first-step", { parent: "big-thing" });
+    // Parent got folded.
+    const folderPath = join(root, "alpha", "tasks", "001-big-thing");
+    assert.ok(existsSync(join(folderPath, "task.md")));
+    assert.ok(!existsSync(parentPath)); // old flat path is gone
+    // Child sits inside the folder, numbered 001 (scoped).
+    assert.equal(childPath, join(folderPath, "001-first-step.md"));
+    const { data } = parse(readFileSync(childPath, "utf8"));
+    assert.equal(data.parent, "001-big-thing");
+    assert.equal(data.slug, "first-step");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("newTask --parent: numbering scoped to parent folder, not top-level", () => {
+  const root = mkTempDir();
+  try {
+    setupProject(root, "alpha");
+    newTask(root, "alpha", "one");          // 001-one (top-level)
+    newTask(root, "alpha", "two");          // 002-two (top-level)
+    const childA = newTask(root, "alpha", "a", { parent: "two" });
+    const childB = newTask(root, "alpha", "b", { parent: "two" });
+    assert.equal(childA, join(root, "alpha", "tasks", "002-two", "001-a.md"));
+    assert.equal(childB, join(root, "alpha", "tasks", "002-two", "002-b.md"));
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("newTask --parent: rejects unknown parent", () => {
+  const root = mkTempDir();
+  try {
+    setupProject(root, "alpha");
+    assert.throws(
+      () => newTask(root, "alpha", "child", { parent: "nope" }),
+      /No task matched --parent/,
+    );
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("newTask --parent: rejects nesting under a child (no grandchildren)", () => {
+  const root = mkTempDir();
+  try {
+    setupProject(root, "alpha");
+    newTask(root, "alpha", "big");
+    newTask(root, "alpha", "child", { parent: "big" });
+    assert.throws(
+      () => newTask(root, "alpha", "grand", { parent: "child" }),
+      /Only one level of nesting/,
+    );
   } finally {
     rmTempDir(root);
   }

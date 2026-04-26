@@ -1,5 +1,6 @@
 import { loadProjects } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
+import { findTask, findRepoTarget } from "./resolve.ts";
 
 export interface Repo {
   remote: string | null;
@@ -86,46 +87,6 @@ export function repoPath(root: string, query: string): string {
     throw new Error(`No local path set for ${where}. Set repo.local in ${target.task?.path ?? target.project.path}.`);
   }
   return repo.local;
-}
-
-function findRepoTarget(projects: Project[], query: string): { project: Project; task?: Task } | null {
-  if (query.includes("/")) {
-    const t = findTask(projects, query);
-    return t ? { project: t.project, task: t.task } : null;
-  }
-  const project = projects.find(pr => pr.slug === query);
-  if (project) return { project };
-  const t = findTask(projects, query);
-  return t ? { project: t.project, task: t.task } : null;
-}
-
-function findTask(projects: Project[], query: string): { project: Project; task: Task } | null {
-  if (query.includes("/")) {
-    const [p, t] = query.split("/", 2);
-    const project = projects.find(pr => pr.slug === p);
-    if (!project) return null;
-    const task = matchTask(project.tasks, t);
-    return task ? { project, task } : null;
-  }
-  const matches: { project: Project; task: Task }[] = [];
-  for (const project of projects) {
-    const task = matchTask(project.tasks, query);
-    if (task) matches.push({ project, task });
-  }
-  if (matches.length === 1) return matches[0];
-  if (matches.length > 1) {
-    const list = matches.map(m => `  ${m.project.slug}/${m.task.slug}`).join("\n");
-    throw new Error(`Ambiguous task "${query}". Use project/task. Matches:\n${list}`);
-  }
-  return null;
-}
-
-function matchTask(tasks: Task[], query: string): Task | undefined {
-  return tasks.find(t =>
-    t.slug === query ||
-    t.slug.endsWith(`-${query}`) ||
-    t.slug.replace(/^\d+-/, "") === query
-  );
 }
 
 function extractSection(body: string, heading: string): string | null {

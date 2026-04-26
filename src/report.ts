@@ -1,6 +1,6 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { loadProjects } from "./tree.ts";
+import { loadProjects, flatTasks } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
 import { resolveRepo } from "./context.ts";
 import { now } from "./time.ts";
@@ -21,14 +21,17 @@ export function report(root: string, opts: { format: "html" | "md" }): string {
 }
 
 function renderHtml(projects: Project[]): string {
-  const allTasks = projects.flatMap(p => p.tasks.filter(t => !t.archived));
-  const archivedCount = projects.reduce((n, p) => n + p.tasks.filter(t => t.archived).length, 0);
-  const totals = countByStatus(allTasks);
+  const allLeaves = projects.flatMap(p => leafTasks(p.tasks).filter(t => !t.archived));
+  const archivedCount = projects.reduce(
+    (n, p) => n + flatTasks(p.tasks).filter(t => t.archived).length,
+    0,
+  );
+  const totals = countByStatus(allLeaves);
   const generated = now();
   const openCount = (totals["open"] ?? 0) + (totals["ready"] ?? 0) + (totals["in-progress"] ?? 0) + (totals["blocked"] ?? 0);
 
   let body = `<header><h1>tpm</h1>`;
-  body += `<p class="meta">${generated} · ${projects.length} project${projects.length === 1 ? "" : "s"} · ${allTasks.length} active task${allTasks.length === 1 ? "" : "s"} · ${archivedCount} archived · <strong>${openCount} open</strong></p>`;
+  body += `<p class="meta">${generated} · ${projects.length} project${projects.length === 1 ? "" : "s"} · ${allLeaves.length} active task${allLeaves.length === 1 ? "" : "s"} · ${archivedCount} archived · <strong>${openCount} open</strong></p>`;
   body += `<div class="summary">${renderSummary(totals)}</div></header>`;
 
   if (projects.length === 0) {
@@ -36,38 +39,34 @@ function renderHtml(projects: Project[]): string {
   }
 
   for (const p of projects) {
-    const activeTasks = p.tasks.filter(t => !t.archived);
-    const projectArchivedCount = p.tasks.length - activeTasks.length;
-    const counts = countByStatus(activeTasks);
+    const allActive = flatTasks(p.tasks).filter(t => !t.archived);
+    const activeLeaves = leafTasks(p.tasks).filter(t => !t.archived);
+    const projectArchivedCount = flatTasks(p.tasks).length - allActive.length;
+    const counts = countByStatus(activeLeaves);
     const repo = resolveRepo(p);
     const repoLink = repo.remote
       ? ` <a class="repo" href="${esc(repo.remote)}">${esc(repoShort(repo.remote))}</a>`
       : "";
     body += `<section><h2>${esc(str(p.data.name) ?? p.slug)} <span class="badge s-${cls(p.data.status)}">${esc(str(p.data.status) ?? "?")}</span>${repoLink}</h2>`;
     const localBit = repo.local ? ` · <code title="local checkout">${esc(repo.local)}</code>` : "";
-    body += `<p class="meta"><code>${esc(p.slug)}</code> · ${activeTasks.length} active task${activeTasks.length === 1 ? "" : "s"} · ${projectArchivedCount} archived${localBit}</p>`;
-    if (activeTasks.length) body += `<div class="summary">${renderSummary(counts)}</div>`;
+    body += `<p class="meta"><code>${esc(p.slug)}</code> · ${activeLeaves.length} active task${activeLeaves.length === 1 ? "" : "s"} · ${projectArchivedCount} archived${localBit}</p>`;
+    if (activeLeaves.length) body += `<div class="summary">${renderSummary(counts)}</div>`;
 
     const goal = extractSection(p.body, "Goal");
     if (goal) body += `<blockquote>${esc(goal).replace(/\n/g, "<br>")}</blockquote>`;
 
-    if (activeTasks.length === 0) {
+    const topActive = p.tasks.filter(t => !t.archived || (t.children?.some(c => !c.archived) ?? false));
+    if (topActive.length === 0) {
       body += `<p class="meta">No active tasks.</p></section>`;
       continue;
     }
     body += `<table><thead><tr><th>Task</th><th>Status</th><th>Type</th><th>PRs</th><th>Created</th><th>Closed</th></tr></thead><tbody>`;
-    for (const t of activeTasks) {
-      const prs = (Array.isArray(t.data.prs) ? t.data.prs : [])
-        .map(pr => `<a href="${esc(String(pr))}">${esc(prShort(String(pr)))}</a>`)
-        .join(", ");
-      body += `<tr>`;
-      body += `<td><strong>${esc(str(t.data.title) ?? t.slug)}</strong><br><span class="meta">${esc(t.slug)}</span></td>`;
-      body += `<td><span class="badge s-${cls(t.data.status)}">${esc(str(t.data.status) ?? "?")}</span></td>`;
-      body += `<td>${esc(str(t.data.type) ?? "")}</td>`;
-      body += `<td>${prs}</td>`;
-      body += `<td>${esc(str(t.data.created) ?? "")}</td>`;
-      body += `<td>${esc(str(t.data.closed) ?? "")}</td>`;
-      body += `</tr>`;
+    for (const t of topActive) {
+      body += renderTaskRow(t, 0);
+      for (const c of t.children ?? []) {
+        if (c.archived) continue;
+        body += renderTaskRow(c, 1);
+      }
     }
     body += `</tbody></table></section>`;
   }
@@ -81,6 +80,40 @@ function renderHtml(projects: Project[]): string {
 </head>
 <body>${body}</body>
 </html>`;
+}
+
+function renderTaskRow(t: Task, depth: number): string {
+  const prs = (Array.isArray(t.data.prs) ? t.data.prs : [])
+    .map(pr => `<a href="${esc(String(pr))}">${esc(prShort(String(pr)))}</a>`)
+    .join(", ");
+  const status = isContainer(t) ? rollupStatus(t) : (str(t.data.status) ?? "?");
+  const indent = depth > 0 ? `<span class="indent">↳</span> ` : "";
+  let row = `<tr>`;
+  row += `<td>${indent}<strong>${esc(str(t.data.title) ?? t.slug)}</strong><br><span class="meta">${esc(t.slug)}</span></td>`;
+  row += `<td><span class="badge s-${cls(status)}">${esc(status)}</span></td>`;
+  row += `<td>${esc(str(t.data.type) ?? "")}</td>`;
+  row += `<td>${prs}</td>`;
+  row += `<td>${esc(str(t.data.created) ?? "")}</td>`;
+  row += `<td>${esc(str(t.data.closed) ?? "")}</td>`;
+  row += `</tr>`;
+  return row;
+}
+
+function isContainer(t: Task): boolean {
+  return !!(t.children && t.children.length > 0);
+}
+
+function rollupStatus(parent: Task): string {
+  if (!parent.children?.length) return str(parent.data.status) ?? "?";
+  const live = parent.children.filter(c => !c.archived);
+  if (live.length === 0) return str(parent.data.status) ?? "?";
+  if (live.every(c => c.data.status === "done")) return "done";
+  if (live.some(c => c.data.status === "in-progress")) return "in-progress";
+  return str(parent.data.status) ?? "?";
+}
+
+function leafTasks(tasks: Task[]): Task[] {
+  return flatTasks(tasks).filter(t => !isContainer(t));
 }
 
 const CSS = `
@@ -111,6 +144,7 @@ a { color: #0969da; text-decoration: none; }
 a:hover { text-decoration: underline; }
 a.repo { font-size: .8em; font-weight: 400; padding: 1px 8px; background: #f6f8fa; border-radius: 6px; color: #57606a; }
 a.repo:hover { background: #eaeef2; text-decoration: none; }
+.indent { color: #8d96a0; margin-right: .25rem; }
 @media (prefers-color-scheme: dark) {
   body { color: #e6edf3; background: #0d1117; }
   h2, header { border-color: #30363d; }
@@ -192,17 +226,28 @@ function extractSection(body: string, heading: string): string | null {
 function renderMd(projects: Project[]): string {
   let s = `# tpm report\n\nGenerated ${now()}\n\n`;
   for (const p of projects) {
-    const activeTasks = p.tasks.filter(t => !t.archived);
-    const archivedCount = p.tasks.length - activeTasks.length;
+    const allActive = flatTasks(p.tasks).filter(t => !t.archived);
+    const archivedCount = flatTasks(p.tasks).length - allActive.length;
     s += `## ${str(p.data.name) ?? p.slug} (\`${p.slug}\`) — ${str(p.data.status) ?? "?"}\n\n`;
     if (archivedCount) s += `_${archivedCount} archived._\n\n`;
-    if (activeTasks.length === 0) { s += "_No active tasks._\n\n"; continue; }
+    const topActive = p.tasks.filter(t => !t.archived || (t.children?.some(c => !c.archived) ?? false));
+    if (topActive.length === 0) { s += "_No active tasks._\n\n"; continue; }
     s += "| Task | Status | Type | PRs |\n|---|---|---|---|\n";
-    for (const t of activeTasks) {
-      const prs = (Array.isArray(t.data.prs) ? t.data.prs : []).join(", ");
-      s += `| ${str(t.data.title) ?? t.slug} | ${str(t.data.status) ?? "?"} | ${str(t.data.type) ?? "?"} | ${prs} |\n`;
+    for (const t of topActive) {
+      s += renderMdRow(t, 0);
+      for (const c of t.children ?? []) {
+        if (c.archived) continue;
+        s += renderMdRow(c, 1);
+      }
     }
     s += "\n";
   }
   return s;
+}
+
+function renderMdRow(t: Task, depth: number): string {
+  const prs = (Array.isArray(t.data.prs) ? t.data.prs : []).join(", ");
+  const status = isContainer(t) ? rollupStatus(t) : (str(t.data.status) ?? "?");
+  const indent = depth > 0 ? "↳ " : "";
+  return `| ${indent}${str(t.data.title) ?? t.slug} | ${status} | ${str(t.data.type) ?? "?"} | ${prs} |\n`;
 }
