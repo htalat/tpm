@@ -322,3 +322,35 @@ node --test --test-name-pattern=archive src/tree.test.ts
 ```
 
 Uses Node's built-in test runner (`node --test`) and `node:assert/strict`. No install step — the suite has zero dependencies, same as the CLI. Tests are colocated with source as `*.test.ts` and create their own temp dirs; nothing touches `~/.tpm` because each test file re-homes the process via `src/_test_helpers.ts`.
+
+## Cutting a release
+
+Two layers — pick the right one for the situation.
+
+**`/release` skill** (recommended): drafts notes from commits since the last tag, recommends a SemVer bump, dispatches the script after you confirm.
+
+```
+/release                # recommend bump from commits, draft notes, ask, then ship
+/release patch          # skip the recommendation, draft patch notes
+/release minor
+/release major
+```
+
+Install the skill once: `ln -sf "$PWD/skills/release" ~/.claude/skills/release`.
+
+**`scripts/release.sh`** (mechanical, no agent): when you already know the bump and have notes ready (or want to use GitHub's auto-generated notes).
+
+```sh
+npm run release -- patch                                    # auto-generated notes
+npm run release -- minor --notes RELEASE_NOTES.md           # use a notes file
+./scripts/release.sh major --notes RELEASE_NOTES.md         # same, direct invocation
+```
+
+The script aborts loudly on any precondition failure: not on `main`, dirty tree, behind/ahead of `origin/main`, tests fail, tag already exists, `package.json` version drifted from the latest tag. It commits the version bump, creates an annotated tag, pushes, and runs `gh release create`. The release URL is printed on success.
+
+### SemVer cadence
+
+- **patch** — bug fixes, doc-only changes, no new behavior.
+- **minor** — new features, backward-compatible.
+- **major** — breaking schema/CLI changes.
+- Stay at 0.x while the schema is in flux; bump to 1.0.0 when the frontmatter shape and CLI verbs feel locked.

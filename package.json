@@ -8,6 +8,7 @@
     "tpm": "./bin/tpm"
   },
   "scripts": {
-    "test": "node --test 'src/**/*.test.ts'"
+    "test": "node --test 'src/**/*.test.ts'",
+    "release": "./scripts/release.sh"
   }
 }
