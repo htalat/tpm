@@ -11,7 +11,8 @@ This repo (the CLI install):
 bin/tpm                            entry (bash shim → src/cli.ts)
 src/                               TypeScript implementation
 .tpm/templates/                    distributed default templates
-AGENTS.md                          canonical agent-neutral guide (CLI, schema, actions, conventions)
+AGENTS.md                          agent-neutral guide for using tpm (safe to drop into other repos)
+CONTRIBUTING.md                    shipping rules for the tpm CLI repo itself
 skills/<name>/SKILL.md             user-scoped Claude Code skills (symlinked into ~/.claude/skills/)
 .claude/skills/<name>/SKILL.md     repo-scoped Claude Code skills (auto-loaded only inside this repo)
 docs/agents/                       per-agent setup notes (Claude Code, Codex, Copilot)

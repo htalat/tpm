@@ -16,7 +16,15 @@ GitHub Copilot Chat reads `.github/copilot-instructions.md` from the repo root a
 
 3. Open the repo in your editor (VS Code or another Copilot-supported IDE) and start Copilot Chat. The instructions are loaded automatically; no slash command, no restart needed.
 
-To use Copilot with tpm from another working repo, repeat step 2 in that repo's root.
+To use Copilot with tpm from another working repo, do the same thing in that repo's root with an absolute path. tpm's `AGENTS.md` is scope-clean (its repo-specific shipping rules live in `CONTRIBUTING.md`), so propagating it doesn't bleed tpm conventions into the other repo.
+
+```sh
+# from the other repo's root
+mkdir -p .github
+ln -sfn /path/to/tpm/AGENTS.md .github/copilot-instructions.md
+```
+
+If the other repo already has a `.github/copilot-instructions.md`, append tpm's content to it instead of replacing.
 
 ## Usage
 

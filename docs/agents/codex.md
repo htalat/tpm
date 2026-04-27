@@ -8,11 +8,22 @@ Codex CLI auto-loads `AGENTS.md` from the repo root. tpm's [`AGENTS.md`](../../A
 2. `cd` into a repo whose root has tpm's `AGENTS.md` (this repo, or any repo where you've copied/symlinked it).
 3. Run `codex` as you normally would.
 
-To use Codex with tpm from another working repo, copy or symlink `AGENTS.md` into that repo's root. Codex doesn't recurse into parent dirs.
+To use Codex with tpm from another working repo, you need tpm's `AGENTS.md` content at that repo's root — Codex doesn't recurse into parent dirs. tpm's `AGENTS.md` is scope-clean (it doesn't carry tpm's own shipping rules — those live in `CONTRIBUTING.md`), so it's safe to propagate.
+
+If the other repo has no `AGENTS.md`:
 
 ```sh
 # from the other repo's root
 ln -s /path/to/tpm/AGENTS.md AGENTS.md
+```
+
+If the other repo already has its own `AGENTS.md` (e.g., for shipping rules), append tpm's content rather than replacing it:
+
+```sh
+# from the other repo's root
+echo >> AGENTS.md
+echo "---" >> AGENTS.md
+cat /path/to/tpm/AGENTS.md >> AGENTS.md
 ```
 
 ## Usage

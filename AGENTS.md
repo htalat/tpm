@@ -1,8 +1,12 @@
 # Agent guide for tpm
 
-If you (an AI coding agent) are working with `tpm` — whether that's reading state from a tpm tree, executing a task on behalf of the user, or shipping code in this repo — start here.
+If you (an AI coding agent) are working with `tpm` — reading state from a tpm tree, executing a task on behalf of the user, scaffolding new work — start here.
 
-This doc is the canonical, agent-neutral guide. The Claude Code dispatch surface (`/tpm`, `/tpm discuss`, …) lives in `skills/tpm/SKILL.md`; it mirrors the action procedures below. Agents that don't have slash commands (Codex CLI, GitHub Copilot, plain SDK loops) follow these procedures directly when the user asks for the equivalent action in natural language. See `docs/agents/` for per-agent setup.
+This doc is the canonical, agent-neutral guide for **using tpm**. It's deliberately scope-free of any specific repo's shipping rules: each repo has its own workflow doc (`AGENTS.md` / `CLAUDE.md` / a `workflow:` pointer in `project.md`), and the action procedures below tell you to resolve and follow that workflow when shipping. So this file is safe to symlink or copy into other repos as ambient context — it won't bleed this repo's `npm test`/PR conventions into theirs.
+
+The Claude Code dispatch surface (`/tpm`, `/tpm discuss`, …) lives in `skills/tpm/SKILL.md`; it mirrors the action procedures below. Agents that don't have slash commands (Codex CLI, GitHub Copilot, plain SDK loops) follow these procedures directly when the user asks for the equivalent action in natural language. See `docs/agents/` for per-agent setup.
+
+For shipping rules specific to **this repo** (the tpm CLI itself), see `CONTRIBUTING.md`.
 
 ## CLI cheatsheet
 
@@ -127,30 +131,3 @@ Use when a task needs supporting files (subtasks, scratch notes, screenshots) al
 - If `tpm` errors with "No tpm tree configured", offer to run `tpm init` (default `~/tpm`).
 - Keep edits to the user's actual code repos separate from edits to task files — task files are tracker state, not code.
 - Surface CLI errors directly; don't paper over them.
-
-## Workflow
-
-This section is the workflow doc that the tpm skill resolves to when working on the **tpm CLI repo itself** (i.e., a task run inside `/Users/htalat/Developer/tpm`). Other repos have their own `AGENTS.md` / `CLAUDE.md` / `workflow:` pointer; tpm doesn't dictate.
-
-### Validate before committing
-- `npm test` must pass. The suite is fast (~200ms) and zero-dep — no excuse to skip.
-- If you added new behavior, add a test for it first. Aim for tests that would catch a real regression, not one-line getter exercises.
-
-### Ship via PR
-Every change — behavior, docs, tests, comment edits — goes via PR. Branch off `main`, push, `gh pr create`. Append the PR URL to the task's `prs:` frontmatter list.
-
-### Wait for CI green before merge
-After pushing the PR, the `test` workflow runs against the branch. **Don't merge until it's green.** If it fails, fix the underlying issue (don't disable the check, don't merge anyway). `gh pr checks <PR>` polls the status from the terminal; the PR page surfaces it too.
-
-### Closing the task
-Leave the task as `in-progress` after opening the PR. **Don't stamp `done` on PR open.** After the PR merges, run the **close out** action to close + archive.
-
-The close-out action checks PR merge status before closing (asks once if not merged) and, after a merged close, switches back to `main`, pulls, and runs `git branch -d <branch>` locally — no prompt. The remote branch isn't deleted automatically; if GitHub's "auto-delete head branches" toggle isn't on for this repo, the agent surfaces a `git push origin --delete <branch>` one-liner for you to run.
-
-### Commit hygiene
-- Use a HEREDOC for multi-line commit messages so formatting survives.
-- Commit messages explain *why*. The diff already shows *what*.
-
-### Skill scoping
-
-Two locations, decide deliberately. `skills/<name>/SKILL.md` is **user-scoped** — useful from any repo (e.g. `/tpm`); symlinked into `~/.claude/skills/` at setup. `.claude/skills/<name>/SKILL.md` is **repo-scoped** — only useful inside this repo (e.g. `/release`); auto-loaded by Claude Code when cwd is here, no symlink. If a new skill is useful outside the repo, user-scope it; otherwise repo-scope. Don't add a third category.
