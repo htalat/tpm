@@ -78,6 +78,33 @@ test("readConfig: throws on JSON number with a clear message", () => {
   assert.throws(() => readConfig(), /must be a JSON object, got number/);
 });
 
+test("readConfig: throws when root is not a string", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({ root: 42 }));
+  assert.throws(() => readConfig(), /"root" must be a string, got number/);
+});
+
+test("readConfig: throws when timezone is not a string", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({ timezone: ["UTC"] }));
+  assert.throws(() => readConfig(), /"timezone" must be a string, got array/);
+});
+
+test("readConfig: drops unknown keys (only validates root + timezone)", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x", garbage: { nested: true } }));
+  assert.deepEqual(readConfig(), { root: "/x" });
+});
+
+test("readConfig: missing optional fields produce undefined, not present in object", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x" }));
+  const cfg = readConfig();
+  assert.equal(cfg.root, "/x");
+  assert.equal(cfg.timezone, undefined);
+  assert.ok(!("timezone" in cfg));
+});
+
 test("configuredTimezone: defaults when config missing", () => {
   assert.equal(configuredTimezone(), DEFAULT_TIMEZONE);
 });
