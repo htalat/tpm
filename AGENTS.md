@@ -38,6 +38,8 @@ After pushing the PR, the `test` workflow runs against the branch. **Don't merge
 ### Closing the task
 Leave the task as `in-progress` after opening the PR. **Don't stamp `done` on PR open.** After the PR merges, run `/tpm done <task>` to close + archive.
 
+`/tpm done` checks PR merge status before closing (asks once if not merged) and, after a merged close, switches back to `main`, pulls, and runs `git branch -d <branch>` locally — no prompt. The remote branch isn't deleted automatically; if GitHub's "auto-delete head branches" toggle isn't on for this repo, the agent surfaces a `git push origin --delete <branch>` one-liner for you to run.
+
 ### Commit hygiene
 - Use a HEREDOC for multi-line commit messages so formatting survives.
 - Commit messages explain *why*. The diff already shows *what*.
