@@ -1,6 +1,6 @@
 {
   "name": "tpm",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Markdown-based task & project manager. CLI-driven, agent-friendly.",
   "type": "module",
   "private": true,
