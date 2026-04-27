@@ -224,6 +224,21 @@ test("newTask --parent: rejects unknown parent", () => {
   }
 });
 
+test("newTask: top-level numbering counts folder-form siblings, not just .md files", () => {
+  const root = mkTempDir();
+  try {
+    setupProject(root, "alpha");
+    newTask(root, "alpha", "one");                  // 001-one.md
+    newTask(root, "alpha", "two");                  // 002-two.md
+    newTask(root, "alpha", "child", { parent: "two" }); // folds 002-two into a folder
+    const next = newTask(root, "alpha", "three");
+    // Without folder-aware numbering, this would pick 002 again and collide with 002-two/.
+    assert.equal(next, join(root, "alpha", "tasks", "003-three.md"));
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 test("newTask --parent: rejects nesting under a child (no grandchildren)", () => {
   const root = mkTempDir();
   try {

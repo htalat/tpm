@@ -66,8 +66,8 @@ export function newTask(root: string, projectSlug: string, taskSlug: string, opt
   }
 
   const existing = [
-    ...taskFiles(containerDir).filter(f => f !== "task.md"),
-    ...taskFiles(archiveContainer),
+    ...numberedEntries(containerDir),
+    ...numberedEntries(archiveContainer),
   ];
   let max = 0;
   for (const f of existing) {
@@ -116,8 +116,9 @@ function injectParent(rendered: string, parentSlug: string): string {
   return stringify(out, body);
 }
 
-function taskFiles(dir: string): string[] {
-  return existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith(".md")) : [];
+function numberedEntries(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter(name => /^\d{3,}-/.test(name));
 }
 
 function render(tmpl: string, vars: Record<string, string>): string {
