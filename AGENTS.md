@@ -43,3 +43,7 @@ Leave the task as `in-progress` after opening the PR. **Don't stamp `done` on PR
 ### Commit hygiene
 - Use a HEREDOC for multi-line commit messages so formatting survives.
 - Commit messages explain *why*. The diff already shows *what*.
+
+### Skill scoping
+
+Two locations, decide deliberately. `skills/<name>/SKILL.md` is **user-scoped** — useful from any repo (e.g. `/tpm`); symlinked into `~/.claude/skills/` at setup. `.claude/skills/<name>/SKILL.md` is **repo-scoped** — only useful inside this repo (e.g. `/release`); auto-loaded by Claude Code when cwd is here, no symlink. If a new skill is useful outside the repo, user-scope it; otherwise repo-scope. Don't add a third category.

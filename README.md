@@ -11,7 +11,8 @@ This repo (the CLI install):
 bin/tpm                            entry (bash shim → src/cli.ts)
 src/                               TypeScript implementation
 .tpm/templates/                    distributed default templates
-skills/tpm/SKILL.md                Claude Code skill (symlink target)
+skills/<name>/SKILL.md             user-scoped Claude Code skills (symlinked into ~/.claude/skills/)
+.claude/skills/<name>/SKILL.md     repo-scoped Claude Code skills (auto-loaded only inside this repo)
 ```
 
 A tpm tree (data — lives wherever `tpm init` was run, e.g. `~/Documents/projects/`):
@@ -54,9 +55,12 @@ tpm init ~/Documents/projects                 # writes ~/.tpm/config.json -> ~/D
 # or: tpm init ~/Dropbox/projects             # put data wherever you want it synced
 tpm root                                      # confirms the tree root
 
-# 4. (Optional) Install the Claude Code skill.
+# 4. (Optional) Install the user-scoped Claude Code skills.
+# Symlink every dir under skills/ into ~/.claude/skills/. Repo-scoped skills
+# under .claude/skills/ are auto-loaded by Claude Code inside this repo and
+# don't need symlinking — see "Skill scoping" below.
 mkdir -p ~/.claude/skills
-ln -sf "$PWD/skills/tpm" ~/.claude/skills/tpm
+for d in skills/*/; do ln -sfn "$PWD/$d" "$HOME/.claude/skills/$(basename "$d")"; done
 # Restart any running Claude Code session, then `/tpm` becomes available.
 
 # 5. (Optional) Skip permission prompts for the tpm CLI.
@@ -73,6 +77,15 @@ tpm ls
 tpm context sandbox/first-thing | head -20
 tpm report && open reports/index.html
 ```
+
+### Skill scoping
+
+Claude Code skills in this repo come in two flavors. The directory decides which:
+
+- `skills/<name>/SKILL.md` — **user-scoped**. Useful from any repo (e.g. `/tpm` for tracking work). Symlinked into `~/.claude/skills/` once during setup; the loop above handles future additions automatically.
+- `.claude/skills/<name>/SKILL.md` — **repo-scoped**. Only useful when working inside this repo (e.g. `/release` for cutting tpm releases). Auto-loaded by Claude Code when cwd is under the repo. No symlink, no setup step.
+
+If a skill could go either way, force a choice. Useful outside the repo → user-scope. Otherwise → repo-scope. Don't add a third category.
 
 ### Syncing data across devices
 
@@ -336,7 +349,7 @@ Two layers — pick the right one for the situation.
 /release major
 ```
 
-Install the skill once: `ln -sf "$PWD/skills/release" ~/.claude/skills/release`.
+The skill lives at `.claude/skills/release/` and is repo-scoped — Claude Code auto-loads it whenever cwd is inside this repo, no install step.
 
 **`scripts/release.sh`** (mechanical, no agent): when you already know the bump and have notes ready (or want to use GitHub's auto-generated notes).
 
