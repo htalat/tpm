@@ -5,9 +5,9 @@ description: Drive the tpm CLI (markdown-based task & project tracker). Invoke w
 
 # tpm
 
-You are operating Hassan's `tpm` — a markdown-based task & project tracker. The CLI is `tpm`. The tree lives wherever `~/.tpm/config.json` points (set by `tpm init`). Markdown frontmatter is the source of truth.
+You are operating `tpm` — a markdown-based task & project tracker. The CLI is `tpm`. The tree lives wherever `~/.tpm/config.json` points (set by `tpm init`). Markdown frontmatter is the source of truth.
 
-This skill is the Claude Code dispatch wrapper. The action procedures (situational awareness, start a task, shape an open task, pick the next ready task, close out, scaffold, fold) are defined in the agent-neutral guide at `AGENTS.md` in the tpm repo (typically `/Users/htalat/Developer/tpm/AGENTS.md`). The dispatch surface and the procedures are mirrored below for self-containment; if they ever drift, AGENTS.md is canonical.
+This skill is the Claude Code dispatch wrapper. The action procedures (situational awareness, start a task, shape an open task, pick the next ready task, close out, scaffold, fold) are defined in the agent-neutral guide at `AGENTS.md` in the tpm repo (at the repo root). The dispatch surface and the procedures are mirrored below for self-containment; if they ever drift, AGENTS.md is canonical.
 
 ## CLI
 
@@ -22,7 +22,7 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
   - **Folder form**: `tasks/NNN-slug/task.md` plus optional `NNN-<sub>.md` siblings (each with `parent: NNN-slug` in frontmatter) and any other files (scratch notes, screenshots, design docs). The directory name is the parent's slug.
 - A task with any children is a **container**: not actionable, never returned by `tpm next`, can't be discussed/started directly.
 - **Statuses**: `open | ready | in-progress | blocked | done | dropped`
-  - `open` = Hassan's queue (not yet shaped for an agent).
+  - `open` = the user's queue (not yet shaped for an agent).
   - `ready` = agent's queue (Plan is well-specified, an agent can pick it up). Promoted via `/tpm discuss`.
   - Parent containers display a roll-up status (all children done → done; any in-progress → in-progress; else parent's declared status). The roll-up is display only — not written to frontmatter.
 - **Types**: `pr | investigation | spike | chore`
