@@ -92,11 +92,22 @@ Auto-select mode. Resolves the next eligible leaf task (parents are skipped) and
 
 ### `done <task>` — close out
 1. Read the task file.
-2. Fill `## Outcome` with what shipped, what changed, what was learned. Reference PRs.
-3. Set `status: done` and `closed: $(tpm now)` in frontmatter.
-4. Append `- $(tpm now): closed` to `## Log`.
-5. Run `tpm archive <task>` to move the completed task under `tasks/archive/`.
-6. Print a one-line confirmation with the new status and archive path.
+2. **Verify PR merge status** if `prs:` is non-empty. For each PR URL, run `gh pr view <url> --json state --jq '.state'`.
+   - At least one `MERGED` → proceed.
+   - All `OPEN` or `CLOSED` (none merged) → ask once: "PR not merged; close anyway?" Respect the answer. This is the only legitimate ask in close-out.
+   - `gh` not installed or not auth'd → fall back to the same ask. Don't fail hard.
+   - `prs:` empty (direct-push task) → skip merge detection.
+3. Fill `## Outcome` with what shipped, what changed, what was learned. Reference PRs.
+4. Set `status: done` and `closed: $(tpm now)` in frontmatter.
+5. Append `- $(tpm now): closed` to `## Log`.
+6. Run `tpm archive <task>` to move the completed task under `tasks/archive/`.
+7. **Cleanup local branch** (when at least one linked PR was merged). For each merged PR:
+   - `BRANCH=$(gh pr view <url> --json headRefName --jq '.headRefName')`. Skip if `BRANCH` equals the project's default branch (typically `main`).
+   - `cd "$(tpm path <task>)"`. If the local branch doesn't exist (`git rev-parse --verify "$BRANCH"` fails), skip — already cleaned up.
+   - `git checkout main && git pull --ff-only`.
+   - `git branch -d "$BRANCH"`. **Use `-d`, not `-D`** — if git refuses (e.g., you kept working on the branch after merge), surface the message and let the user decide. Don't force-delete.
+   - Check the remote: `git ls-remote --heads origin "$BRANCH"`. If it still exists (GitHub's auto-delete-head-branches isn't on for this repo), print the one-liner `git push origin --delete <BRANCH>` for the user to copy/paste. Don't run it silently.
+8. Print a one-line confirmation: new status, archive path, and the remote-delete hint if applicable.
 
 ### `new <project> <slug>` — scaffold a task (shorthand)
 Two args after `new` ⇒ task. Three with leading `project` ⇒ project.
