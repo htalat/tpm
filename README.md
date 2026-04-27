@@ -11,8 +11,11 @@ This repo (the CLI install):
 bin/tpm                            entry (bash shim → src/cli.ts)
 src/                               TypeScript implementation
 .tpm/templates/                    distributed default templates
+AGENTS.md                          agent-neutral guide for using tpm (safe to drop into other repos)
+CONTRIBUTING.md                    shipping rules for the tpm CLI repo itself
 skills/<name>/SKILL.md             user-scoped Claude Code skills (symlinked into ~/.claude/skills/)
 .claude/skills/<name>/SKILL.md     repo-scoped Claude Code skills (auto-loaded only inside this repo)
+docs/agents/                       per-agent setup notes (Claude Code, Codex, Copilot)
 ```
 
 A tpm tree (data — lives wherever `tpm init` was run, e.g. `~/Documents/projects/`):
@@ -273,6 +276,16 @@ tpm context my-project/refactor-auth | claude
 ```
 
 `tpm context` emits a self-contained briefing: project goal, task body, file path, and a working agreement that tells the agent where to log progress and update status.
+
+### Using tpm with an AI coding agent
+
+`AGENTS.md` is the canonical, agent-neutral guide — CLI cheatsheet, schema, slug resolution, action procedures, conventions. Per-agent setup lives under `docs/agents/`:
+
+- [Claude Code](docs/agents/claude-code.md) — `/tpm` slash command via the user-scoped skill at `skills/tpm/`.
+- [OpenAI Codex CLI](docs/agents/codex.md) — auto-loads `AGENTS.md` at the repo root; invoke actions in natural language.
+- [GitHub Copilot](docs/agents/copilot.md) — symlink `AGENTS.md` to `.github/copilot-instructions.md`.
+
+For other agents, the working agreement in `tpm context` and `AGENTS.md` should be enough — paste them in or point the agent at the files.
 
 ### `open` vs `ready`: the agent gate
 

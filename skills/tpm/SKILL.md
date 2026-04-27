@@ -7,22 +7,11 @@ description: Drive the tpm CLI (markdown-based task & project tracker). Invoke w
 
 You are operating Hassan's `tpm` — a markdown-based task & project tracker. The CLI is `tpm`. The tree lives wherever `~/.tpm/config.json` points (set by `tpm init`). Markdown frontmatter is the source of truth.
 
-## CLI cheatsheet
+This skill is the Claude Code dispatch wrapper. The action procedures (situational awareness, start a task, shape an open task, pick the next ready task, close out, scaffold, fold) are defined in the agent-neutral guide at `AGENTS.md` in the tpm repo (typically `/Users/htalat/Developer/tpm/AGENTS.md`). The dispatch surface and the procedures are mirrored below for self-containment; if they ever drift, AGENTS.md is canonical.
 
-```
-tpm root                                            print the tree root
-tpm ls [--all] [--archived] [--flat] [--status open|ready|in-progress|blocked|done|dropped] [--project <slug>]
-tpm context <task | project/task | parent/child>    full briefing (file path, project goal, body, working agreement)
-tpm path <project | task | project/task>            print local repo checkout
-tpm archive <task | project/task>                   move a done/dropped task (or whole folder-form parent) to tasks/archive/
-tpm fold <task | project/task>                      promote a file-form task to folder-form (idempotent)
-tpm next [--project <slug>] [--autonomous]          print the next ready leaf task (oldest first)
-tpm new project <slug> [--name "..."] [--repo <url>] [--path <local-dir>]
-tpm new task <project> <slug> [--title "..."] [--parent <parent-slug>]
-tpm report [--md]                                   reports/index.html
-tpm now                                             timestamp in the configured timezone
-tpm init [<dir>]                                    bootstrap a tree (default ~/tpm)
-```
+## CLI
+
+Run `tpm --help` to discover every subcommand and flag. The action procedures below name the specific commands they need.
 
 ## Schema
 
@@ -45,16 +34,30 @@ tpm init [<dir>]                                    bootstrap a tree (default ~/
 - If a bare slug matches multiple tasks (e.g., two children named `discuss` under different parents), the CLI errors and asks you to qualify it.
 - Qualified forms: `<project>/<task>`, `<parent>/<child>`, `<project>/<parent>/<child>`. Use whichever disambiguates.
 
-## Dispatch
+## Slash command → action mapping
 
-Read `$ARGUMENTS` and pick a mode. If empty, default to "no args".
+| Slash command                       | Action                                |
+|-------------------------------------|---------------------------------------|
+| `/tpm`                              | Situational awareness (no specific task) |
+| `/tpm <slug>`                       | Start a task                          |
+| `/tpm discuss <slug>`               | Shape an open task                    |
+| `/tpm next`                         | Pick the next ready task and run it   |
+| `/tpm done <slug>`                  | Close out                             |
+| `/tpm new <project> <slug>`         | Scaffold a task                       |
+| `/tpm new project <slug>`           | Scaffold a project                    |
+| `/tpm fold <slug>`                  | Fold a task to folder-form            |
+| `/tpm ls`, `/tpm report`, `/tpm root`, `/tpm path`, `/tpm context`, `/tpm init` | Pass through to the corresponding `tpm` subcommand |
 
-### No args — situational awareness
+Read `$ARGUMENTS` and pick the matching action. If empty, default to "situational awareness".
+
+## Action procedures
+
+### Situational awareness
 1. Run `tpm ls --status in-progress`, then `tpm ls --status ready`, then `tpm ls --status open`.
 2. Show a one-screen summary: what's live (`in-progress`), what's queued for an agent (`ready`), and what's awaiting shaping (`open`).
 3. Ask which task to work on, or whether to scaffold a new one.
 
-### `<task>` or `<project>/<task>` — start working on a task
+### Start a task (`/tpm <slug>` or `/tpm <project>/<slug>`)
 This is the primary mode.
 1. Run `tpm context <arg>`. Read the briefing in full.
 2. If `tpm context` reports the task is a parent container (has children), don't try to work it directly. Print the children (`tpm ls --project <p>`) and ask the user which child to pick up.
@@ -69,7 +72,7 @@ This is the primary mode.
 8. **To ship**, follow the workflow doc verbatim: validate (run any checks/tests it names), commit, push, open PR if directed, close the task if directed. If you open a PR, append its URL to the `prs:` list in the task's frontmatter. If the workflow says "close after merge" (the default for `type: pr`), leave the task `in-progress` and stop after pushing the PR — the user (or a follow-up `/tpm done <task>`) closes it once merged.
 9. If you hit a blocker you can't resolve: set `status: blocked`, log why, and surface it to the user instead of guessing.
 
-### `discuss <task>` or `discuss <project>/<task>` — pre-execution discussion
+### Shape an open task (`/tpm discuss <slug>`)
 Shape a task's Plan before any execution. Pure conversation that lands in the task body — never edits code, never `cd`s into the repo, never flips status to `in-progress`.
 1. Run `tpm context <arg>`. Read the briefing in full.
 2. If the task is a parent container (has children), discuss is not applicable — list the children and ask which one to shape instead.
@@ -82,15 +85,15 @@ Shape a task's Plan before any execution. Pure conversation that lands in the ta
 
 Discuss mode is the canonical way to move a task from `open` to `ready`. A human can also flip the status manually, but `/tpm discuss` encodes the discipline (Context/Plan populated, Log timestamped, explicit confirmation).
 
-### `next` — pick the next ready task and run it
-Auto-select mode. Resolves the next eligible leaf task (parents are skipped) and dispatches the primary `<task>` mode on it.
+### Pick the next ready task and run it (`/tpm next`)
+Auto-select mode. Resolves the next eligible leaf task (parents are skipped) and dispatches the **start a task** mode on it.
 1. Run `tpm next` (optionally with `--project <slug>`). It prints a qualified slug (`<project>/<slug>` or `<project>/<parent>/<child>`) on success or exits non-zero if nothing is ready.
 2. If non-zero, surface the message ("No ready tasks…") and stop. Don't fall back to `open` tasks — the human needs to promote one via `/tpm discuss` first.
-3. On success, dispatch the primary `<task>` mode on the returned slug — same flow as if the user had typed `/tpm <slug>` directly (flip status to `in-progress`, `cd`, execute Plan, log progress, open PR).
+3. On success, dispatch the **start a task** mode on the returned slug — same flow as if the user had typed `/tpm <slug>` directly (flip status to `in-progress`, `cd`, execute Plan, log progress, open PR).
 
 `/tpm next` is the manual path. Use `tpm next --autonomous` only from scheduled/unattended runs (filters to tasks with `allow_orchestrator: true`); the manual `/tpm next` skill mode does not pass `--autonomous`.
 
-### `done <task>` — close out
+### Close out (`/tpm done <slug>`)
 1. Read the task file.
 2. **Verify PR merge status** if `prs:` is non-empty. For each PR URL, run `gh pr view <url> --json state --jq '.state'`.
    - At least one `MERGED` → proceed.
@@ -109,17 +112,17 @@ Auto-select mode. Resolves the next eligible leaf task (parents are skipped) and
    - Check the remote: `git ls-remote --heads origin "$BRANCH"`. If it still exists (GitHub's auto-delete-head-branches isn't on for this repo), print the one-liner `git push origin --delete <BRANCH>` for the user to copy/paste. Don't run it silently.
 8. Print a one-line confirmation: new status, archive path, and the remote-delete hint if applicable.
 
-### `new <project> <slug>` — scaffold a task (shorthand)
+### Scaffold (`/tpm new <project> <slug>`)
 Two args after `new` ⇒ task. Three with leading `project` ⇒ project.
 1. Run the appropriate `tpm new ...` with `--title`/`--name` if the user hinted at one.
 2. Open the new file. Either populate Context/Plan from the user's request or ask for them.
 3. For `new project`, also ask about `--repo` and `--path` if not provided.
 4. To create a child task, pass `--parent <parent-slug>` to `tpm new task`. The parent is folded automatically if it isn't already.
 
-### `fold <task>` — promote to folder-form
+### Fold a task to folder-form (`/tpm fold <slug>`)
 Use when a task needs supporting files (subtasks, scratch notes, screenshots) alongside it. `tpm fold <task>` rewrites `tasks/NNN-slug.md` to `tasks/NNN-slug/task.md`. Idempotent. Children can then be added with `tpm new task <project> <child> --parent <slug>`.
 
-### Pass-through (`ls`, `report`, `root`, `path`, `context`, `init`)
+### Pass-through (`/tpm ls`, `/tpm report`, `/tpm root`, `/tpm path`, `/tpm context`, `/tpm init`)
 Just run the corresponding `tpm` subcommand and print the result.
 
 ## Conventions
