@@ -8,22 +8,9 @@ The Claude Code dispatch surface (`/tpm`, `/tpm discuss`, …) lives in `skills/
 
 For shipping rules specific to **this repo** (the tpm CLI itself), see `CONTRIBUTING.md`.
 
-## CLI cheatsheet
+## CLI
 
-```
-tpm root                                            print the tree root
-tpm ls [--all] [--archived] [--flat] [--status open|ready|in-progress|blocked|done|dropped] [--project <slug>]
-tpm context <task | project/task | parent/child>    full briefing (file path, project goal, body, working agreement)
-tpm path <project | task | project/task>            print local repo checkout
-tpm archive <task | project/task>                   move a done/dropped task (or whole folder-form parent) to tasks/archive/
-tpm fold <task | project/task>                      promote a file-form task to folder-form (idempotent)
-tpm next [--project <slug>] [--autonomous]          print the next ready leaf task (oldest first)
-tpm new project <slug> [--name "..."] [--repo <url>] [--path <local-dir>]
-tpm new task <project> <slug> [--title "..."] [--parent <parent-slug>]
-tpm report [--md]                                   reports/index.html
-tpm now                                             timestamp in the configured timezone
-tpm init [<dir>]                                    bootstrap a tree (default ~/tpm)
-```
+Run `tpm --help` to discover every subcommand and flag. The action procedures below name the specific commands they need.
 
 ## Schema
 
