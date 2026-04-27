@@ -29,16 +29,12 @@ This section is the workflow doc that the tpm skill resolves to when working on 
 - `npm test` must pass. The suite is fast (~200ms) and zero-dep — no excuse to skip.
 - If you added new behavior, add a test for it first. Aim for tests that would catch a real regression, not one-line getter exercises.
 
-### Direct-push or PR
-- **Direct-push to `main`** is allowed for: doc-only changes (README, AGENTS.md, comment edits) with no behavior change; one-line typo fixes.
-- **PR** for everything else: new behavior, refactors, anything touching tests, anything that changes a CLI surface, anything cross-cutting. Branch off `main`, push, `gh pr create`. Append the PR URL to the task's `prs:` frontmatter list.
-- When in doubt, PR. The CI gate is cheap; the cost of a broken `main` ripples through every downstream `tpm` use.
+### Ship via PR
+Every change — behavior, docs, tests, comment edits — goes via PR. Branch off `main`, push, `gh pr create`. Append the PR URL to the task's `prs:` frontmatter list.
 
 ### Closing the task
-- **Direct-push tasks**: close in the same `/tpm` run — fill `## Outcome`, set `status: done`, run `tpm archive <task>`.
-- **PR-typed tasks**: leave the task as `in-progress` after opening the PR. **Don't stamp `done` on PR open.** After the PR merges, run `/tpm done <task>` to close + archive.
+Leave the task as `in-progress` after opening the PR. **Don't stamp `done` on PR open.** After the PR merges, run `/tpm done <task>` to close + archive.
 
 ### Commit hygiene
 - Use a HEREDOC for multi-line commit messages so formatting survives.
-- Co-author with `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>` (or whichever model you are) when an agent did the work.
 - Commit messages explain *why*. The diff already shows *what*.
