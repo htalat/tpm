@@ -20,3 +20,21 @@ If you (an AI coding agent) are dropped into a tpm tree, here's how to interact 
 - Don't reformat unrelated frontmatter or rename slugs.
 - Don't delete the `## Outcome` section even if empty — it's a closing prompt.
 - Don't rewrite project goals without explicit approval.
+
+## Workflow
+
+This section is the workflow doc that the tpm skill resolves to when working on the **tpm CLI repo itself** (i.e., a `/tpm <task>` run inside `/Users/htalat/Developer/tpm`). Other repos have their own `AGENTS.md` / `CLAUDE.md` / `workflow:` pointer; tpm doesn't dictate.
+
+### Validate before committing
+- `npm test` must pass. The suite is fast (~200ms) and zero-dep — no excuse to skip.
+- If you added new behavior, add a test for it first. Aim for tests that would catch a real regression, not one-line getter exercises.
+
+### Ship via PR
+Every change — behavior, docs, tests, comment edits — goes via PR. Branch off `main`, push, `gh pr create`. Append the PR URL to the task's `prs:` frontmatter list.
+
+### Closing the task
+Leave the task as `in-progress` after opening the PR. **Don't stamp `done` on PR open.** After the PR merges, run `/tpm done <task>` to close + archive.
+
+### Commit hygiene
+- Use a HEREDOC for multi-line commit messages so formatting survives.
+- Commit messages explain *why*. The diff already shows *what*.

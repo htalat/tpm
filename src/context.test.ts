@@ -176,6 +176,66 @@ test("context: task-level repo override wins for local", () => {
   }
 });
 
+test("context: workflow from project surfaces in briefing + working agreement names the doc", () => {
+  const root = mkTempDir();
+  try {
+    mkdirSync(join(root, "p", "tasks"), { recursive: true });
+    writeFileSync(
+      join(root, "p", "project.md"),
+      `---\nname: P\nslug: p\nstatus: active\nworkflow: docs/agents.md\n---\n\n# P\n`,
+    );
+    writeFileSync(
+      join(root, "p", "tasks", "001-t.md"),
+      `---\ntitle: T\nslug: t\nproject: p\nstatus: open\ntype: pr\n---\n\n# T\n`,
+    );
+    const out = context(root, "p/t");
+    assert.match(out, /Workflow: docs\/agents\.md/);
+    assert.match(out, /follow the repo's workflow doc: read docs\/agents\.md/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("context: task-level workflow overrides project-level workflow", () => {
+  const root = mkTempDir();
+  try {
+    mkdirSync(join(root, "p", "tasks"), { recursive: true });
+    writeFileSync(
+      join(root, "p", "project.md"),
+      `---\nname: P\nslug: p\nstatus: active\nworkflow: AGENTS.md\n---\n\n# P\n`,
+    );
+    writeFileSync(
+      join(root, "p", "tasks", "001-t.md"),
+      `---\ntitle: T\nslug: t\nproject: p\nstatus: open\ntype: pr\nworkflow: docs/special-flow.md\n---\n\n# T\n`,
+    );
+    const out = context(root, "p/t");
+    assert.match(out, /Workflow: docs\/special-flow\.md/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("context: no workflow set -> working agreement names the fallback chain", () => {
+  const root = mkTempDir();
+  try {
+    mkdirSync(join(root, "p", "tasks"), { recursive: true });
+    writeFileSync(
+      join(root, "p", "project.md"),
+      `---\nname: P\nslug: p\nstatus: active\n---\n\n# P\n`,
+    );
+    writeFileSync(
+      join(root, "p", "tasks", "001-t.md"),
+      `---\ntitle: T\nslug: t\nproject: p\nstatus: open\ntype: pr\n---\n\n# T\n`,
+    );
+    const out = context(root, "p/t");
+    assert.doesNotMatch(out, /Workflow:/);
+    assert.match(out, /look for AGENTS\.md, then CLAUDE\.md, in the repo root/);
+    assert.match(out, /If no doc is found, ask before each step/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 test("repoPath: returns task-level local override", () => {
   const root = mkTempDir();
   try {

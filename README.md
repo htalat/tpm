@@ -159,6 +159,7 @@ repo:
   remote: https://github.com/owner/repo
   local:  /Users/you/code/repo
 tags: []
+workflow: AGENTS.md   # optional: path (relative to repo root) to the doc agents follow when shipping work
 ```
 
 **`<root>/<slug>/tasks/NNN-<slug>.md`**
@@ -173,6 +174,7 @@ closed:               # YYYY-MM-DD HH:MM ZZZ when status flips to done
 prs: []               # list of PR URLs
 tags: []
 parent: NNN-foo       # optional: marks this as a child within a folder-form parent
+workflow: AGENTS.md   # optional: per-task workflow override; falls back to project.workflow if unset
 ```
 
 Timestamps are written in the timezone from `~/.tpm/config.json` (default `America/Los_Angeles`). Old date-only values (`2026-04-25`) keep parsing — values are display strings only.
@@ -225,6 +227,28 @@ A bare slug (`/tpm hierarchical-tasks`) works when it's globally unambiguous. If
 
 - `tpm archive <task>` on a folder-form parent moves the whole folder to `tasks/archive/<parent>/`. The parent must have no live children.
 - `tpm archive <child>` moves just the child file to `tasks/archive/<parent>/<child>.md`. The live parent stays in place.
+
+## Per-repo workflow
+
+Different repos need different shipping flows — a solo repo direct-pushes to main, a team repo always PRs, a sensitive repo uses draft PRs and waits for human review. tpm doesn't enumerate strategies; it points the agent at the repo's own workflow doc.
+
+`tpm context` surfaces a `Workflow:` line in the briefing whenever the field is set, and the working agreement names the resolution chain the agent follows after `cd`-ing into `repo.local`:
+
+1. If `workflow:` is set on the task or project, read that file (path relative to the repo root).
+2. Else look for `AGENTS.md`, then `CLAUDE.md`, in the repo root.
+3. Else ask before each shipping step (commit, push, PR, close).
+
+The doc itself is free-form prose. Tell the agent what to validate, where commits go, when to open a PR vs draft, when to close the task. Example shape:
+
+```markdown
+## Workflow
+
+- Validate: `npm test` must pass before commit.
+- Direct-push to `main` for doc-only changes; PR for behavior changes.
+- For PR-typed tasks, leave the task in-progress after opening the PR; close after merge.
+```
+
+Per-task `workflow:` overrides the project default — useful for one-off sensitive work in an otherwise direct-push repo.
 
 ## Delegating to a coding agent
 
