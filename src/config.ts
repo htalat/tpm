@@ -15,12 +15,17 @@ export const DEFAULT_TIMEZONE = "America/Los_Angeles";
 export function readConfig(): Config {
   if (!existsSync(CONFIG_PATH)) return {};
   const text = readFileSync(CONFIG_PATH, "utf8");
+  let obj: unknown;
   try {
-    const obj = JSON.parse(text);
-    return obj && typeof obj === "object" ? obj as Config : {};
+    obj = JSON.parse(text);
   } catch (e) {
     throw new Error(`Failed to parse ${CONFIG_PATH}: ${(e as Error).message}`);
   }
+  if (obj === null || typeof obj !== "object" || Array.isArray(obj)) {
+    const got = obj === null ? "null" : Array.isArray(obj) ? "array" : typeof obj;
+    throw new Error(`${CONFIG_PATH} must be a JSON object, got ${got}`);
+  }
+  return obj as Config;
 }
 
 export function writeConfig(cfg: Config): void {

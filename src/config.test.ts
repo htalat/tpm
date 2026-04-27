@@ -54,6 +54,30 @@ test("readConfig: throws on malformed JSON with the path in the message", () => 
   assert.throws(() => readConfig(), new RegExp(`Failed to parse ${CONFIG_PATH.replace(/[/]/g, "\\/")}`));
 });
 
+test("readConfig: throws on JSON array (not silently coerced to {})", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, "[]");
+  assert.throws(() => readConfig(), /must be a JSON object, got array/);
+});
+
+test("readConfig: throws on JSON null with a clear message", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, "null");
+  assert.throws(() => readConfig(), /must be a JSON object, got null/);
+});
+
+test("readConfig: throws on JSON string with a clear message", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, "\"hello\"");
+  assert.throws(() => readConfig(), /must be a JSON object, got string/);
+});
+
+test("readConfig: throws on JSON number with a clear message", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, "42");
+  assert.throws(() => readConfig(), /must be a JSON object, got number/);
+});
+
 test("configuredTimezone: defaults when config missing", () => {
   assert.equal(configuredTimezone(), DEFAULT_TIMEZONE);
 });
