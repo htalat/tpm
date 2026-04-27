@@ -54,6 +54,57 @@ test("readConfig: throws on malformed JSON with the path in the message", () => 
   assert.throws(() => readConfig(), new RegExp(`Failed to parse ${CONFIG_PATH.replace(/[/]/g, "\\/")}`));
 });
 
+test("readConfig: throws on JSON array (not silently coerced to {})", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, "[]");
+  assert.throws(() => readConfig(), /must be a JSON object, got array/);
+});
+
+test("readConfig: throws on JSON null with a clear message", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, "null");
+  assert.throws(() => readConfig(), /must be a JSON object, got null/);
+});
+
+test("readConfig: throws on JSON string with a clear message", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, "\"hello\"");
+  assert.throws(() => readConfig(), /must be a JSON object, got string/);
+});
+
+test("readConfig: throws on JSON number with a clear message", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, "42");
+  assert.throws(() => readConfig(), /must be a JSON object, got number/);
+});
+
+test("readConfig: throws when root is not a string", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({ root: 42 }));
+  assert.throws(() => readConfig(), /"root" must be a string, got number/);
+});
+
+test("readConfig: throws when timezone is not a string", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({ timezone: ["UTC"] }));
+  assert.throws(() => readConfig(), /"timezone" must be a string, got array/);
+});
+
+test("readConfig: drops unknown keys (only validates root + timezone)", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x", garbage: { nested: true } }));
+  assert.deepEqual(readConfig(), { root: "/x" });
+});
+
+test("readConfig: missing optional fields produce undefined, not present in object", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x" }));
+  const cfg = readConfig();
+  assert.equal(cfg.root, "/x");
+  assert.equal(cfg.timezone, undefined);
+  assert.ok(!("timezone" in cfg));
+});
+
 test("configuredTimezone: defaults when config missing", () => {
   assert.equal(configuredTimezone(), DEFAULT_TIMEZONE);
 });
