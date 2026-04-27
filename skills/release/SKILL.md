@@ -31,10 +31,10 @@ Same as above but skip the recommendation step; just draft notes for the request
 
 ### Releasing
 Once the user confirms:
-1. Write the drafted notes to `RELEASE_NOTES.md` at the repo root (will be picked up by `--notes`).
-2. Run `./scripts/release.sh <bump> --notes RELEASE_NOTES.md`.
+1. Write the drafted notes to `tmp/RELEASE_NOTES.md` (the repo's `tmp/` is gitignored, so the file won't trip the script's clean-tree check).
+2. Run `./scripts/release.sh <bump> --notes tmp/RELEASE_NOTES.md`.
 3. The script prints the GitHub release URL on success — surface it to the user.
-4. Delete `RELEASE_NOTES.md` (it served its purpose; not committed to the repo).
+4. Delete `tmp/RELEASE_NOTES.md` (it served its purpose).
 
 If the script aborts (dirty tree, behind origin, tests fail, tag clash), surface the message verbatim and stop. Don't try to fix the precondition silently.
 
