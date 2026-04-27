@@ -36,6 +36,8 @@ export function context(root: string, query: string): string {
   lines.push(`- Project: ${str(project.data.name) ?? project.slug} (${project.slug})`);
   if (repo.remote) lines.push(`- Repo: ${repo.remote}`);
   if (repo.local) lines.push(`- Local: ${repo.local}`);
+  const workflow = str(task.data.workflow) ?? str(project.data.workflow);
+  if (workflow) lines.push(`- Workflow: ${workflow}`);
   lines.push(`- Status: ${str(task.data.status) ?? "?"}  ·  Type: ${str(task.data.type) ?? "?"}`);
   if (Array.isArray(task.data.prs) && task.data.prs.length) {
     lines.push(`- PRs: ${task.data.prs.join(", ")}`);
@@ -73,6 +75,7 @@ export function context(root: string, query: string): string {
   lines.push(`- When done, fill "Outcome", set status: done in the frontmatter, and stamp closed: <YYYY-MM-DD>.`);
   lines.push(`- If you open a PR, append its URL to the prs: list in the frontmatter.`);
   lines.push(`- Surface blockers explicitly rather than guessing.`);
+  lines.push(`- For shipping (commit / push / PR / close), follow the repo's workflow doc: ${workflow ? `read ${workflow}` : "look for AGENTS.md, then CLAUDE.md, in the repo root"}. If no doc is found, ask before each step.`);
 
   return lines.join("\n");
 }

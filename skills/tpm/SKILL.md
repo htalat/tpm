@@ -60,10 +60,14 @@ This is the primary mode.
 2. If `tpm context` reports the task is a parent container (has children), don't try to work it directly. Print the children (`tpm ls --project <p>`) and ask the user which child to pick up.
 3. If the task's status is `open` or `ready`, edit the task file (path is in the briefing): set `status: in-progress` in frontmatter and append `- $(tpm now): started` to the `## Log` section.
 4. `cd "$(tpm path <arg>)"` — that's where the work happens. If `tpm path` errors because no local path is set, ask the user for the path and offer to populate `repo.local` in the project (or task) file.
-5. Read the task body and execute the Plan. If the type is `investigation`, your output is findings — write them into the body, not just chat.
-6. As you make meaningful progress, append `- $(tpm now): <what changed>` to `## Log`.
-7. If you open a PR, append its URL to the `prs:` list in the task's frontmatter.
-8. If you hit a blocker you can't resolve: set `status: blocked`, log why, and surface it to the user instead of guessing.
+5. **Resolve the workflow doc.** This tells you how to validate, how to ship, and when to close.
+   - If the briefing has a `Workflow:` line, read that file (path is relative to the repo root).
+   - Else look for `AGENTS.md`, then `CLAUDE.md`, in the repo root.
+   - Else ask the user before each shipping step (commit, push, PR, close).
+6. Read the task body and execute the Plan. If the type is `investigation`, your output is findings — write them into the body, not just chat.
+7. As you make meaningful progress, append `- $(tpm now): <what changed>` to `## Log`.
+8. **To ship**, follow the workflow doc verbatim: validate (run any checks/tests it names), commit, push, open PR if directed, close the task if directed. If you open a PR, append its URL to the `prs:` list in the task's frontmatter. If the workflow says "close after merge" (the default for `type: pr`), leave the task `in-progress` and stop after pushing the PR — the user (or a follow-up `/tpm done <task>`) closes it once merged.
+9. If you hit a blocker you can't resolve: set `status: blocked`, log why, and surface it to the user instead of guessing.
 
 ### `discuss <task>` or `discuss <project>/<task>` — pre-execution discussion
 Shape a task's Plan before any execution. Pure conversation that lands in the task body — never edits code, never `cd`s into the repo, never flips status to `in-progress`.
