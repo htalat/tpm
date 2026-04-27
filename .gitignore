@@ -2,3 +2,5 @@ node_modules/
 .DS_Store
 reports/
 .claude/settings.local.json
+tmp/*
+!tmp/.gitkeep
