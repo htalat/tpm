@@ -32,6 +32,9 @@ This section is the workflow doc that the tpm skill resolves to when working on 
 ### Ship via PR
 Every change — behavior, docs, tests, comment edits — goes via PR. Branch off `main`, push, `gh pr create`. Append the PR URL to the task's `prs:` frontmatter list.
 
+### Wait for CI green before merge
+After pushing the PR, the `test` workflow runs against the branch. **Don't merge until it's green.** If it fails, fix the underlying issue (don't disable the check, don't merge anyway). `gh pr checks <PR>` polls the status from the terminal; the PR page surfaces it too.
+
 ### Closing the task
 Leave the task as `in-progress` after opening the PR. **Don't stamp `done` on PR open.** After the PR merges, run `/tpm done <task>` to close + archive.
 
