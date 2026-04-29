@@ -48,16 +48,16 @@ When the user asks for one of these — by slash command, natural language, or a
 This is the primary action.
 1. Run `tpm context <slug>`. Read the briefing in full.
 2. If `tpm context` reports the task is a parent container (has children), don't try to work it directly. Print the children (`tpm ls --project <p>`) and ask the user which child to pick up.
-3. If the task's status is `open` or `ready`, edit the task file (path is in the briefing): set `status: in-progress` in frontmatter and append `- $(tpm now): started` to the `## Log` section.
+3. If the task's status is `open` or `ready`, run `tpm start <slug>` to flip it to `in-progress` and stamp a `started` Log entry in one call. (Idempotent: re-running on an already-`in-progress` task is a no-op.)
 4. `cd "$(tpm path <slug>)"` — that's where the work happens. If `tpm path` errors because no local path is set, ask the user for the path and offer to populate `repo.local` in the project (or task) file.
 5. **Resolve the workflow doc.** This tells you how to validate, how to ship, and when to close.
    - If the briefing has a `Workflow:` line, read that file (path is relative to the repo root).
    - Else look for `AGENTS.md`, then `CLAUDE.md`, in the repo root.
    - Else ask the user before each shipping step (commit, push, PR, close).
 6. Read the task body and execute the Plan. If the type is `investigation`, your output is findings — write them into the body, not just chat.
-7. As you make meaningful progress, append `- $(tpm now): <what changed>` to `## Log`.
-8. **To ship**, follow the workflow doc verbatim: validate (run any checks/tests it names), commit, push, open PR if directed, close the task if directed. If you open a PR, append its URL to the `prs:` list in the task's frontmatter. If the workflow says "close after merge" (the default for `type: pr`), leave the task `in-progress` and stop after pushing the PR — the user (or a follow-up **close out** action) closes it once merged.
-9. If you hit a blocker you can't resolve: set `status: blocked`, log why, and surface it to the user instead of guessing.
+7. As you make meaningful progress, run `tpm log <slug> "<what changed>"` to append a timestamped Log entry. Don't load the task file just to write a Log line.
+8. **To ship**, follow the workflow doc verbatim: validate (run any checks/tests it names), commit, push, open PR if directed, close the task if directed. If you open a PR, run `tpm pr <slug> <url>` — that adds the URL to `prs:` and logs the open in one call. If the workflow says "close after merge" (the default for `type: pr`), leave the task `in-progress` and stop after pushing the PR — the user (or a follow-up **close out** action) closes it once merged.
+9. If you hit a blocker you can't resolve: run `tpm block <slug> "<reason>"` to set `status: blocked` and log the reason. Then surface to the user instead of guessing.
 
 ### Shape an open task (pre-execution discussion)
 Shape a task's Plan before any execution. Pure conversation that lands in the task body — never edits code, never `cd`s into the repo, never flips status to `in-progress`.
@@ -65,10 +65,10 @@ Shape a task's Plan before any execution. Pure conversation that lands in the ta
 2. If the task is a parent container (has children), shaping is not applicable — list the children and ask which one to shape instead.
 3. **Do not** `cd`. **Do not** edit code in `repo.local`. **Do not** set `status: in-progress`.
 4. Read `## Context` and `## Plan`. If thin or missing key details, ask clarifying questions: scope, constraints, what "done" looks like, dependencies on other tasks, open decisions.
-5. As alignment forms, write back to the task body — `## Context` for facts and background, `## Plan` for the agreed approach, optionally a `## Done =` section. Append `- $(tpm now): <what was discussed/decided>` to `## Log` when meaningful progress lands.
+5. As alignment forms, write back to the task body via direct file edit — `## Context` for facts and background, `## Plan` for the agreed approach, optionally a `## Done =` section. Body authoring is the one place agents still edit the task file directly. For the Log line, use `tpm log <slug> "<what was discussed/decided>"` rather than editing manually.
 6. (Optional) Ask whether the task is safe to run unattended. If yes, set `allow_orchestrator: true` in the frontmatter — relevant once scheduled orchestration ships, harmless before then.
-7. End condition: the user signals alignment ("okay let's go", "that looks right", "yes start it"). At that point, edit the frontmatter to `status: ready`, append `- $(tpm now): promoted to ready` to `## Log`, and stop. Tell the user the task is ready to execute.
-8. If discussion concludes the task isn't worth doing: set `status: dropped`, fill `## Outcome` with the reason, log it, and don't promote.
+7. End condition: the user signals alignment ("okay let's go", "that looks right", "yes start it"). Run `tpm ready <slug>` — that flips status to `ready` and logs `promoted to ready` in one call. Then stop and tell the user the task is ready to execute.
+8. If discussion concludes the task isn't worth doing: edit `## Outcome` with the reason (file edit, since `tpm complete --outcome` would also flip status to `done` rather than `dropped`), then run `tpm status <slug> dropped`. Don't promote.
 
 This is the canonical way to move a task from `open` to `ready`. A human can also flip the status manually, but the shaping action encodes the discipline (Context/Plan populated, Log timestamped, explicit confirmation).
 
@@ -87,17 +87,15 @@ Auto-select mode. Resolves the next eligible leaf task (parents are skipped) and
    - All `OPEN` or `CLOSED` (none merged) → ask once: "PR not merged; close anyway?" Respect the answer. This is the only legitimate ask in close-out.
    - `gh` not installed or not auth'd → fall back to the same ask. Don't fail hard.
    - `prs:` empty (direct-push task) → skip merge detection.
-3. Fill `## Outcome` with what shipped, what changed, what was learned. Reference PRs.
-4. Set `status: done` and `closed: $(tpm now)` in frontmatter.
-5. Append `- $(tpm now): closed` to `## Log`.
-6. **Archive only if the type's artifact is external.** For `type: pr` and `type: chore`, run `tpm archive <slug>` to move the completed task under `tasks/archive/` — the artifact lives in git, the task file is just metadata. For `type: investigation` and `type: spike`, **skip the archive step**: the task body itself is the artifact (findings, writeup), and archiving makes it invisible to default browsing. Mention the deliberate retention in the close-out confirmation. The file stays at its canonical path; `tpm ls --status done` lists it and `tpm context <slug>` resolves it without `--archived`. If a finding later goes stale, `tpm archive <slug>` retires it explicitly.
-7. **Cleanup local branch** (when at least one linked PR was merged). For each merged PR:
+3. Fill `## Outcome` with what shipped, what changed, what was learned. Reference PRs. (Free-form prose: edit the file directly. The CLI will refuse to overwrite an Outcome that already has content, so author it before the next step.)
+4. Run `tpm complete <slug>`. This flips status to `done`, stamps `closed`, appends a `closed` Log line, and **archives by type**: `pr`/`chore` move under `tasks/archive/`; `investigation`/`spike` stay at the canonical path so `tpm ls --status done` and `tpm context <slug>` continue to find them. Override the default with `--archive` or `--no-archive` when needed.
+5. **Cleanup local branch** (when at least one linked PR was merged). For each merged PR:
    - `BRANCH=$(gh pr view <url> --json headRefName --jq '.headRefName')`. Skip if `BRANCH` equals the project's default branch (typically `main`).
    - `cd "$(tpm path <slug>)"`. If the local branch doesn't exist (`git rev-parse --verify "$BRANCH"` fails), skip — already cleaned up.
    - `git checkout main && git pull --ff-only`.
    - `git branch -d "$BRANCH"`. **Use `-d`, not `-D`** — if git refuses (e.g., you kept working on the branch after merge), surface the message and let the user decide. Don't force-delete.
    - Check the remote: `git ls-remote --heads origin "$BRANCH"`. If it still exists (GitHub's auto-delete-head-branches isn't on for this repo), print the one-liner `git push origin --delete <BRANCH>` for the user to copy/paste. Don't run it silently.
-8. Print a one-line confirmation: new status, archive path, and the remote-delete hint if applicable.
+6. Print a one-line confirmation: new status, archive path (or "kept at <path>" for investigations/spikes), and the remote-delete hint if applicable.
 
 ### Scaffold a project or task
 - New project: `tpm new project <slug> [--name "..."] [--repo <url>] [--path <local-dir>]`. Ask about `--repo` and `--path` if not provided.
@@ -109,11 +107,12 @@ Use when a task needs supporting files (subtasks, scratch notes, screenshots) al
 
 ## Conventions
 
-- When editing task files, only touch the frontmatter and the four canonical sections (`## Context`, `## Plan`, `## Log`, `## Outcome`). Preserve key order in frontmatter.
+- **Prefer CLI verbs over manual file edits for state changes.** Use `tpm start | ready | complete | block | reopen | log | pr | status | archive | fold | new` for frontmatter and Log mutations. Manual file edits are only for body-text authoring (`## Context`, `## Plan`, `## Outcome`).
+- When you do edit a task file directly, only touch the four canonical body sections. Preserve key order in frontmatter.
 - Don't reformat unrelated frontmatter or rename slugs.
 - Don't delete the `## Outcome` section even if empty — it's a closing prompt.
 - Don't rewrite project goals without explicit approval.
-- Timestamps: use `tpm now` (format `YYYY-MM-DD HH:MM <ZZZ>` in the configured TZ — defaults to Pacific). Don't guess or hand-format.
+- Timestamps: the CLI verbs stamp `tpm now` automatically. If you ever need to write one yourself, use `tpm now` (format `YYYY-MM-DD HH:MM <ZZZ>` in the configured TZ — defaults to Pacific). Don't guess or hand-format.
 - Don't manually create project/task files where `tpm new` would do it.
 - If `tpm` errors with "No tpm tree configured", offer to run `tpm init` (default `~/tpm`).
 - Keep edits to the user's actual code repos separate from edits to task files — task files are tracker state, not code.

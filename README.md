@@ -122,14 +122,26 @@ tpm new project <slug> [--name "Pretty Name"] [--repo <url>] [--path <local-dir>
 tpm new task <project> <slug> [--title "Pretty Title"] [--parent <parent-slug>]
 tpm ls [--all] [--archived] [--flat] [--status open] [--project <slug>]
 tpm context <task | project/task | parent/child>
-tpm archive <task | project/task>          # move a done/dropped task (or whole folder-form parent) to tasks/archive/
-tpm fold <task | project/task>             # promote a file-form task to folder-form (idempotent)
+tpm start <task>                          # set status: in-progress, log started
+tpm ready <task>                          # set status: ready, log promoted
+tpm complete <task> [--outcome "..."] [--no-archive] [--archive]
+                                          # set status: done, stamp closed, log;
+                                          # archives by type (pr/chore yes, investigation/spike no)
+tpm block <task> "<reason>"               # set status: blocked, log the reason
+tpm reopen <task>                         # set status: open, log reopened
+tpm status <task> <new-status>            # generic status setter (validated)
+tpm log <task> "<message>"                # append a single timestamped Log line
+tpm pr <task> <url>                       # add URL to prs:, log opened PR
+tpm archive <task | project/task>         # move a done/dropped task (or whole folder-form parent) to tasks/archive/
+tpm fold <task | project/task>            # promote a file-form task to folder-form (idempotent)
 tpm next [--project <slug>] [--autonomous]  # print the next ready leaf task (oldest first); exits non-zero if none
 tpm report [--md]
 tpm root                                  # print the tree root
 tpm path <project | task | project/task>  # print the local checkout path
 tpm now                                   # timestamp in the configured timezone
 ```
+
+The mutation verbs (`start`, `ready`, `complete`, `block`, `reopen`, `status`, `log`, `pr`) let you change task state without ever loading the file into an editor or chat context. Each verb does one read → mutate → write inside a single process; idempotent where it makes sense (re-running `tpm start` on an in-progress task is a no-op). For body-text authoring (Context, Plan, Outcome) you still edit the file directly — the CLI deliberately doesn't ship a markdown section editor.
 
 ### Linking projects to repos
 
