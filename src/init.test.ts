@@ -105,3 +105,15 @@ test("init: project.md template contains the expected frontmatter shape", () => 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("init: project.md template includes ## Log for project-level timeline", () => {
+  const dir = mkdtempSync(join(tmpdir(), "tpm-init-"));
+  try {
+    const target = join(dir, "tree");
+    init(target);
+    const tpl = readFileSync(join(target, ".tpm", "templates", "project.md"), "utf8");
+    assert.match(tpl, /^## Log$/m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -25,6 +25,7 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
   - `ready` = agent's queue (Plan is well-specified, an agent can pick it up). Promoted via the **shape an open task** action.
   - Parent containers display a roll-up status (all children done → done; any in-progress → in-progress; else parent's declared status). The roll-up is display only — never written to frontmatter.
 - **Types**: `pr | investigation | spike | chore`
+- **Project body**: `## Goal`, `## Context`, `## Notes`, `## Log`. The project Log is a timeline for events that don't belong to any single task — pivots, milestones, status flips, decisions that span multiple tasks. Use the same `- YYYY-MM-DD HH:MM ZZZ: <event>` format as task Logs. Keep per-task events in the task's own Log (don't double-write).
 - **Task body**: `## Context`, `## Plan`, `## Log`, `## Outcome`
 - Code work happens in `repo.local`. `tpm context` calls this out; `tpm path <target>` prints it for shell composition (`cd $(tpm path my-task)`).
 - For an agent-friendly briefing on a single task, run `tpm context <task>` or `tpm context <project>/<task>`.
