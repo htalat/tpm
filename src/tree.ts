@@ -83,13 +83,15 @@ function readTasksFromDir(dir: string, archived: boolean): Task[] {
 }
 
 function readChildTasks(parentDir: string, parentSlug: string, archived: boolean): Task[] {
-  return readdirSync(parentDir)
-    .filter(f => f.endsWith(".md") && f !== "task.md" && !f.startsWith("."))
-    .map(f => {
-      const child = loadTaskFile(join(parentDir, f), f.replace(/\.md$/, ""), archived);
-      child.parent = parentSlug;
-      return child;
-    });
+  const out: Task[] = [];
+  for (const f of readdirSync(parentDir)) {
+    if (!f.endsWith(".md") || f === "task.md" || f.startsWith(".")) continue;
+    const child = loadTaskFile(join(parentDir, f), f.replace(/\.md$/, ""), archived);
+    if (child.data.parent !== parentSlug) continue;
+    child.parent = parentSlug;
+    out.push(child);
+  }
+  return out;
 }
 
 function readArchivedTasks(archiveDir: string, liveTasks: Task[]): Task[] {
