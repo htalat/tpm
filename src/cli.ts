@@ -11,6 +11,7 @@ import { findTask } from "./resolve.ts";
 import { init } from "./init.ts";
 import { CONFIG_PATH } from "./config.ts";
 import { now } from "./time.ts";
+import * as mutate from "./mutate.ts";
 
 const VERSION = readVersion();
 
@@ -144,6 +145,64 @@ try {
       console.log(now());
       break;
     }
+    case "start": {
+      const r = mutate.start(resolveLiveTask(args[1], "tpm start <task>"));
+      console.log(r.message);
+      break;
+    }
+    case "ready": {
+      const r = mutate.ready(resolveLiveTask(args[1], "tpm ready <task>"));
+      console.log(r.message);
+      break;
+    }
+    case "block": {
+      const reason = args[2];
+      if (!args[1] || !reason) usage('tpm block <task> "<reason>"');
+      const r = mutate.block(resolveLiveTask(args[1], 'tpm block <task> "<reason>"'), reason);
+      console.log(r.message);
+      break;
+    }
+    case "reopen": {
+      const r = mutate.reopen(resolveLiveTask(args[1], "tpm reopen <task>"));
+      console.log(r.message);
+      break;
+    }
+    case "log": {
+      const message = args[2];
+      if (!args[1] || !message) usage('tpm log <task> "<message>"');
+      const r = mutate.logEntry(resolveLiveTask(args[1], 'tpm log <task> "<message>"'), message);
+      console.log(r.message);
+      break;
+    }
+    case "pr": {
+      const url = args[2];
+      if (!args[1] || !url) usage("tpm pr <task> <url>");
+      const r = mutate.addPr(resolveLiveTask(args[1], "tpm pr <task> <url>"), url);
+      console.log(r.message);
+      break;
+    }
+    case "status": {
+      const newStatus = args[2];
+      if (!args[1] || !newStatus) usage("tpm status <task> <new-status>");
+      const r = mutate.setStatus(resolveLiveTask(args[1], "tpm status <task> <new-status>"), newStatus);
+      console.log(r.message);
+      break;
+    }
+    case "complete": {
+      if (!args[1]) usage('tpm complete <task> [--outcome "..."] [--no-archive] [--archive]');
+      const outcome = parseFlag(args, "--outcome");
+      const noArchive = args.includes("--no-archive");
+      const forceArchive = args.includes("--archive");
+      if (noArchive && forceArchive) usage("--archive and --no-archive are mutually exclusive");
+      const archiveOpt = noArchive ? false : forceArchive ? true : undefined;
+      const r = mutate.complete(resolveLiveTask(args[1], 'tpm complete <task>'), {
+        outcome,
+        archive: archiveOpt,
+      });
+      console.log(r.message);
+      if (r.archivedAt) console.log(`Archived -> ${r.archivedAt}`);
+      break;
+    }
     case "next": {
       const root = findRoot();
       const projects = loadProjects(root);
@@ -199,6 +258,15 @@ try {
 function parseFlag(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
   return i >= 0 ? args[i + 1] : undefined;
+}
+
+function resolveLiveTask(query: string | undefined, usageMsg: string): Task {
+  if (!query) usage(usageMsg);
+  const root = findRoot();
+  const projects = loadProjects(root);
+  const match = findTask(projects, query);
+  if (!match) throw new Error(`No task matched "${query}". Try \`tpm ls\`.`);
+  return match.task;
 }
 
 function pad(s: string, n: number): string {
@@ -260,6 +328,15 @@ Usage:
   tpm new task <project> <slug> [--title "Title"] [--parent <parent-slug>]
   tpm ls [--all] [--archived] [--flat] [--status open] [--project <slug>]
   tpm context <task | project/task | parent/child>
+  tpm start <task>                           set status: in-progress, log started
+  tpm ready <task>                           set status: ready, log promoted
+  tpm complete <task> [--outcome "..."] [--no-archive] [--archive]
+                                             set status: done, stamp closed, log; archives by type
+  tpm block <task> "<reason>"                set status: blocked, log the reason
+  tpm reopen <task>                          set status: open, log it
+  tpm status <task> <new-status>             generic status setter (validated)
+  tpm log <task> "<message>"                 append a single timestamped Log line
+  tpm pr <task> <url>                        add URL to prs:, log opened PR
   tpm archive <task | project/task>          move a done/dropped task to tasks/archive/
   tpm fold <task | project/task>             promote a file-form task to folder-form (idempotent)
   tpm next [--project <slug>] [--autonomous] print the next ready leaf task (oldest first)
