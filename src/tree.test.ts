@@ -273,6 +273,51 @@ test("loadTasks: folder-form parent loads task.md and children with parent: set"
   }
 });
 
+test("loadTasks: folder-form supporting files (no parent: frontmatter) are not loaded as children", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeFolderTask(dir, "002-parent");
+    writeFileSync(join(dir, "tasks", "002-parent", "scratch.md"), "free-form notes, no frontmatter\n");
+    writeFileSync(join(dir, "tasks", "002-parent", "design-notes.md"), "---\ntitle: design\n---\n\nbody\n");
+    const [proj] = loadProjects(root);
+    assert.equal(proj.tasks.length, 1);
+    assert.equal(proj.tasks[0].slug, "002-parent");
+    assert.deepEqual(proj.tasks[0].children, []);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("loadTasks: folder-form mix of real children and supporting files only loads real children", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeFolderTask(dir, "002-parent");
+    writeChildTask(dir, "002-parent", "001-real-child.md");
+    writeFileSync(join(dir, "tasks", "002-parent", "notes.md"), "scratch\n");
+    const [proj] = loadProjects(root);
+    assert.equal(proj.tasks.length, 1);
+    const parent = proj.tasks[0];
+    assert.deepEqual(parent.children!.map(c => c.slug), ["001-real-child"]);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("loadTasks: folder-form file with mismatched parent: value is ignored", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeFolderTask(dir, "002-parent");
+    writeFileSync(join(dir, "tasks", "002-parent", "001-confused.md"), taskMd("001-confused", "open", "999-other-parent"));
+    const [proj] = loadProjects(root);
+    assert.deepEqual(proj.tasks[0].children, []);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 test("loadTasks: folder without task.md is skipped", () => {
   const root = mkTempDir();
   try {
