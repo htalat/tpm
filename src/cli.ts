@@ -12,6 +12,7 @@ import { init } from "./init.ts";
 import { CONFIG_PATH } from "./config.ts";
 import { now } from "./time.ts";
 import * as mutate from "./mutate.ts";
+import * as lock from "./lock.ts";
 
 const VERSION = readVersion();
 
@@ -203,6 +204,43 @@ try {
       if (r.archivedAt) console.log(`Archived -> ${r.archivedAt}`);
       break;
     }
+    case "lock": {
+      const sub = args[1];
+      const root = findRoot();
+      switch (sub) {
+        case "acquire": {
+          const r = lock.acquire(root);
+          if (!r.acquired) {
+            console.error(`tpm lock: ${r.reason}`);
+            process.exit(1);
+          }
+          if (r.takeover) {
+            const prior = r.prior ? `(stale lock from pid ${r.prior.pid}, started ${r.prior.started_at})` : "(stale lock)";
+            console.log(`acquired ${prior}`);
+          } else {
+            console.log("acquired");
+          }
+          break;
+        }
+        case "release": {
+          const force = args.includes("--force");
+          const r = lock.release(root, force);
+          if (!r.released) {
+            console.error(`tpm lock: ${r.message}`);
+            process.exit(1);
+          }
+          console.log(r.message);
+          break;
+        }
+        case "status": {
+          console.log(lock.status(root));
+          break;
+        }
+        default:
+          usage("tpm lock acquire | release [--force] | status");
+      }
+      break;
+    }
     case "next": {
       const root = findRoot();
       const projects = loadProjects(root);
@@ -339,6 +377,8 @@ Usage:
   tpm pr <task> <url>                        add URL to prs:, log opened PR
   tpm archive <task | project/task>          move a done/dropped task to tasks/archive/
   tpm fold <task | project/task>             promote a file-form task to folder-form (idempotent)
+  tpm lock acquire | release [--force] | status
+                                             concurrency guard for unattended orchestrator runs
   tpm next [--project <slug>] [--autonomous] print the next ready leaf task (oldest first)
   tpm report [--md]
   tpm root                                   print the tree root
