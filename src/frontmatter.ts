@@ -129,10 +129,34 @@ export function stringify(data: Record<string, unknown>, body: string): string {
 
 function formatScalar(v: unknown): string {
   if (v === null || v === undefined) return "";
-  if (typeof v === "string") {
-    if (v === "") return '""';
-    if (/^[A-Za-z0-9_./:-][A-Za-z0-9_ ./:@#-]*$/.test(v) && !/^\s|\s$/.test(v)) return v;
-    return JSON.stringify(v);
-  }
+  if (typeof v === "string") return needsQuoting(v) ? JSON.stringify(v) : v;
   return String(v);
+}
+
+// Decides whether a string must be quoted to round-trip correctly through this
+// parser, plus a slightly stricter superset for compatibility with YAML 1.2
+// readers that would otherwise misinterpret the value. Anything not flagged
+// here passes through as a plain scalar — including parens, commas,
+// semicolons, and most punctuation.
+function needsQuoting(s: string): boolean {
+  if (s === "") return true;
+  // Leading or trailing whitespace gets eaten by the parser's `.trim()`-style logic.
+  if (/^\s|\s$/.test(s)) return true;
+  // Embedded newlines/CR or other control chars break the line-oriented parser.
+  if (/[\x00-\x1f\x7f]/.test(s)) return true;
+  // Flow indicators at start would be parsed as a flow list/map.
+  if (s.startsWith("[") || s.startsWith("{")) return true;
+  // Other reserved indicators at start that strict YAML readers treat specially.
+  if (/^[!&*?:,#|>%@`"'\t]/.test(s)) return true;
+  // Block-list marker.
+  if (s === "-" || s.startsWith("- ")) return true;
+  // Block-map separator anywhere.
+  if (s.includes(": ")) return true;
+  // Comment marker anywhere (space + hash).
+  if (s.includes(" #")) return true;
+  // Would coerce back to a non-string under this parser's `coerce()`.
+  if (s === "null" || s === "~" || s === "true" || s === "false") return true;
+  if (/^-?\d+$/.test(s)) return true;
+  if (/^-?\d+\.\d+$/.test(s)) return true;
+  return false;
 }

@@ -179,19 +179,78 @@ test("stringify: preserves key order", () => {
 });
 
 test("stringify: quotes strings that need it", () => {
-  const text = stringify({ s: "hello, world" }, "");
-  assert.match(text, /s: "hello, world"/);
-  const text2 = stringify({ s: "" }, "");
-  assert.match(text2, /s: ""/);
+  // Empty
+  assert.match(stringify({ s: "" }, ""), /s: ""/);
+  // Block-map separator
+  assert.match(stringify({ s: "key: value" }, ""), /s: "key: value"/);
+  // Comment marker
+  assert.match(stringify({ s: "trailing # comment" }, ""), /s: "trailing # comment"/);
+  // Type-coercion guards: would parse back as non-string otherwise
+  assert.match(stringify({ s: "true" }, ""), /s: "true"/);
+  assert.match(stringify({ s: "false" }, ""), /s: "false"/);
+  assert.match(stringify({ s: "null" }, ""), /s: "null"/);
+  assert.match(stringify({ s: "~" }, ""), /s: "~"/);
+  assert.match(stringify({ s: "123" }, ""), /s: "123"/);
+  assert.match(stringify({ s: "-42" }, ""), /s: "-42"/);
+  assert.match(stringify({ s: "1.5" }, ""), /s: "1.5"/);
+  // Leading reserved indicators
+  assert.match(stringify({ s: "?question" }, ""), /s: "\?question"/);
+  assert.match(stringify({ s: "&anchor" }, ""), /s: "&anchor"/);
+  assert.match(stringify({ s: "[bracket" }, ""), /s: "\[bracket"/);
+  // Block-list marker (just "-" or "- ...")
+  assert.match(stringify({ s: "- listy" }, ""), /s: "- listy"/);
+  assert.match(stringify({ s: "-" }, ""), /s: "-"/);
+  // Leading/trailing whitespace
+  assert.match(stringify({ s: " leading" }, ""), /s: " leading"/);
+  assert.match(stringify({ s: "trailing " }, ""), /s: "trailing "/);
+  // Embedded newline
+  assert.match(stringify({ s: "a\nb" }, ""), /s: "a\\nb"/);
 });
 
 test("stringify: leaves safe strings unquoted", () => {
+  // Original cases
   const text = stringify(
     { url: "https://example.com/path", date: "2026-04-26 10:22 PDT" },
     "",
   );
   assert.match(text, /url: https:\/\/example\.com\/path/);
   assert.match(text, /date: 2026-04-26 10:22 PDT/);
+
+  // Punctuation that strict YAML allows in plain scalars
+  assert.match(stringify({ s: "hello, world" }, ""), /^s: hello, world$/m);
+  assert.match(stringify({ s: "title (with parens)" }, ""), /^s: title \(with parens\)$/m);
+  assert.match(stringify({ s: "semi; colon" }, ""), /^s: semi; colon$/m);
+  assert.match(stringify({ s: "1234 Main St" }, ""), /^s: 1234 Main St$/m);   // leading digit but not pure numeric
+  assert.match(stringify({ s: "v0.5.1" }, ""), /^s: v0\.5\.1$/m);
+  assert.match(stringify({ s: "kebab-case-slug" }, ""), /^s: kebab-case-slug$/m);
+});
+
+test("round-trip: parenthetical title stays unquoted across mutations", () => {
+  // The bug from task 029: a title containing `(...)` got JSON-quoted on the
+  // first round-trip, even though parens are valid in a YAML plain scalar.
+  const data = {
+    title: "CLI commands for task state changes (no context required)",
+    slug: "cli-mutations",
+  };
+  const text = stringify(data, "");
+  assert.match(text, /^title: CLI commands for task state changes \(no context required\)$/m);
+  // Round-trip should be byte-identical for a fully-safe value set.
+  const reparsed = parse(text);
+  assert.deepEqual(reparsed.data, data);
+  const round2 = stringify(reparsed.data, reparsed.body);
+  assert.equal(round2, text);
+});
+
+test("round-trip: ambiguous-looking strings stay quoted across rounds", () => {
+  // These would coerce back to a non-string if unquoted; make sure stringify
+  // keeps them quoted, parse strips the quotes, and re-stringify re-quotes.
+  for (const value of ["true", "false", "null", "123", "-42", "1.5"]) {
+    const text = stringify({ s: value }, "");
+    const reparsed = parse(text);
+    assert.equal(reparsed.data.s, value, `expected string round-trip for ${value}`);
+    const round2 = stringify(reparsed.data, reparsed.body);
+    assert.equal(round2, text);
+  }
 });
 
 test("round-trip: tpm-shaped frontmatter", () => {
