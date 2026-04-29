@@ -313,6 +313,59 @@ tpm next --autonomous          # only ready tasks with `allow_orchestrator: true
 
 `tpm next` exits non-zero with a stderr message if nothing is eligible, so it composes cleanly: `task=$(tpm next) && claude -p "/tpm $task"`.
 
+### Recurring work: two flavors
+
+Two complementary patterns of scheduled work, neither needs new tpm schema.
+
+- **Flavor 1 — queue drain (with LLM).** Cron fires `claude -p "/tpm next --autonomous"`. The agent picks the next-ready leaf task that's `allow_orchestrator: true` and runs the standard `<task>` workflow. Use when you want pre-shaped work executed hands-off. See "Scheduling unattended runs (cron)" below.
+- **Flavor 2 — script intake (no LLM).** Cron fires a deterministic shell script under `scripts/recurring/<name>.sh`. The script harvests state (open PRs, stale deps, alert spikes) and creates tpm tasks via the CLI, then exits. No LLM, no tokens, no judgment. Use when you want to harvest state on a clock without paying per-tick.
+
+The two compose into a pipeline: **scripts harvest → ready queue grows → flavor-1 drain (or manual `/tpm next`) runs the work.**
+
+#### Flavor 2: script intake (no LLM)
+
+A recurring script is a plain shell program that uses the tpm CLI to harvest state and create tasks. There's no registration step — cron just invokes the script. tpm doesn't dictate where scripts live or what they harvest; it provides a **template** at `scripts/recurring/template.sh` that encodes the conventions, and you customize from there.
+
+**Start from the template.** Copy it to wherever you keep tooling, rename, fill in the TODO blocks:
+
+```sh
+cp ~/Developer/tpm/scripts/recurring/template.sh ~/.tpm/scripts/recurring/intake-prs.sh
+$EDITOR ~/.tpm/scripts/recurring/intake-prs.sh
+```
+
+The template runs out of the box (with a no-op iterator, so it just prints `recurring: created 0 task(s), skipped 0 existing`). The TODOs walk you through the four things you'll customize:
+
+1. **Source**: replace the `printf ''` at the bottom with the command that produces tab-separated `<unique-id>\t<title>` rows (e.g. `gh pr list --state open --json number,title --jq '.[] | "\(.number)\t\(.title)"'`).
+2. **Slug**: derive a stable slug from `$unique_id`. This is the idempotency key — same input must yield the same slug so the existence check (`tpm context "$PROJECT/$slug"`) skips on re-run.
+3. **Frontmatter and body** (optional): adjust `type:` and populate `## Context` via sed/awk before the `tpm ready` call. Examples are commented in the template.
+4. **Summary line**: rename `recurring:` to your script's name.
+
+**Where to keep user-defined scripts.** tpm doesn't care; pick whichever fits your sync model:
+
+- `$(tpm root)/.scripts/recurring/<name>.sh` — travels with the data tree if you sync via Dropbox/git.
+- `~/.tpm/scripts/recurring/<name>.sh` — per-device, sits next to the tpm config.
+- `~/Developer/<project>/scripts/recurring/<name>.sh` — colocated with the code the script reasons about.
+- The tpm CLI repo's `scripts/recurring/` — only for scripts generic enough to be useful to other tpm users; submit those as PRs upstream.
+
+cron just needs the absolute path. By default, tasks created by a recurring script are `ready` but **not** `allow_orchestrator: true`, so manual `tpm next` picks them up but the unattended drain doesn't. Opt a task in for autonomous runs by adding `allow_orchestrator: true` to its frontmatter.
+
+**Cron pattern** (your script + the drain):
+
+```cron
+# Monday morning: harvest into tpm tasks (replace path with your customized script)
+0 16 * * 1   ~/.tpm/scripts/recurring/intake-prs.sh tpm >> ~/.tpm/recurring.log 2>&1
+# Nightly: drain whatever is ready + allow_orchestrator: true
+0 6 * * *    task=$(/opt/homebrew/bin/tpm next --autonomous) && /opt/homebrew/bin/claude -p "/tpm $task" >> /tmp/tpm-cron.log 2>&1
+```
+
+**Conventions for the script's shape** (the template enforces these by structure):
+
+- Shell script (or any language), idempotent, exit-code-clean. The template is bash because it's the common denominator.
+- Take the target tpm project slug as `$1`; resolve it explicitly (don't auto-detect across repos).
+- Use the CLI verbs (`tpm new task`, `tpm log`, `tpm ready`, etc.) for state changes — never rewrite frontmatter manually.
+- Print one summary line on success: `<name>: created N task(s), skipped M existing` (or similar).
+- Recurring scripts aren't skills (no LLM, no judgment). They're mechanical intake. If a job needs judgment, do flavor 1 instead.
+
 ### Scheduling unattended runs (cron)
 
 `tpm next` composes with cron for hands-off orchestration. To set up:
