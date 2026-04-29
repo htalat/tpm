@@ -35,6 +35,10 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
 - If a bare slug matches multiple tasks (e.g., two children named `discuss` under different parents), the CLI errors and asks you to qualify it.
 - Qualified forms: `<project>/<task>`, `<parent>/<child>`, `<project>/<parent>/<child>`. Use whichever disambiguates.
 
+## Script-authored tasks
+
+Some tasks aren't human-authored — recurring scripts under `scripts/recurring/` (in the tpm CLI repo) harvest state on a clock and create pre-shaped tasks via the CLI. Lifecycle is identical to a human-authored task: the script just skips the discuss step and lands the task at `ready`. When you pick one up, follow the same actions as any other task. The script's intake commit (e.g. "Review PR #N: <title>") tells you what to do; the body's Context section has the pointers (PR URL, branch, diff command).
+
 ## Actions
 
 When the user asks for one of these — by slash command, natural language, or a CLI invocation — follow the procedure. The Claude Code skill (`skills/tpm/SKILL.md`) maps slash commands to these same actions.
