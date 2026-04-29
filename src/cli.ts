@@ -7,12 +7,14 @@ import { context, repoPath } from "./context.ts";
 import { report } from "./report.ts";
 import { archiveTask, foldTask, isParent, loadProjects, flatTasks, rollupStatus } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
-import { findTask } from "./resolve.ts";
+import { findTask, findRepoTarget } from "./resolve.ts";
 import { init } from "./init.ts";
 import { CONFIG_PATH } from "./config.ts";
 import { now } from "./time.ts";
 import * as mutate from "./mutate.ts";
 import * as lock from "./lock.ts";
+import { resolveRepo } from "./context.ts";
+import { checkDrift } from "./drift.ts";
 
 const VERSION = readVersion();
 
@@ -241,6 +243,26 @@ try {
       }
       break;
     }
+    case "drift-check": {
+      const root = findRoot();
+      const projectFlag = parseFlag(args, "--project");
+      const positional = args[1] && !args[1].startsWith("--") ? args[1] : undefined;
+      const query = projectFlag ?? positional;
+      if (!query) usage("tpm drift-check <project | task> | --project <slug>");
+      const projects = loadProjects(root);
+      const target = findRepoTarget(projects, query);
+      if (!target) throw new Error(`No project/task matched "${query}".`);
+      const repo = resolveRepo(target.project, target.task);
+      if (!repo.local) throw new Error(`No repo.local set for "${query}"; cannot run drift-check.`);
+      const r = checkDrift(repo.local);
+      if (r.clean) {
+        console.log(`clean: on ${r.branch} at ${r.repoLocal}`);
+      } else {
+        console.error(`drift-check: ${r.reason} [${r.repoLocal}]`);
+        process.exit(1);
+      }
+      break;
+    }
     case "next": {
       const root = findRoot();
       const projects = loadProjects(root);
@@ -379,6 +401,7 @@ Usage:
   tpm fold <task | project/task>             promote a file-form task to folder-form (idempotent)
   tpm lock acquire | release [--force] | status
                                              concurrency guard for unattended orchestrator runs
+  tpm drift-check <project | task>           verify the project's repo.local is on its default branch + clean
   tpm next [--project <slug>] [--autonomous] print the next ready leaf task (oldest first)
   tpm report [--md]
   tpm root                                   print the tree root
