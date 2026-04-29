@@ -22,7 +22,7 @@ A tpm tree (data — lives wherever `tpm init` was run, e.g. `~/Documents/projec
 ```
 <root>/.tpm/templates/                          per-tree templates (copied from defaults)
 <root>/reports/index.html                       generated rollup
-<root>/<slug>/project.md                        goals, context, notes
+<root>/<slug>/project.md                        goals, context, notes, project log
 <root>/<slug>/tasks/NNN-*.md                    file-form task (one file)
 <root>/<slug>/tasks/NNN-*/task.md               folder-form task (a parent)
 <root>/<slug>/tasks/NNN-*/NNN-*.md              subtasks (`parent:` in frontmatter)
@@ -209,7 +209,7 @@ workflow: AGENTS.md   # optional: per-task workflow override; falls back to proj
 
 Timestamps are written in the timezone from `~/.tpm/config.json` (default `America/Los_Angeles`). Old date-only values (`2026-04-25`) keep parsing — values are display strings only.
 
-Edit the markdown freely — frontmatter is the source of truth for `tpm ls` and `tpm report`. The body uses `## Context / ## Plan / ## Log / ## Outcome` sections.
+Edit the markdown freely — frontmatter is the source of truth for `tpm ls` and `tpm report`. Task bodies use `## Context / ## Plan / ## Log / ## Outcome`. Project bodies use `## Goal / ## Context / ## Notes / ## Log`. The project `## Log` is a timeline for events that don't belong to any single task (pivots, milestones, decisions that span tasks); per-task events stay in the task's own Log.
 
 `tpm ls` hides `done` and `dropped` tasks by default. Use `--all` to include every active task status, `--status done` to query a specific status, or `--archived` to include tasks moved under `tasks/archive/`. `tpm context` and `tpm path` still resolve archived tasks, and new task numbering counts both active and archived task files.
 

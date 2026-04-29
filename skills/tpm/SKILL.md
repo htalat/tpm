@@ -26,6 +26,7 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
   - `ready` = agent's queue (Plan is well-specified, an agent can pick it up). Promoted via `/tpm discuss`.
   - Parent containers display a roll-up status (all children done → done; any in-progress → in-progress; else parent's declared status). The roll-up is display only — not written to frontmatter.
 - **Types**: `pr | investigation | spike | chore`
+- **Project body**: `## Goal`, `## Context`, `## Notes`, `## Log` (project-level timeline for cross-task events — pivots, milestones, decisions spanning tasks; keep per-task events in the task's own Log).
 - **Task body**: `## Context`, `## Plan`, `## Log`, `## Outcome`
 
 ## Slug resolution
