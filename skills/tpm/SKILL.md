@@ -103,7 +103,7 @@ Auto-select mode. Resolves the next eligible leaf task (parents are skipped) and
 3. Fill `## Outcome` with what shipped, what changed, what was learned. Reference PRs.
 4. Set `status: done` and `closed: $(tpm now)` in frontmatter.
 5. Append `- $(tpm now): closed` to `## Log`.
-6. Run `tpm archive <task>` to move the completed task under `tasks/archive/`.
+6. **Archive only if the type's artifact is external.** For `type: pr` and `type: chore`, run `tpm archive <task>` to move the completed task under `tasks/archive/` — the artifact lives in git, the task file is just metadata. For `type: investigation` and `type: spike`, **skip the archive step**: the task body itself is the artifact (findings, the writeup), and archiving makes it invisible to default browsing. Mention the deliberate retention in the close-out confirmation. The file stays at its canonical path; `tpm ls --status done` lists it and `tpm context <slug>` resolves it. If a finding later goes stale, `tpm archive <slug>` retires it explicitly.
 7. **Cleanup local branch** (when at least one linked PR was merged). For each merged PR:
    - `BRANCH=$(gh pr view <url> --json headRefName --jq '.headRefName')`. Skip if `BRANCH` equals the project's default branch (typically `main`).
    - `cd "$(tpm path <task>)"`. If the local branch doesn't exist (`git rev-parse --verify "$BRANCH"` fails), skip — already cleaned up.
