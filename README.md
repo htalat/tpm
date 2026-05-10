@@ -200,6 +200,30 @@ Substitute the absolute paths from `which`. cron has a minimal `PATH`, so absolu
 
 `TPM_AGENT_ID` names the agent for `tpm lock list`, stale-lock recovery, and notification messages. Pick a stable string per cron entry (`nightly-runner`, `pr-feedback-runner`, etc.) so the lock listing is human-readable and notifications can tell you which runner pinged. For ad-hoc shell use, `${HOSTNAME}-$$` is a fine default.
 
+**Agent affinity.** When you have a "big-repo agent" with that repo's deps and credentials already set up, you don't want a different agent grabbing tasks for it. Declare per-agent preferences in `~/.tpm/agents.json`:
+
+```json
+{
+  "agents": {
+    "nightly-runner":      { "prefer_repos": ["tpm"],            "comment": "fires hourly; tpm-only" },
+    "work-bigrepo-runner": { "prefer_repos": ["acme-platform"],  "comment": "has the right env" },
+    "laptop-htalat":       { "prefer_repos": []                                                      }
+  }
+}
+```
+
+`tpm next --claim "$TPM_AGENT_ID"` filters candidates to the agent's `prefer_repos` (matched against the project slug). Agents with empty `prefer_repos` (or no entry) see all tasks. The escape hatch is `tpm next --claim ... --any-repo` — skips the filter for "I really want any task." File is per-host; never sync it via git.
+
+CLI helpers:
+
+```sh
+tpm agents list                                    # who's preferred where
+tpm agents add nightly-runner --repo tpm           # append a preferred repo
+tpm agents remove laptop-htalat                    # drop an entry
+```
+
+Backward compat: missing or empty `~/.tpm/agents.json` means "no affinity configured" — the harness behaves exactly as if the registry didn't exist.
+
 **Per-agent log files.** Redirect each cron entry's stdout/stderr to its own file (`~/.tpm/orchestrator-<agent-id>.log`) so multiple agents don't interleave their logs. Same convention for tmux loops:
 
 ```sh
