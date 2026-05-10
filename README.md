@@ -114,6 +114,201 @@ ln -s "$PWD/bin/tpm" ~/.local/bin/tpm
 tpm init
 ```
 
+## Setting up the harness
+
+So far you have a tracker (`tpm new task`, `tpm ls`, `tpm context`). The **harness** is the optional automation around it: the two-queue lifecycle, the autonomous loop that drains the agent queue, the recurring scripts that feed it, the live dashboard you keep open while doing other things. tpm works as a plain CLI without any of it — turn on whatever you want.
+
+### The two queues
+
+tpm splits work across two inboxes:
+
+| Status            | Queue       | Picked up by                      |
+|-------------------|-------------|-----------------------------------|
+| `open`            | human       | `tpm inbox` / manual triage       |
+| `ready`           | agent       | `tpm next` → `/tpm <slug>`        |
+| `needs-feedback`  | agent       | `tpm next` → `/tpm feedback <slug>` |
+| `in-progress`     | passive     | (work happening or waiting on review) |
+| `needs-review`    | human       | `tpm inbox` (agent escalated)     |
+| `blocked`         | human       | `tpm inbox` (external dep)        |
+| `done` / `dropped`| —           | (terminal)                        |
+
+`tpm next` returns `needs-feedback` ahead of `ready` (in-flight signal is time-sensitive). `tpm inbox` is the human equivalent: lists `needs-review`, `blocked`, and `open` cross-project, most actionable first.
+
+Promotion `open` → `ready` is a deliberate human act. The canonical way is the `/tpm discuss <slug>` Claude Code skill mode, which shapes the task body via conversation and only flips status on explicit confirmation. Manual frontmatter edits also work.
+
+```mermaid
+stateDiagram-v2
+    [*] --> open: tpm new task
+
+    open --> ready: /tpm discuss (confirmed)
+    open --> dropped: /tpm discuss (rejected)
+
+    ready --> in_progress: /tpm next or /tpm <slug>
+    ready --> blocked: external dep noted
+
+    in_progress --> done: /tpm done (PR merged)
+    in_progress --> needs_feedback: poller — CI red / rebase / threads
+    in_progress --> needs_review: poller — changes requested / conflict
+    in_progress --> blocked: external dep
+    in_progress --> dropped
+
+    needs_feedback --> in_progress: /tpm feedback (round done)
+    needs_feedback --> needs_review: agent escalates
+
+    needs_review --> in_progress: human pushed update
+    needs_review --> dropped
+
+    blocked --> ready: unblocked, no PR
+    blocked --> in_progress: unblocked, PR exists
+    blocked --> dropped
+
+    done --> [*]
+    dropped --> [*]
+```
+
+The poller that flips `in-progress` → `needs-feedback` / `needs-review` ships at `scripts/recurring/check-pr-signal.sh` — see [Recurring scripts](#recurring-scripts) below.
+
+### Drain the agent queue: three flavors
+
+`tpm next` picks the next eligible task. Wrap it in one of three loops depending on how hands-off you want to be.
+
+**1. Manual** — when you're around. From any Claude Code session, type `/tpm next`; the skill picks the slug and dispatches. No setup.
+
+**2. Background tmux loop** — runs while your machine is on. Polls the queue; only fires against tasks you've explicitly opted in:
+
+```sh
+tmux new -d -s tpm-loop 'while sleep 60; do task=$(tpm next --autonomous) || continue; claude -p "/tpm $task"; done'
+tmux attach -t tpm-loop          # peek
+tmux kill-session -t tpm-loop    # stop
+```
+
+**3. Cron** — the most hands-off:
+
+```sh
+which tpm                        # e.g. /opt/homebrew/bin/tpm
+which claude                     # e.g. /opt/homebrew/bin/claude
+crontab -e
+```
+
+```cron
+# Every 4 hours, guarded by lock + drift check, dispatched through tpm orchestrate
+0 */4 * * * /opt/homebrew/bin/tpm lock acquire >/dev/null 2>&1 && (task=$(/opt/homebrew/bin/tpm next --autonomous) && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/tpm orchestrate --claude /opt/homebrew/bin/claude; /opt/homebrew/bin/tpm lock release) >> /tmp/tpm-cron.log 2>&1
+```
+
+Substitute the absolute paths from `which`. cron has a minimal `PATH`, so absolute paths are required. The machine must be awake and logged in for cron to fire.
+
+The `--autonomous` gate is the safety boundary between "an agent can run this when I ask" and "an agent can run this while I'm asleep." `tpm next --autonomous` skips ready tasks unless they have `allow_orchestrator: true` in their frontmatter; opt in per task as you trust each.
+
+`tpm orchestrate` (the dispatcher used in flavor 3) layers four safety rails on top of a bare `claude -p` invocation:
+
+- **Lock** — `tpm lock acquire` / `release`. One in-flight run at a time. Stale-lock recovery clears entries with dead PIDs. `tpm lock status` peeks at the holder; `tpm lock release --force` clears a wedge.
+- **Drift check** — `tpm drift-check <task>` refuses to dispatch if the project's `repo.local` is on a non-default branch or has uncommitted changes. Manual `/tpm <slug>` runs skip this; humans can knowingly work on a dirty tree.
+- **Time bound + revert** — the dispatched run is hard-killed at the `time_bound_minutes` boundary (cascade: task > project > global config > built-in default 30m). On timeout, `tpm revert <task>` flips the task back to `ready` so the next cron tick can retry. Exit codes mirror `timeout(1)` (`124` on timeout).
+- **Notifications** — `osascript` pings at start/finish/fail, gated by a `notifications` cascade (task > project > global config > default `{ start: false, finish: true, fail: true }`). v0 channel is mac only; non-darwin runs log to stderr and skip. `tpm notify <event> <task>` is the same hook as a CLI verb.
+
+### Recurring scripts
+
+Tasks don't have to be human-authored. A recurring script harvests state on a clock (open PRs, stale deps, alert spikes) and creates pre-shaped `ready` tasks via the CLI. No LLM, no judgment — mechanical intake.
+
+Two ship in this repo:
+
+- **`scripts/recurring/template.sh`** — copy this, fill in the four TODO blocks (source command, slug derivation, optional Context/Plan population, summary line). Idempotent on re-run via the `tpm context "$PROJECT/$slug" >/dev/null 2>&1` existence check.
+- **`scripts/recurring/check-pr-signal.sh`** — the PR-signal poller. Walks every `in-progress` task with non-empty `prs:`, queries `gh` (v0 supports `host: github` only; ado projects skipped with a warning), and flips status to `needs-feedback` (CI red / branch behind / open threads) or `needs-review` (`CHANGES_REQUESTED` / merge conflict).
+
+Customize the template for your own intake (review my open PRs, sweep stale dependency reports, file an alert-driven task, etc.):
+
+```sh
+cp ~/Developer/tpm/scripts/recurring/template.sh ~/.tpm/scripts/recurring/intake-prs.sh
+$EDITOR ~/.tpm/scripts/recurring/intake-prs.sh
+```
+
+By default, tasks created by a recurring script are `ready` but **not** `allow_orchestrator: true`, so manual `tpm next` picks them up but the unattended drain doesn't. Opt a task in for autonomous runs by adding `allow_orchestrator: true` to its frontmatter — or set it inside the recurring script for a class of tasks you trust.
+
+Cron pattern combining intake, signal poller, and drain:
+
+```cron
+# Monday morning: harvest open PRs into review tasks
+0 16 * * 1   ~/.tpm/scripts/recurring/intake-prs.sh tpm >> ~/.tpm/recurring.log 2>&1
+# Every 15 min during work hours: flip in-flight PRs to needs-feedback / needs-review
+*/15 9-19 * * 1-5   ~/Developer/tpm/scripts/recurring/check-pr-signal.sh >> ~/.tpm/recurring.log 2>&1
+# Nightly: drain whatever is ready or needs-feedback + allow_orchestrator: true
+0 6 * * *    /opt/homebrew/bin/tpm lock acquire >/dev/null 2>&1 && (task=$(/opt/homebrew/bin/tpm next --autonomous) && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/tpm orchestrate --claude /opt/homebrew/bin/claude; /opt/homebrew/bin/tpm lock release) >> /tmp/tpm-cron.log 2>&1
+```
+
+The pipeline: **scripts populate the queue → loops drain it.** Don't put judgment work in scripts; if a job needs an LLM, do it in a `/tpm <slug>` flavor instead.
+
+**Where to keep your scripts.** tpm doesn't care; pick whichever fits your sync model:
+
+- `$(tpm root)/.scripts/recurring/<name>.sh` — travels with the data tree if you sync via Dropbox/git.
+- `~/.tpm/scripts/recurring/<name>.sh` — per-device, sits next to the tpm config.
+- `~/Developer/<project>/scripts/recurring/<name>.sh` — colocated with the code the script reasons about.
+- The tpm CLI repo's `scripts/recurring/` — only for scripts generic enough to be useful upstream.
+
+### Live dashboard
+
+`tpm serve` starts a localhost HTTP UI at `http://127.0.0.1:7777` rendering the same tree as a tab you keep open. Read-only — the CLI is the writer.
+
+```sh
+tmux new -d -s tpm-web 'tpm serve'
+open http://127.0.0.1:7777
+tmux kill-session -t tpm-web     # stop
+```
+
+Routes: `/` (Your inbox / Agent queue / In flight; append `?project=<slug>` to filter), `/p/<project>` (project view), `/t/<project>/<slug>` (task view with rendered Context / Plan / Log / Outcome), `/api/refresh` (JSON for client polling). Auto-refreshes every 30s via meta-refresh — no JS framework. The markdown subset rendered in task bodies covers headings, lists, fenced code, links, and basic emphasis; intentionally rejects GFM tables / footnotes (write HTML in the body if you need them).
+
+### Per-repo wiring
+
+For each project the harness touches, the agent needs a couple of fields in `project.md` frontmatter:
+
+- **`repo.local`** — absolute path to the working tree. `tpm context` surfaces it; `tpm path <task>` prints it. Without it, `tpm orchestrate` and `/tpm <task>` can't `cd` into the repo. The one field that's effectively required for harness use.
+- **`repo.remote`** — URL. Used by `tpm report` and the live dashboard to link out.
+- **`host: github | ado`** *(optional, default `github`)* — selects which CLI agents use for PR ops (`gh` vs `az repos pr`). The PR-signal poller is github-only in v0; the agent's `/tpm feedback` mode handles either at invocation time.
+- **`workflow: <path>`** *(optional)* — relative path inside the repo to the doc agents follow when shipping (commit style, validation, PR conventions, when to close). If unset, the agent looks for `AGENTS.md` then `CLAUDE.md` in the repo root, then asks before each shipping step. See [Per-repo workflow](#per-repo-workflow).
+
+For agents that read `AGENTS.md` (Claude Code, Codex CLI, Copilot via symlink), drop a tpm-aware `AGENTS.md` at the repo root — the [tpm CLI repo's own `AGENTS.md`](AGENTS.md) is a working example. Per-agent setup details: [Using tpm with an AI coding agent](#using-tpm-with-an-ai-coding-agent).
+
+Optional per-task overrides (drop into a task's frontmatter, tightest cascade win):
+
+- `repo:` — task-level repo override (e.g., a child task that lives in a different checkout).
+- `workflow:` — different shipping doc for this task.
+- `time_bound_minutes` — tighter or looser cap than the project default.
+- `notifications:` — flip a specific event for this task.
+- `allow_orchestrator: true` — opt in to the unattended drain.
+
+### Verifying end-to-end
+
+After wiring everything up, exercise the loop against a sandbox project to confirm intake → drain → done works:
+
+```sh
+# 1. Make a sandbox project pointing at any repo (a throwaway is fine).
+tpm new project sandbox --path ~/sandbox-repo
+
+# 2. Create a tiny task and shape it.
+tpm new task sandbox hello-world --title "Print hello world"
+$EDITOR "$(tpm root)/sandbox/tasks/001-hello-world.md"   # add a Plan, set type: chore
+tpm ready sandbox/hello-world
+
+# 3. Drain manually first.
+task=$(tpm next --project sandbox)
+echo "$task"                              # sandbox/hello-world
+# /tpm $task   from a Claude Code session, or:
+claude -p "/tpm $task"
+
+# 4. Promote to autonomous + run via orchestrate (set allow_orchestrator: true first).
+tpm orchestrate --claude "$(which claude)" --minutes 5
+
+# 5. Confirm closure.
+tpm ls --status done --project sandbox
+tpm context sandbox/hello-world | tail -20    # check the Outcome section
+```
+
+The walkthrough exercises every harness piece: project + task creation, the `open` → `ready` gate, manual `tpm next`, the `--autonomous` filter, `tpm orchestrate`'s spawn + time bound + revert, and the close-out flow. If any step surprises you, the diagnostic order is:
+
+- `tpm ls --all --project sandbox` — current frontmatter state.
+- `tpm lock status` — is something else holding the lock?
+- `tpm drift-check sandbox` — is the working tree clean?
+- `/tmp/tpm-cron.log` (or wherever you redirected) — agent stdout/stderr from the last run.
+
 ## Commands
 
 ```sh
@@ -315,158 +510,6 @@ tpm context my-project/refactor-auth | claude
 
 For other agents, the working agreement in `tpm context` and `AGENTS.md` should be enough — paste them in or point the agent at the files.
 
-### `open` vs `ready`: the agent gate
-
-`open` is the author's queue — newly-created tasks land here. `ready` is the agent's queue — the Plan is well-specified and an agent can pick up the task without further shaping.
-
-Promotion `open` → `ready` is a deliberate human act. The canonical way is the `/tpm discuss <slug>` skill mode, which shapes the task body via conversation and only flips status on explicit confirmation. Manual frontmatter edits also work.
-
-```sh
-tpm next                       # print the next eligible task (needs-feedback > ready) across all projects
-tpm next --project my-project  # restrict to one project
-tpm next --autonomous          # only tasks with `allow_orchestrator: true`
-```
-
-`tpm next` exits non-zero with a stderr message if nothing is eligible, so it composes cleanly: `task=$(tpm next) && claude -p "/tpm $task"`.
-
-### Lifecycle: two queues
-
-Once `/tpm feedback` and the PR-signal poller (below) are in play, statuses split into two queues — one for the agent, one for the human:
-
-| Status            | Queue       | Picked up by                      |
-|-------------------|-------------|-----------------------------------|
-| `open`            | human       | `tpm inbox` / manual triage       |
-| `ready`           | agent       | `tpm next` → `/tpm <slug>`        |
-| `needs-feedback`  | agent       | `tpm next` → `/tpm feedback <slug>` |
-| `in-progress`     | passive     | (work happening or waiting on review) |
-| `needs-review`    | human       | `tpm inbox` (agent escalated)     |
-| `blocked`         | human       | `tpm inbox` (external dep)        |
-| `done` / `dropped`| —           | (terminal)                        |
-
-`tpm next` returns `needs-feedback` ahead of `ready` (in-flight signal is time-sensitive). `tpm inbox` is the human equivalent — it lists `needs-review`, `blocked`, and `open` across projects, ordered with the most actionable first.
-
-```mermaid
-stateDiagram-v2
-    [*] --> open: tpm new task
-
-    open --> ready: /tpm discuss (confirmed)
-    open --> dropped: /tpm discuss (rejected)
-
-    ready --> in_progress: /tpm next or /tpm <slug>
-    ready --> blocked: external dep noted
-
-    in_progress --> done: /tpm done (PR merged)
-    in_progress --> needs_feedback: poller — CI red / rebase / threads
-    in_progress --> needs_review: poller — changes requested / conflict
-    in_progress --> blocked: external dep
-    in_progress --> dropped
-
-    needs_feedback --> in_progress: /tpm feedback (round done)
-    needs_feedback --> needs_review: agent escalates
-
-    needs_review --> in_progress: human pushed update
-    needs_review --> dropped
-
-    blocked --> ready: unblocked, no PR
-    blocked --> in_progress: unblocked, PR exists
-    blocked --> dropped
-
-    done --> [*]
-    dropped --> [*]
-```
-
-The poller that flips `in-progress` → `needs-feedback` / `needs-review` is `scripts/recurring/check-pr-signal.sh` — see the cron pattern in [Recurring work](#recurring-work-two-flavors).
-
-### Recurring work: two flavors
-
-Two complementary patterns of scheduled work, neither needs new tpm schema.
-
-- **Flavor 1 — queue drain (with LLM).** Cron fires `claude -p "/tpm next --autonomous"`. The agent picks the next-ready leaf task that's `allow_orchestrator: true` and runs the standard `<task>` workflow. Use when you want pre-shaped work executed hands-off. See "Scheduling unattended runs (cron)" below.
-- **Flavor 2 — script intake (no LLM).** Cron fires a deterministic shell script under `scripts/recurring/<name>.sh`. The script harvests state (open PRs, stale deps, alert spikes) and creates tpm tasks via the CLI, then exits. No LLM, no tokens, no judgment. Use when you want to harvest state on a clock without paying per-tick.
-
-The two compose into a pipeline: **scripts harvest → ready queue grows → flavor-1 drain (or manual `/tpm next`) runs the work.**
-
-#### Flavor 2: script intake (no LLM)
-
-A recurring script is a plain shell program that uses the tpm CLI to harvest state and create tasks. There's no registration step — cron just invokes the script. tpm doesn't dictate where scripts live or what they harvest; it provides a **template** at `scripts/recurring/template.sh` that encodes the conventions, and you customize from there.
-
-**Start from the template.** Copy it to wherever you keep tooling, rename, fill in the TODO blocks:
-
-```sh
-cp ~/Developer/tpm/scripts/recurring/template.sh ~/.tpm/scripts/recurring/intake-prs.sh
-$EDITOR ~/.tpm/scripts/recurring/intake-prs.sh
-```
-
-The template runs out of the box (with a no-op iterator, so it just prints `recurring: created 0 task(s), skipped 0 existing`). The TODOs walk you through the four things you'll customize:
-
-1. **Source**: replace the `printf ''` at the bottom with the command that produces tab-separated `<unique-id>\t<title>` rows (e.g. `gh pr list --state open --json number,title --jq '.[] | "\(.number)\t\(.title)"'`).
-2. **Slug**: derive a stable slug from `$unique_id`. This is the idempotency key — same input must yield the same slug so the existence check (`tpm context "$PROJECT/$slug"`) skips on re-run.
-3. **Frontmatter and body** (optional): adjust `type:` and populate `## Context` via sed/awk before the `tpm ready` call. Examples are commented in the template.
-4. **Summary line**: rename `recurring:` to your script's name.
-
-**Where to keep user-defined scripts.** tpm doesn't care; pick whichever fits your sync model:
-
-- `$(tpm root)/.scripts/recurring/<name>.sh` — travels with the data tree if you sync via Dropbox/git.
-- `~/.tpm/scripts/recurring/<name>.sh` — per-device, sits next to the tpm config.
-- `~/Developer/<project>/scripts/recurring/<name>.sh` — colocated with the code the script reasons about.
-- The tpm CLI repo's `scripts/recurring/` — only for scripts generic enough to be useful to other tpm users; submit those as PRs upstream.
-
-cron just needs the absolute path. By default, tasks created by a recurring script are `ready` but **not** `allow_orchestrator: true`, so manual `tpm next` picks them up but the unattended drain doesn't. Opt a task in for autonomous runs by adding `allow_orchestrator: true` to its frontmatter.
-
-**Cron pattern** (your script + the drain + the PR-signal poller):
-
-```cron
-# Monday morning: harvest into tpm tasks (replace path with your customized script)
-0 16 * * 1   ~/.tpm/scripts/recurring/intake-prs.sh tpm >> ~/.tpm/recurring.log 2>&1
-# Every 15 min during work hours: flip in-flight PRs to needs-feedback / needs-review
-*/15 9-19 * * 1-5   ~/Developer/tpm/scripts/recurring/check-pr-signal.sh >> ~/.tpm/recurring.log 2>&1
-# Nightly: drain whatever is ready or needs-feedback + allow_orchestrator: true
-0 6 * * *    task=$(/opt/homebrew/bin/tpm next --autonomous) && /opt/homebrew/bin/claude -p "/tpm $task" >> /tmp/tpm-cron.log 2>&1
-```
-
-The bundled `check-pr-signal.sh` walks every `in-progress` task with a non-empty `prs:` list, queries the host CLI (`gh` for github; ado is a known v0 gap), and classifies the PR's state into the right queue. Idempotent on re-run. v0 supports `host: github` only — projects with `host: ado` are skipped with a warning.
-
-**Conventions for the script's shape** (the template enforces these by structure):
-
-- Shell script (or any language), idempotent, exit-code-clean. The template is bash because it's the common denominator.
-- Take the target tpm project slug as `$1`; resolve it explicitly (don't auto-detect across repos).
-- Use the CLI verbs (`tpm new task`, `tpm log`, `tpm ready`, etc.) for state changes — never rewrite frontmatter manually.
-- Print one summary line on success: `<name>: created N task(s), skipped M existing` (or similar).
-- Recurring scripts aren't skills (no LLM, no judgment). They're mechanical intake. If a job needs judgment, do flavor 1 instead.
-
-### Scheduling unattended runs (cron)
-
-`tpm next` composes with cron for hands-off orchestration. To set up:
-
-```sh
-which tpm                    # e.g. /opt/homebrew/bin/tpm
-which claude                 # e.g. /opt/homebrew/bin/claude
-crontab -e
-```
-
-Add an entry like:
-
-```cron
-# Run tpm orchestrator every 4 hours, guarded by the lock file and a drift check on the target repo
-0 */4 * * * /opt/homebrew/bin/tpm lock acquire >/dev/null 2>&1 && (task=$(/opt/homebrew/bin/tpm next --autonomous) && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/tpm orchestrate --claude /opt/homebrew/bin/claude; /opt/homebrew/bin/tpm lock release) >> /tmp/tpm-cron.log 2>&1
-```
-
-Substitute the absolute paths from `which`. cron has a minimal `PATH`, so absolute paths are required. If `tpm next --autonomous` finds nothing eligible it exits non-zero, the `&&` short-circuits, and orchestrate isn't invoked. (The `tpm next` call before `tpm drift-check "$task"` is for the drift target, not the dispatch — `tpm orchestrate` re-resolves the task itself so the same slug stays the source of truth across the cron entry.)
-
-`tpm lock acquire` writes `<root>/.tpm/orchestrator.lock` (with `pid` and `started_at`) and exits non-zero if a previous run's lock is still held by a live PID — preventing two firings from colliding on the same task. Stale locks (file present, PID dead) are silently taken over. `tpm lock release` removes the file. The cron line groups the dispatched run inside parens so `release` always fires after the agent exits, even on non-zero. To peek mid-run, `tpm lock status` prints the current holder and live/stale flag; `tpm lock release --force` clears a wedged lock manually.
-
-`tpm drift-check <project | task>` verifies the project's `repo.local` is on its default branch (`main` by default; reads `origin/HEAD` if set otherwise) and that `git status --porcelain` is empty. Exits non-zero with a descriptive message otherwise — so the cron line short-circuits cleanly before any agent dispatch on a polluted tree. Manual `/tpm <slug>` runs don't call drift-check; humans can knowingly start work on a dirty tree.
-
-`tpm orchestrate` picks the next `--autonomous` task, spawns `claude -p "/tpm <slug>"` with a hard time bound, and on timeout sends `SIGTERM` (then `SIGKILL` after a grace period) and runs `tpm revert <slug>` so the task returns to `ready` and the next cron tick can retry. Exit codes: child's exit code on clean run, `124` on timeout (per `timeout(1)` convention), `127` if the claude binary couldn't be spawned, `1` if no task was eligible.
-
-The time bound resolves in this cascade: `--minutes <N>` flag → task frontmatter `time_bound_minutes` → project frontmatter `time_bound_minutes` → global config (`~/.tpm/config.json` `time_bound_minutes`) → built-in default of 30 minutes. So you can declare `time_bound_minutes: 60` on a single long task without changing the global, or set a 45-minute global default and let individual tasks shorten as needed.
-
-`tpm orchestrate` also fires system notifications at three points: `start` (before the agent dispatch), `finish` (clean exit), and `fail` (timeout or non-zero exit). Each event is independently toggleable via the `notifications` block — task frontmatter wins over project, project wins over global config, global wins over the built-in default `{ start: false, finish: true, fail: true }`. v0 channel is mac `osascript`; on non-darwin the call logs to stderr and skips. `tpm notify <event> <task>` is the same hook exposed as a CLI verb so cron lines (or scripts) can fire individual events without going through the orchestrator.
-
-To opt a task in for unattended runs, set `allow_orchestrator: true` in its frontmatter. Without that flag, `tpm next --autonomous` skips the task even if its status is `ready` — that's the safety boundary between "an agent can run this when I ask" and "an agent can run this while I'm asleep".
-
-The machine must be awake and logged in for cron to fire.
-
 ## Reports
 
 ```sh
@@ -475,34 +518,6 @@ tpm report --md      # writes reports/index.md
 ```
 
 The HTML report is one self-contained file with no external assets. Dark mode supported via `prefers-color-scheme`.
-
-### Live dashboard (`tpm serve`)
-
-`tpm serve` starts a tiny local HTTP server (`127.0.0.1:7777` by default) that renders the same tree as a live dashboard. Different shape from `tpm report` — that's a static, point-in-time rollup; this is a tab you keep open while doing other work. Read-only in v0; the CLI is the writer.
-
-```sh
-tpm serve                           # http://127.0.0.1:7777/
-tpm serve --port 9000               # different port
-```
-
-Routes:
-
-- `GET /` — three queue sections: **Your inbox** (`needs-review` / `blocked` / `open`), **Agent queue** (`needs-feedback` > `ready`), **In flight** (`in-progress`). Auto-refreshes via meta-refresh every 30s. Append `?project=<slug>` to filter to a single project.
-- `GET /p/<project>` — project view: goal/context block + tasks grouped by status.
-- `GET /t/<project>/<slug>` (or `/t/<project>/<parent>/<child>`) — task view: status / type / repo / PRs / parent / children sidebar, plus the rendered Context / Plan / Log / Outcome body.
-- `GET /api/refresh` — JSON `{ generated, counts }` for client-side polling.
-
-The markdown subset rendered in task bodies covers ATX headings, paragraphs, lists (single-level nesting), fenced code blocks, links, and `**bold**`/`*italic*`/`` `code` ``. No tables, no GFM extensions — write HTML in the body if you need them. Same ethos as the YAML parser: extending the in-tree implementation is cheaper than adding a dep.
-
-**Background it.** `tpm serve` runs in the foreground and prints to stderr; for an always-on dashboard, throw it in tmux:
-
-```sh
-tmux new -d -s tpm-web 'tpm serve'
-tmux attach -t tpm-web    # peek
-tmux kill-session -t tpm-web
-```
-
-No daemonization built into the CLI on purpose — tmux/launchd/systemd already do that job better.
 
 ## Tests
 
