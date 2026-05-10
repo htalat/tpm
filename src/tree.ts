@@ -1,4 +1,4 @@
-import { mkdirSync, renameSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, renameSync, readdirSync, readFileSync, rmdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse } from "./frontmatter.ts";
 
@@ -172,8 +172,24 @@ export function archiveTask(task: Task): string {
     const archiveDir = join(tasksDir, "archive");
     mkdirSync(archiveDir, { recursive: true });
     const dest = join(archiveDir, task.slug);
-    if (isDir(dest) || isFile(dest)) {
+    if (isFile(dest)) {
       throw new Error(`Archived task already exists: ${dest}`);
+    }
+    if (isDir(dest)) {
+      // Children were archived individually first; merge the live folder into the
+      // existing archive folder. Refuse only on real filename collisions.
+      const entries = readdirSync(task.dir);
+      for (const entry of entries) {
+        const target = join(dest, entry);
+        if (isFile(target) || isDir(target)) {
+          throw new Error(`Archived task already exists: ${target}`);
+        }
+      }
+      for (const entry of entries) {
+        renameSync(join(task.dir, entry), join(dest, entry));
+      }
+      rmdirSync(task.dir);
+      return join(dest, "task.md");
     }
     renameSync(task.dir, dest);
     return join(dest, "task.md");
