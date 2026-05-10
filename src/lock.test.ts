@@ -332,8 +332,32 @@ test("listTaskLocks: returns every claimed task with agent-id + age", () => {
     for (const e of list) {
       // Allow tiny negatives — fs mtime granularity can be coarser than Date.now().
       assert.ok(e.ageMinutes < 1, `age sanity: ${e.qualifiedSlug} -> ${e.ageMinutes}`);
+      assert.ok(e.acquiredAgeMinutes < 1, `acquiredAge sanity: ${e.qualifiedSlug} -> ${e.acquiredAgeMinutes}`);
       assert.ok(e.data.agentId.length > 0);
     }
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("listTaskLocks: heartbeat refresh updates ageMinutes but not acquiredAgeMinutes", () => {
+  const root = setupRoot();
+  try {
+    acquireTask(root, "alpha/001", "agent-a");
+    const path = taskLockPath(root, "alpha/001");
+    // Backdate both atime + mtime + (effectively) keep birthtime intact.
+    // utimesSync only touches atime/mtime — birthtime stays at the original.
+    const tenMinAgo = (Date.now() - 10 * 60_000) / 1000;
+    utimesSync(path, tenMinAgo, tenMinAgo);
+    const before = listTaskLocks(root)[0];
+    assert.ok(before.ageMinutes >= 9, `pre-heartbeat heartbeat-age: ${before.ageMinutes}`);
+    heartbeatTask(root, "alpha/001", "agent-a");
+    const after = listTaskLocks(root)[0];
+    assert.ok(after.ageMinutes < 1, `post-heartbeat heartbeat-age: ${after.ageMinutes}`);
+    // acquiredAgeMinutes should NOT have been refreshed by the heartbeat (it
+    // tracks file creation, not modification). Only meaningful where
+    // birthtime is supported (macOS APFS); on Linux fallback this collapses
+    // to ageMinutes, so don't make a strict assertion.
   } finally {
     rmTempDir(root);
   }

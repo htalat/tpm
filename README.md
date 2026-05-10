@@ -193,12 +193,30 @@ crontab -e
 
 ```cron
 # Every 4 hours, atomic per-task claim + drift-check, dispatched through tpm orchestrate
-0 */4 * * * TPM_AGENT_ID=nightly-runner task=$(/opt/homebrew/bin/tpm next --autonomous --claim "$TPM_AGENT_ID") && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/tpm orchestrate --task "$task" --claude /opt/homebrew/bin/claude >> /tmp/tpm-cron.log 2>&1
+0 */4 * * * TPM_AGENT_ID=nightly-runner task=$(/opt/homebrew/bin/tpm next --autonomous --claim "$TPM_AGENT_ID") && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/tpm orchestrate --task "$task" --claude /opt/homebrew/bin/claude >> ~/.tpm/orchestrator-nightly-runner.log 2>&1
 ```
 
 Substitute the absolute paths from `which`. cron has a minimal `PATH`, so absolute paths are required. The machine must be awake and logged in for cron to fire.
 
-`TPM_AGENT_ID` names the agent for `tpm lock list` and stale-lock recovery. Pick a stable string per cron entry (`nightly-runner`, `pr-feedback-runner`, etc.) so the lock listing is human-readable. For ad-hoc shell use, `${HOSTNAME}-$$` is a fine default.
+`TPM_AGENT_ID` names the agent for `tpm lock list`, stale-lock recovery, and notification messages. Pick a stable string per cron entry (`nightly-runner`, `pr-feedback-runner`, etc.) so the lock listing is human-readable and notifications can tell you which runner pinged. For ad-hoc shell use, `${HOSTNAME}-$$` is a fine default.
+
+**Per-agent log files.** Redirect each cron entry's stdout/stderr to its own file (`~/.tpm/orchestrator-<agent-id>.log`) so multiple agents don't interleave their logs. Same convention for tmux loops:
+
+```sh
+tmux new -d -s tpm-loop-laptop \
+  'export TPM_AGENT_ID=tmux-laptop; while sleep 60; do task=$(tpm next --autonomous --claim "$TPM_AGENT_ID") || continue; tpm orchestrate --task "$task" --claude $(which claude); done >> ~/.tpm/orchestrator-tmux-laptop.log 2>&1'
+```
+
+`tpm lock list` is the live view of who's running what:
+
+```
+$ tpm lock list
+PROJECT/SLUG                          AGENT-ID            ACQUIRED  HEARTBEAT
+acme/refactor-auth                    nightly-runner      12m       12s
+web/migrate-orm                       laptop-htalat-7421  3m        1s
+```
+
+Stale heartbeats (much larger than acquired-age) are visually obvious. `tpm lock release-stale` clears them; orchestrate runs that automatically on startup.
 
 The `--autonomous` gate is the safety boundary between "an agent can run this when I ask" and "an agent can run this while I'm asleep." `tpm next --autonomous --claim` skips ready tasks unless they have `allow_orchestrator: true`; opt in per task as you trust each. The `--claim` flag turns the pick into an atomic claim (`O_CREAT | O_EXCL` on `<root>/.tpm/locks/<project>--<slug>.lock`) so multiple cron entries running in parallel don't double-dispatch on the same task.
 
@@ -231,11 +249,11 @@ Cron pattern combining intake, signal poller, and drain:
 
 ```cron
 # Monday morning: harvest open PRs into review tasks
-0 16 * * 1   ~/.tpm/scripts/recurring/intake-prs.sh tpm >> ~/.tpm/recurring.log 2>&1
+0 16 * * 1   ~/.tpm/scripts/recurring/intake-prs.sh tpm >> ~/.tpm/recurring-intake-prs.log 2>&1
 # Every 15 min during work hours: flip in-flight PRs to needs-feedback / needs-review
-*/15 9-19 * * 1-5   ~/Developer/tpm/scripts/recurring/check-pr-signal.sh >> ~/.tpm/recurring.log 2>&1
+*/15 9-19 * * 1-5   ~/Developer/tpm/scripts/recurring/check-pr-signal.sh >> ~/.tpm/recurring-check-pr-signal.log 2>&1
 # Nightly: drain whatever is ready or needs-feedback + allow_orchestrator: true
-0 6 * * *    TPM_AGENT_ID=nightly-runner task=$(/opt/homebrew/bin/tpm next --autonomous --claim "$TPM_AGENT_ID") && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/tpm orchestrate --task "$task" --claude /opt/homebrew/bin/claude >> /tmp/tpm-cron.log 2>&1
+0 6 * * *    TPM_AGENT_ID=nightly-runner task=$(/opt/homebrew/bin/tpm next --autonomous --claim "$TPM_AGENT_ID") && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/tpm orchestrate --task "$task" --claude /opt/homebrew/bin/claude >> ~/.tpm/orchestrator-nightly-runner.log 2>&1
 ```
 
 The pipeline: **scripts populate the queue → loops drain it.** Don't put judgment work in scripts; if a job needs an LLM, do it in a `/tpm <slug>` flavor instead.
@@ -310,7 +328,7 @@ The walkthrough exercises every harness piece: project + task creation, the `ope
 - `tpm ls --all --project sandbox` — current frontmatter state.
 - `tpm lock list` — what's currently locked, and by which agent?
 - `tpm drift-check sandbox` — is the working tree clean?
-- `/tmp/tpm-cron.log` (or wherever you redirected) — agent stdout/stderr from the last run.
+- `~/.tpm/orchestrator-<agent-id>.log` (or wherever you redirected) — agent stdout/stderr from the last run.
 
 ## Commands
 

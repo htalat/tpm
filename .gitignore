@@ -2,5 +2,6 @@ node_modules/
 .DS_Store
 reports/
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 tmp/*
 !tmp/.gitkeep
