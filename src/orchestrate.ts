@@ -5,6 +5,7 @@ import { selectNext } from "./queue.ts";
 import { findTask } from "./resolve.ts";
 import * as mutate from "./mutate.ts";
 import { readConfig, DEFAULT_TIME_BOUND_MINUTES } from "./config.ts";
+import { shouldNotify, fireNotification } from "./notify.ts";
 import type { Project, Task } from "./tree.ts";
 
 export interface ResolveTimeBoundInput {
@@ -70,7 +71,12 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
 
   console.error(`tpm orchestrate: ${slug} (time bound: ${minutes}m, claude: ${claudeBin})`);
 
-  return runWithTimeout(claudeBin, ["-p", `/tpm ${slug}`], minutes, grace, () => {
+  // Notify "start" before the spawn — best-effort, never blocks.
+  if (shouldNotify("start", { task: pick.task, project: pick.project, globalConfig: cfg.notifications })) {
+    fireNotification("tpm", `${pick.task.slug}: start`);
+  }
+
+  const result = await runWithTimeout(claudeBin, ["-p", `/tpm ${slug}`], minutes, grace, () => {
     // Re-resolve the task — its frontmatter may have been mutated mid-run.
     const projectsAfter = loadProjects(root);
     const match = findTask(projectsAfter, slug);
@@ -84,10 +90,21 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     } catch (e) {
       console.error(`tpm orchestrate: revert failed: ${(e as Error).message}`);
     }
-    // TODO(004-notifications): fire fail notification here once the
-    // notification config cascade ships. Until then, the cron log carries
-    // the only visible signal.
   });
+
+  // Notify finish/fail. Re-resolve the task because mid-run frontmatter
+  // mutations can flip the cascade (e.g. agent set notifications.fail: false).
+  // Fall back to the original pick if re-resolution fails.
+  const projectsAfter = loadProjects(root);
+  const matchAfter = findTask(projectsAfter, slug);
+  const notifyTask = matchAfter?.task ?? pick.task;
+  const notifyProject = matchAfter?.project ?? pick.project;
+  const event = result.exitCode === 0 ? "finish" : "fail";
+  if (shouldNotify(event, { task: notifyTask, project: notifyProject, globalConfig: cfg.notifications })) {
+    fireNotification("tpm", `${pick.task.slug}: ${event}`);
+  }
+
+  return result;
 }
 
 function runWithTimeout(

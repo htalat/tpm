@@ -110,6 +110,36 @@ test("readConfig: rejects non-positive or non-integer time_bound_minutes", () =>
   }
 });
 
+test("readConfig: accepts notifications block (any subset of keys)", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({
+    root: "/x",
+    notifications: { start: true, finish: false, fail: true },
+  }));
+  assert.deepEqual(readConfig(), {
+    root: "/x",
+    notifications: { start: true, finish: false, fail: true },
+  });
+
+  writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x", notifications: { fail: false } }));
+  assert.deepEqual(readConfig(), { root: "/x", notifications: { fail: false } });
+});
+
+test("readConfig: rejects non-object notifications", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x", notifications: "on" }));
+  assert.throws(() => readConfig(), /"notifications" must be an object/);
+
+  writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x", notifications: ["start"] }));
+  assert.throws(() => readConfig(), /"notifications" must be an object, got array/);
+});
+
+test("readConfig: rejects non-boolean notifications.<event>", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x", notifications: { start: "yes" } }));
+  assert.throws(() => readConfig(), /"notifications.start" must be a boolean/);
+});
+
 test("readConfig: missing optional fields produce undefined, not present in object", () => {
   writeConfig({ root: "/x" });
   writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x" }));

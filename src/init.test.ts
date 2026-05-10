@@ -27,6 +27,27 @@ test("init: creates root, reports/, .tpm/templates/, and writes config", () => {
     const cfg = readConfig();
     assert.equal(cfg.root, target);
     assert.equal(cfg.timezone, DEFAULT_TIMEZONE);
+    assert.deepEqual(cfg.notifications, { start: false, finish: true, fail: true });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("init: preserves existing notifications block on re-run (doesn't clobber)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "tpm-init-"));
+  try {
+    const target = join(dir, "tree");
+    init(target);
+    writeFileSync(
+      CONFIG_PATH,
+      JSON.stringify({
+        root: target,
+        timezone: DEFAULT_TIMEZONE,
+        notifications: { start: true, finish: false, fail: true },
+      }, null, 2) + "\n",
+    );
+    init(target);
+    assert.deepEqual(readConfig().notifications, { start: true, finish: false, fail: true });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
