@@ -21,9 +21,13 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
   - **File form** (default): `tasks/NNN-slug.md`. Single file.
   - **Folder form**: `tasks/NNN-slug/task.md` plus optional `NNN-<sub>.md` siblings (each with `parent: NNN-slug` in frontmatter) and any other files (scratch notes, screenshots, design docs). The directory name is the parent's slug.
 - A task with any children is a **container**: not actionable, never returned by `tpm next`, can't be discussed/started directly.
-- **Statuses**: `open | ready | in-progress | blocked | done | dropped`
-  - `open` = the user's queue (not yet shaped for an agent).
-  - `ready` = agent's queue (Plan is well-specified, an agent can pick it up). Promoted via `/tpm discuss`.
+- **Statuses**: `open | ready | in-progress | needs-feedback | needs-review | blocked | done | dropped`
+  - `open` = user's queue (not yet shaped for an agent).
+  - `ready` = agent's queue. Promoted via `/tpm discuss`.
+  - `in-progress` = work in flight (for `type: pr` tasks, this includes the PR-open / awaiting-merge phase).
+  - `needs-feedback` = agent's queue for in-flight PRs. Routes to `/tpm feedback`. Set by the PR-signal poller (CI red, behind main, open threads) or by the agent during a feedback round.
+  - `needs-review` = human's queue. Agent escalated (design pushback, merge conflict requiring judgment, `CHANGES_REQUESTED`). Surfaced via `tpm inbox`.
+  - `blocked` = human's queue, external dep. Surfaced via `tpm inbox`.
   - Parent containers display a roll-up status (all children done → done; any in-progress → in-progress; else parent's declared status). The roll-up is display only — not written to frontmatter.
 - **Types**: `pr | investigation | spike | chore`
 - **Project body**: `## Goal`, `## Context`, `## Notes`, `## Log` (project-level timeline for cross-task events — pivots, milestones, decisions spanning tasks; keep per-task events in the task's own Log).
@@ -47,7 +51,7 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
 | `/tpm new <project> <slug>`         | Scaffold a task                       |
 | `/tpm new project <slug>`           | Scaffold a project                    |
 | `/tpm fold <slug>`                  | Fold a task to folder-form            |
-| `/tpm ls`, `/tpm report`, `/tpm root`, `/tpm path`, `/tpm context`, `/tpm init` | Pass through to the corresponding `tpm` subcommand |
+| `/tpm ls`, `/tpm inbox`, `/tpm report`, `/tpm root`, `/tpm path`, `/tpm context`, `/tpm init` | Pass through to the corresponding `tpm` subcommand |
 
 Read `$ARGUMENTS` and pick the matching action. If empty, default to "situational awareness".
 
@@ -87,10 +91,12 @@ Shape a task's Plan before any execution. Pure conversation that lands in the ta
 Discuss mode is the canonical way to move a task from `open` to `ready`. A human can also flip the status manually, but `/tpm discuss` encodes the discipline (Context/Plan populated, Log timestamped, explicit confirmation).
 
 ### Pick the next ready task and run it (`/tpm next`)
-Auto-select mode. Resolves the next eligible leaf task (parents are skipped) and dispatches the **start a task** mode on it.
-1. Run `tpm next` (optionally with `--project <slug>`). It prints a qualified slug (`<project>/<slug>` or `<project>/<parent>/<child>`) on success or exits non-zero if nothing is ready.
-2. If non-zero, surface the message ("No ready tasks…") and stop. Don't fall back to `open` tasks — the human needs to promote one via `/tpm discuss` first.
-3. On success, dispatch the **start a task** mode on the returned slug — same flow as if the user had typed `/tpm <slug>` directly (flip status to `in-progress`, `cd`, execute Plan, log progress, open PR).
+Auto-select mode. Resolves the next eligible leaf task (parents are skipped) and dispatches the right mode based on its status. Selection prefers `needs-feedback` over `ready`.
+1. Run `tpm next` (optionally with `--project <slug>`). It prints a qualified slug on success or exits non-zero if nothing is eligible.
+2. If non-zero, surface the message and stop. Don't fall back to `open` tasks — the human needs to promote one via `/tpm discuss` first.
+3. On success, look at the task's status (`tpm context <slug>` shows it). Dispatch by status:
+   - `ready` → **start a task** mode (same flow as `/tpm <slug>`).
+   - `needs-feedback` → **handle PR feedback** mode (same flow as `/tpm feedback <slug>`).
 
 `/tpm next` is the manual path. Use `tpm next --autonomous` only from scheduled/unattended runs (filters to tasks with `allow_orchestrator: true`); the manual `/tpm next` skill mode does not pass `--autonomous`.
 

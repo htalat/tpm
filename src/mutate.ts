@@ -4,7 +4,16 @@ import { now } from "./time.ts";
 import { archiveTask } from "./tree.ts";
 import type { Task } from "./tree.ts";
 
-export const VALID_STATUSES = ["open", "ready", "in-progress", "blocked", "done", "dropped"] as const;
+export const VALID_STATUSES = [
+  "open",
+  "ready",
+  "in-progress",
+  "needs-feedback",
+  "needs-review",
+  "blocked",
+  "done",
+  "dropped",
+] as const;
 export type Status = typeof VALID_STATUSES[number];
 
 export interface MutateResult {

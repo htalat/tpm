@@ -134,7 +134,8 @@ tpm log <task> "<message>"                # append a single timestamped Log line
 tpm pr <task> <url>                       # add URL to prs:, log opened PR
 tpm archive <task | project/task>         # move a done/dropped task (or whole folder-form parent) to tasks/archive/
 tpm fold <task | project/task>            # promote a file-form task to folder-form (idempotent)
-tpm next [--project <slug>] [--autonomous]  # print the next ready leaf task (oldest first); exits non-zero if none
+tpm next [--project <slug>] [--autonomous]  # print next leaf task (needs-feedback > ready, oldest first); exits non-zero if none
+tpm inbox                                 # list human-queue tasks (needs-review, blocked, open) cross-project
 tpm report [--md]
 tpm root                                  # print the tree root
 tpm path <project | task | project/task>  # print the local checkout path
@@ -198,7 +199,7 @@ workflow: AGENTS.md   # optional: path (relative to repo root) to the doc agents
 title: Refactor auth middleware
 slug: refactor-auth
 project: my-project
-status: open          # open | ready | in-progress | blocked | done | dropped
+status: open          # open | ready | in-progress | needs-feedback | needs-review | blocked | done | dropped
 type: pr              # pr | investigation | spike | chore
 created: 2026-04-25 09:30 PDT
 closed:               # YYYY-MM-DD HH:MM ZZZ when status flips to done
@@ -307,12 +308,60 @@ For other agents, the working agreement in `tpm context` and `AGENTS.md` should 
 Promotion `open` → `ready` is a deliberate human act. The canonical way is the `/tpm discuss <slug>` skill mode, which shapes the task body via conversation and only flips status on explicit confirmation. Manual frontmatter edits also work.
 
 ```sh
-tpm next                       # print the next ready task across all projects
+tpm next                       # print the next eligible task (needs-feedback > ready) across all projects
 tpm next --project my-project  # restrict to one project
-tpm next --autonomous          # only ready tasks with `allow_orchestrator: true`
+tpm next --autonomous          # only tasks with `allow_orchestrator: true`
 ```
 
 `tpm next` exits non-zero with a stderr message if nothing is eligible, so it composes cleanly: `task=$(tpm next) && claude -p "/tpm $task"`.
+
+### Lifecycle: two queues
+
+Once `/tpm feedback` and the PR-signal poller (below) are in play, statuses split into two queues — one for the agent, one for the human:
+
+| Status            | Queue       | Picked up by                      |
+|-------------------|-------------|-----------------------------------|
+| `open`            | human       | `tpm inbox` / manual triage       |
+| `ready`           | agent       | `tpm next` → `/tpm <slug>`        |
+| `needs-feedback`  | agent       | `tpm next` → `/tpm feedback <slug>` |
+| `in-progress`     | passive     | (work happening or waiting on review) |
+| `needs-review`    | human       | `tpm inbox` (agent escalated)     |
+| `blocked`         | human       | `tpm inbox` (external dep)        |
+| `done` / `dropped`| —           | (terminal)                        |
+
+`tpm next` returns `needs-feedback` ahead of `ready` (in-flight signal is time-sensitive). `tpm inbox` is the human equivalent — it lists `needs-review`, `blocked`, and `open` across projects, ordered with the most actionable first.
+
+```mermaid
+stateDiagram-v2
+    [*] --> open: tpm new task
+
+    open --> ready: /tpm discuss (confirmed)
+    open --> dropped: /tpm discuss (rejected)
+
+    ready --> in_progress: /tpm next or /tpm <slug>
+    ready --> blocked: external dep noted
+
+    in_progress --> done: /tpm done (PR merged)
+    in_progress --> needs_feedback: poller — CI red / rebase / threads
+    in_progress --> needs_review: poller — changes requested / conflict
+    in_progress --> blocked: external dep
+    in_progress --> dropped
+
+    needs_feedback --> in_progress: /tpm feedback (round done)
+    needs_feedback --> needs_review: agent escalates
+
+    needs_review --> in_progress: human pushed update
+    needs_review --> dropped
+
+    blocked --> ready: unblocked, no PR
+    blocked --> in_progress: unblocked, PR exists
+    blocked --> dropped
+
+    done --> [*]
+    dropped --> [*]
+```
+
+The poller that flips `in-progress` → `needs-feedback` / `needs-review` is `scripts/recurring/check-pr-signal.sh` — see the cron pattern in [Recurring work](#recurring-work-two-flavors).
 
 ### Recurring work: two flavors
 
@@ -350,14 +399,18 @@ The template runs out of the box (with a no-op iterator, so it just prints `recu
 
 cron just needs the absolute path. By default, tasks created by a recurring script are `ready` but **not** `allow_orchestrator: true`, so manual `tpm next` picks them up but the unattended drain doesn't. Opt a task in for autonomous runs by adding `allow_orchestrator: true` to its frontmatter.
 
-**Cron pattern** (your script + the drain):
+**Cron pattern** (your script + the drain + the PR-signal poller):
 
 ```cron
 # Monday morning: harvest into tpm tasks (replace path with your customized script)
 0 16 * * 1   ~/.tpm/scripts/recurring/intake-prs.sh tpm >> ~/.tpm/recurring.log 2>&1
-# Nightly: drain whatever is ready + allow_orchestrator: true
+# Every 15 min during work hours: flip in-flight PRs to needs-feedback / needs-review
+*/15 9-19 * * 1-5   ~/Developer/tpm/scripts/recurring/check-pr-signal.sh >> ~/.tpm/recurring.log 2>&1
+# Nightly: drain whatever is ready or needs-feedback + allow_orchestrator: true
 0 6 * * *    task=$(/opt/homebrew/bin/tpm next --autonomous) && /opt/homebrew/bin/claude -p "/tpm $task" >> /tmp/tpm-cron.log 2>&1
 ```
+
+The bundled `check-pr-signal.sh` walks every `in-progress` task with a non-empty `prs:` list, queries the host CLI (`gh` for github; ado is a known v0 gap), and classifies the PR's state into the right queue. Idempotent on re-run. v0 supports `host: github` only — projects with `host: ado` are skipped with a warning.
 
 **Conventions for the script's shape** (the template enforces these by structure):
 

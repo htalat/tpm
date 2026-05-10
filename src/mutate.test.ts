@@ -438,6 +438,34 @@ test("status: rejects unknown status", () => {
   }
 });
 
+test("status: in-progress -> needs-feedback (poller path) is accepted", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    setStatus(t, "needs-feedback");
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: needs-feedback/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("status: needs-feedback -> needs-review (agent escalation) is accepted", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "needs-feedback");
+    const t = loadTask(root, "alpha", "001-a");
+    setStatus(t, "needs-review");
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: needs-review/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 test("status: open -> dropped works (escape hatch)", () => {
   const root = mkTempDir();
   try {

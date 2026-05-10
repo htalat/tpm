@@ -5,8 +5,9 @@ import { findRoot } from "./root.ts";
 import { newProject, newTask } from "./new.ts";
 import { context, repoPath } from "./context.ts";
 import { report } from "./report.ts";
-import { archiveTask, foldTask, isParent, loadProjects, flatTasks, rollupStatus } from "./tree.ts";
-import type { Project, Task } from "./tree.ts";
+import { archiveTask, foldTask, loadProjects, flatTasks, rollupStatus } from "./tree.ts";
+import type { Task } from "./tree.ts";
+import { selectNext, inboxItems } from "./queue.ts";
 import { findTask, findRepoTarget } from "./resolve.ts";
 import { init } from "./init.ts";
 import { CONFIG_PATH } from "./config.ts";
@@ -268,30 +269,30 @@ try {
       const projects = loadProjects(root);
       const projectFilter = parseFlag(args, "--project");
       const autonomous = args.includes("--autonomous");
-      const candidates: Array<{ project: Project; task: Task }> = [];
-      for (const p of projects) {
-        if (projectFilter && p.slug !== projectFilter) continue;
-        for (const t of flatTasks(p.tasks)) {
-          if (t.archived) continue;
-          if (isParent(t)) continue;
-          if (t.data.status !== "ready") continue;
-          if (autonomous && t.data.allow_orchestrator !== true) continue;
-          candidates.push({ project: p, task: t });
-        }
-      }
-      if (candidates.length === 0) {
+      const pick = selectNext(projects, { projectFilter, autonomous });
+      if (!pick) {
         const where = projectFilter ? ` in project "${projectFilter}"` : "";
         const gate = autonomous ? " with allow_orchestrator: true" : "";
-        console.error(`No ready tasks${where}${gate}.`);
+        console.error(`No ready or needs-feedback tasks${where}${gate}.`);
         process.exit(1);
       }
-      candidates.sort((a, b) => {
-        const ac = String(a.task.data.created ?? "");
-        const bc = String(b.task.data.created ?? "");
-        return ac.localeCompare(bc);
-      });
-      const pick = candidates[0];
       console.log(qualifySlug(pick.project.slug, pick.task));
+      break;
+    }
+    case "inbox": {
+      const root = findRoot();
+      const projects = loadProjects(root);
+      const items = inboxItems(projects);
+      if (items.length === 0) {
+        console.log("Inbox empty (no needs-review, blocked, or open tasks).");
+        break;
+      }
+      console.log(`Inbox (${items.length} task${items.length === 1 ? "" : "s"}):`);
+      for (const it of items) {
+        const slug = qualifySlug(it.project.slug, it.task);
+        const title = strOr(it.task.data.title, it.task.slug);
+        console.log(`  ${pad(it.status, 13)} ${pad(slug, 36)} ${title}`);
+      }
       break;
     }
     case "version":
@@ -402,7 +403,8 @@ Usage:
   tpm lock acquire | release [--force] | status
                                              concurrency guard for unattended orchestrator runs
   tpm drift-check <project | task>           verify the project's repo.local is on its default branch + clean
-  tpm next [--project <slug>] [--autonomous] print the next ready leaf task (oldest first)
+  tpm next [--project <slug>] [--autonomous] print next leaf task (needs-feedback > ready, oldest first)
+  tpm inbox                                  list human-queue tasks (needs-review, blocked, open) cross-project
   tpm report [--md]
   tpm root                                   print the tree root
   tpm path <project | task | project/task>   print the local repo path
