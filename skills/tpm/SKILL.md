@@ -47,6 +47,7 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
 | `/tpm <slug>`                       | Start a task                          |
 | `/tpm discuss <slug>`               | Shape an open task                    |
 | `/tpm next`                         | Pick the next ready task and run it   |
+| `/tpm feedback <slug>`              | Handle PR feedback (in-flight)        |
 | `/tpm done <slug>`                  | Close out                             |
 | `/tpm new <project> <slug>`         | Scaffold a task                       |
 | `/tpm new project <slug>`           | Scaffold a project                    |
@@ -99,6 +100,35 @@ Auto-select mode. Resolves the next eligible leaf task (parents are skipped) and
    - `needs-feedback` → **handle PR feedback** mode (same flow as `/tpm feedback <slug>`).
 
 `/tpm next` is the manual path. Use `tpm next --autonomous` only from scheduled/unattended runs (filters to tasks with `allow_orchestrator: true`); the manual `/tpm next` skill mode does not pass `--autonomous`.
+
+### Handle PR feedback (`/tpm feedback <slug>`)
+For the in-flight phase of a `type: pr` task — the PR is open, the task is `in-progress` or `needs-feedback`, and a CI failure / stale branch / review thread needs attention. Re-entrant: invoke once per round.
+
+1. Run `tpm context <arg>`. Read the briefing. **Refuse if `prs:` is empty** — there's no PR to give feedback on. If the task is `done`/`dropped`/`blocked`, also refuse.
+2. **Gather signal** for each linked PR using the host CLI per `Host:` in the briefing (`gh` for github, `az repos pr` for ado):
+   - `gh pr view <url> --json state,reviewDecision,mergeStateStatus,statusCheckRollup,reviewThreads`
+   - Surface review state (APPROVED / CHANGES_REQUESTED / COMMENTED / REVIEW_REQUIRED), open review threads (line + body), CI status, mergeability (CLEAN / BEHIND / DIRTY / BLOCKED / UNSTABLE).
+3. **Pick what to address** in priority order (rebase first, CI next, threads last) — rebases resolve a class of issues; CI tells you whether the current code even works:
+   1. `BEHIND` (stale) or `DIRTY` (conflict)
+   2. CI failures
+   3. Open review threads
+   If nothing is actionable, tell the user and stop. Status unchanged.
+4. `cd "$(tpm path <arg>)"` and check out the PR's branch (`gh pr checkout <url>` for github; fetch + checkout the source branch for ado).
+5. **Apply the fix:**
+   - **Stale / conflict**: `git fetch origin main && git rebase origin/main`. Non-trivial conflicts → escalate (step 7).
+   - **CI failures**: `gh run view <run-id> --log-failed`; fix; commit.
+   - **Review threads**: for threads with concrete code suggestions, apply and commit. When the fix matches the suggestion exactly, you may resolve via `gh api .../threads/<id>/resolve`. Ambiguous / design-level / debatable threads → escalate.
+6. **Push** the fix: `git push`. After a rebase, `git push --force-with-lease` (never plain `--force` — it can clobber a reviewer's concurrent commit).
+7. **Escalate to `needs-review`** when the signal isn't agent-addressable (non-trivial conflict, design pushback, ambiguous thread, `CHANGES_REQUESTED` you can't translate to a fix):
+   - `tpm status <arg> needs-review`
+   - `tpm log <arg> "escalated — <one-line reason; link the thread or run>"`
+   - Surface to the user and stop. Don't argue with the reviewer in chat.
+8. **Log + status** after a successful round:
+   - `tpm log <arg> "addressed feedback — <one-line summary>"`
+   - If the task was `needs-feedback`, run `tpm status <arg> in-progress`. If already `in-progress`, no-op.
+9. The PR-signal poller re-flags the task if a new signal lands. Each round = one more `/tpm feedback <arg>` invocation.
+
+Don't auto-merge, don't reply conversationally without a fix, don't long-poll for CI, don't `--force` push. Always `--force-with-lease` for rewritten history.
 
 ### Close out (`/tpm done <slug>`)
 1. Read the task file.

@@ -138,6 +138,44 @@ Auto-select mode. Resolves the next eligible leaf task (parents are skipped) and
 
 `tpm next --autonomous` is for scheduled/unattended runs only — it filters to tasks with `allow_orchestrator: true`. Manual invocations don't pass `--autonomous`.
 
+### Handle PR feedback
+For the in-flight phase of a `type: pr` task — the PR is open, the task is `in-progress` or `needs-feedback`, and a CI failure / stale branch / review thread needs attention. Re-entrant: invoke once per round of feedback. Don't use this to start a task or to close one out; it sits between those.
+
+1. Run `tpm context <slug>`. Read the briefing in full. **Refuse if `prs:` is empty** — there's no PR to give feedback on; the user probably wants **start a task** or **close out** instead.
+2. If the task is `done`, `dropped`, or `blocked`, refuse — feedback only applies to in-flight work.
+3. **Gather signal** for each linked PR using the host CLI per `Host:` in the briefing (`gh` for `github`, `az repos pr` for `ado`):
+   - GitHub: `gh pr view <url> --json state,reviewDecision,mergeStateStatus,statusCheckRollup,reviewThreads`
+   - ADO: `az repos pr show --id <id> --query '...' -o json`
+   - Surface to the user (and yourself): review state (`APPROVED` / `CHANGES_REQUESTED` / `COMMENTED` / `REVIEW_REQUIRED`), open review threads with line + body, CI status, mergeability (`CLEAN` / `BEHIND` / `DIRTY` / `BLOCKED` / `UNSTABLE`).
+4. **Pick what to address** in priority order — rebase resolves a class of issues before you spend cycles on threads, CI tells you whether the current code even works:
+   1. `BEHIND` (stale branch) or `DIRTY` (merge conflict)
+   2. CI failures
+   3. Open review threads
+   If nothing is actionable (CI green, mergeable, no open threads, `APPROVED` or `REVIEW_REQUIRED` with nothing pending), tell the user there's nothing to address and stop. Status stays where it is.
+5. `cd "$(tpm path <slug>)"` and check out the PR's branch:
+   - GitHub: `gh pr checkout <url>`
+   - ADO: fetch and check out the source branch (`git fetch origin && git checkout <branch>`)
+6. **Apply the fix** by category:
+   - **Stale / conflict**: `git fetch origin main && git rebase origin/main`. If conflicts are non-trivial (more than the rebase tool can auto-resolve, or a semantic merge), **escalate** — see step 8. If clean, continue.
+   - **CI failures**: pull the failed log (`gh run view <run-id> --log-failed` or the ADO equivalent). Fix the failing test/build. Commit with a clear message ("Fix: <what failed> — <one-line cause>").
+   - **Review threads**: read each unresolved thread. For threads with a concrete code suggestion, apply the fix and commit. When the fix matches the suggestion exactly (e.g., reviewer pasted code, you applied it verbatim), you may resolve the thread (`gh api repos/<owner>/<repo>/pulls/<n>/threads/<id>/resolve` or the ADO equivalent). For ambiguous, debatable, or design-level threads, **don't apply a guess** — escalate.
+7. **Push** the fix commits: `git push`. After a rebase, use `git push --force-with-lease` (never plain `--force` — it can clobber a commit the reviewer pushed concurrently).
+8. **Escalate to `needs-review`** when the signal isn't agent-addressable:
+   - Non-trivial merge conflict
+   - Review thread that's design pushback, ambiguous, or debatable
+   - `CHANGES_REQUESTED` with comments you can't translate to a concrete fix
+   To escalate: run `tpm status <slug> needs-review`, then `tpm log <slug> "escalated — <one-line reason, link the thread or run>"`. Surface to the user and stop. Don't try to argue with a reviewer in chat or guess at intent.
+9. **Log + status** after a successful round:
+   - `tpm log <slug> "addressed feedback — <one-line summary of what shipped this round>"`
+   - If the task was `needs-feedback`, run `tpm status <slug> in-progress` (the round is done; PR returns to passive-wait until the next signal lands or it merges). If already `in-progress`, this is a no-op.
+10. The PR-signal poller (`scripts/recurring/check-pr-signal.sh`) will re-flag the task to `needs-feedback` if the next CI run fails or new threads land. Each round = one more invocation of this action.
+
+Don't:
+- **Auto-merge** the PR. Always a deliberate human decision.
+- **Reply conversationally** to a thread without a code change. If a thread needs a written explanation rather than a fix, escalate to `needs-review`.
+- **Long-poll for CI** to finish. The mode is one-shot per round; the poller (or user re-invocation) handles re-entry.
+- **Force-push without `--force-with-lease`**. The lease check is the only thing standing between you and clobbering a reviewer's commit.
+
 ### Close out
 1. Read the task file.
 2. **Verify PR merge status** if `prs:` is non-empty. For each PR URL, run `gh pr view <url> --json state --jq '.state'`.
