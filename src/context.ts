@@ -36,6 +36,7 @@ export function context(root: string, query: string): string {
   lines.push(`- Project: ${str(project.data.name) ?? project.slug} (${project.slug})`);
   if (repo.remote) lines.push(`- Repo: ${repo.remote}`);
   if (repo.local) lines.push(`- Local: ${repo.local}`);
+  lines.push(`- Host: ${str(project.data.host) ?? "github"}`);
   const workflow = str(task.data.workflow) ?? str(project.data.workflow);
   if (workflow) lines.push(`- Workflow: ${workflow}`);
   lines.push(`- Status: ${str(task.data.status) ?? "?"}  ·  Type: ${str(task.data.type) ?? "?"}`);

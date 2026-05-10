@@ -6,6 +6,7 @@ created: {{date}}
 repo:
   remote: {{repo_remote}}
   local: {{repo_local}}
+host: github
 tags: []
 ---
 

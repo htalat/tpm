@@ -163,6 +163,36 @@ test("context: includes inherited project repo on the briefing", () => {
   }
 });
 
+test("context: defaults Host to github when project doesn't set host", () => {
+  const root = mkTempDir();
+  try {
+    setup(root);
+    const out = context(root, "alpha-only");
+    assert.match(out, /^- Host: github$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("context: surfaces explicit host: ado from project frontmatter", () => {
+  const root = mkTempDir();
+  try {
+    mkdirSync(join(root, "ado-proj", "tasks"), { recursive: true });
+    writeFileSync(
+      join(root, "ado-proj", "project.md"),
+      `---\nname: ADO\nslug: ado-proj\nstatus: active\nhost: ado\n---\n\n# ADO\n\n## Goal\n.\n`,
+    );
+    writeFileSync(
+      join(root, "ado-proj", "tasks", "001-t.md"),
+      `---\ntitle: T\nslug: t\nproject: ado-proj\nstatus: open\ntype: pr\n---\n\n# T\n`,
+    );
+    const out = context(root, "ado-proj/t");
+    assert.match(out, /^- Host: ado$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 test("context: task-level repo override wins for local", () => {
   const root = mkTempDir();
   try {
