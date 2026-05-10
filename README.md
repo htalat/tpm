@@ -129,6 +129,7 @@ tpm complete <task> [--outcome "..."] [--no-archive] [--archive]
                                           # archives by type (pr/chore yes, investigation/spike no)
 tpm block <task> "<reason>"               # set status: blocked, log the reason
 tpm reopen <task>                         # set status: open, log reopened
+tpm revert <task> ["<reason>"]            # flip in-progress -> ready, log a timeout/revert (no-op otherwise)
 tpm status <task> <new-status>            # generic status setter (validated)
 tpm log <task> "<message>"                # append a single timestamped Log line
 tpm pr <task> <url>                       # add URL to prs:, log opened PR
@@ -136,6 +137,7 @@ tpm archive <task | project/task>         # move a done/dropped task (or whole f
 tpm fold <task | project/task>            # promote a file-form task to folder-form (idempotent)
 tpm next [--project <slug>] [--autonomous]  # print next leaf task (needs-feedback > ready, oldest first); exits non-zero if none
 tpm inbox                                 # list human-queue tasks (needs-review, blocked, open) cross-project
+tpm orchestrate [--minutes <N>] [--claude <path>]  # pick next --autonomous task and run claude with a hard time bound
 tpm report [--md]
 tpm root                                  # print the tree root
 tpm path <project | task | project/task>  # print the local checkout path
@@ -171,12 +173,14 @@ cat ~/.tpm/config.json
 ```json
 {
   "root": "/Users/you/Documents/projects",
-  "timezone": "America/Los_Angeles"
+  "timezone": "America/Los_Angeles",
+  "time_bound_minutes": 30
 }
 ```
 
 - `root` — tree root, set by `tpm init <dir>`.
 - `timezone` — IANA name (e.g. `America/Los_Angeles`, `Europe/Berlin`, `UTC`); used for `created`, `closed`, log entries, and report timestamps. Handles DST automatically (PST/PDT). Defaults to `America/Los_Angeles` if absent. Run `tpm now` to see the current timestamp in the configured zone.
+- `time_bound_minutes` — global default for `tpm orchestrate`'s hard time bound. Positive integer. Defaults to 30 if absent. Project and task frontmatter can override per-scope (see [Scheduling unattended runs](#scheduling-unattended-runs-cron)).
 
 ## Frontmatter schema
 
@@ -192,6 +196,7 @@ repo:
 host: github          # github | ado — selects the CLI agents use for PR ops (gh / az repos pr). Default github.
 tags: []
 workflow: AGENTS.md   # optional: path (relative to repo root) to the doc agents follow when shipping work
+time_bound_minutes: 45  # optional: per-project override for `tpm orchestrate` hard time bound (positive int)
 ```
 
 **`<root>/<slug>/tasks/NNN-<slug>.md`**
@@ -207,6 +212,7 @@ prs: []               # list of PR URLs
 tags: []
 parent: NNN-foo       # optional: marks this as a child within a folder-form parent
 workflow: AGENTS.md   # optional: per-task workflow override; falls back to project.workflow if unset
+time_bound_minutes: 15  # optional: per-task override for `tpm orchestrate` hard time bound; tightest cascade win
 ```
 
 Timestamps are written in the timezone from `~/.tpm/config.json` (default `America/Los_Angeles`). Old date-only values (`2026-04-25`) keep parsing — values are display strings only.
@@ -434,21 +440,24 @@ Add an entry like:
 
 ```cron
 # Run tpm orchestrator every 4 hours, guarded by the lock file and a drift check on the target repo
-0 */4 * * * /opt/homebrew/bin/tpm lock acquire >/dev/null 2>&1 && (task=$(/opt/homebrew/bin/tpm next --autonomous) && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/claude -p "/tpm $task"; /opt/homebrew/bin/tpm lock release) >> /tmp/tpm-cron.log 2>&1
+0 */4 * * * /opt/homebrew/bin/tpm lock acquire >/dev/null 2>&1 && (task=$(/opt/homebrew/bin/tpm next --autonomous) && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/tpm orchestrate --claude /opt/homebrew/bin/claude; /opt/homebrew/bin/tpm lock release) >> /tmp/tpm-cron.log 2>&1
 ```
 
-Substitute the absolute paths from `which`. cron has a minimal `PATH`, so absolute paths are required. If `tpm next --autonomous` finds nothing eligible it exits non-zero, the `&&` short-circuits, and Claude isn't invoked.
+Substitute the absolute paths from `which`. cron has a minimal `PATH`, so absolute paths are required. If `tpm next --autonomous` finds nothing eligible it exits non-zero, the `&&` short-circuits, and orchestrate isn't invoked. (The `tpm next` call before `tpm drift-check "$task"` is for the drift target, not the dispatch — `tpm orchestrate` re-resolves the task itself so the same slug stays the source of truth across the cron entry.)
 
 `tpm lock acquire` writes `<root>/.tpm/orchestrator.lock` (with `pid` and `started_at`) and exits non-zero if a previous run's lock is still held by a live PID — preventing two firings from colliding on the same task. Stale locks (file present, PID dead) are silently taken over. `tpm lock release` removes the file. The cron line groups the dispatched run inside parens so `release` always fires after the agent exits, even on non-zero. To peek mid-run, `tpm lock status` prints the current holder and live/stale flag; `tpm lock release --force` clears a wedged lock manually.
 
 `tpm drift-check <project | task>` verifies the project's `repo.local` is on its default branch (`main` by default; reads `origin/HEAD` if set otherwise) and that `git status --porcelain` is empty. Exits non-zero with a descriptive message otherwise — so the cron line short-circuits cleanly before any agent dispatch on a polluted tree. Manual `/tpm <slug>` runs don't call drift-check; humans can knowingly start work on a dirty tree.
 
+`tpm orchestrate` picks the next `--autonomous` task, spawns `claude -p "/tpm <slug>"` with a hard time bound, and on timeout sends `SIGTERM` (then `SIGKILL` after a grace period) and runs `tpm revert <slug>` so the task returns to `ready` and the next cron tick can retry. Exit codes: child's exit code on clean run, `124` on timeout (per `timeout(1)` convention), `127` if the claude binary couldn't be spawned, `1` if no task was eligible.
+
+The time bound resolves in this cascade: `--minutes <N>` flag → task frontmatter `time_bound_minutes` → project frontmatter `time_bound_minutes` → global config (`~/.tpm/config.json` `time_bound_minutes`) → built-in default of 30 minutes. So you can declare `time_bound_minutes: 60` on a single long task without changing the global, or set a 45-minute global default and let individual tasks shorten as needed.
+
 To opt a task in for unattended runs, set `allow_orchestrator: true` in its frontmatter. Without that flag, `tpm next --autonomous` skips the task even if its status is `ready` — that's the safety boundary between "an agent can run this when I ask" and "an agent can run this while I'm asleep".
 
 The machine must be awake and logged in for cron to fire.
 
-**Remaining safety rails.** Time bound and failure notifications still ship in follow-up tasks. Until they land:
-- Wedged runs burn credits until Claude's own session limits trigger.
+**Remaining safety rails.** Failure notifications still ship in a follow-up task. Until they land:
 - Failures are silent — check status via `tpm ls`, `tpm lock status`, and `/tmp/tpm-cron.log`.
 
 ## Reports

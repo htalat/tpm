@@ -14,6 +14,7 @@ import { CONFIG_PATH } from "./config.ts";
 import { now } from "./time.ts";
 import * as mutate from "./mutate.ts";
 import * as lock from "./lock.ts";
+import { runOrchestrate } from "./orchestrate.ts";
 import { resolveRepo } from "./context.ts";
 import { checkDrift } from "./drift.ts";
 
@@ -171,6 +172,12 @@ try {
       console.log(r.message);
       break;
     }
+    case "revert": {
+      const reason = args[2];
+      const r = mutate.revert(resolveLiveTask(args[1], 'tpm revert <task> ["<reason>"]'), reason);
+      console.log(r.message);
+      break;
+    }
     case "log": {
       const message = args[2];
       if (!args[1] || !message) usage('tpm log <task> "<message>"');
@@ -278,6 +285,20 @@ try {
       }
       console.log(qualifySlug(pick.project.slug, pick.task));
       break;
+    }
+    case "orchestrate": {
+      const minutesArg = parseFlag(args, "--minutes");
+      const claudeArg = parseFlag(args, "--claude");
+      const opts: { minutesOverride?: number; claudeBin?: string } = {};
+      if (minutesArg !== undefined) {
+        const n = Number(minutesArg);
+        if (!Number.isInteger(n) || n <= 0) usage("--minutes must be a positive integer");
+        opts.minutesOverride = n;
+      }
+      if (claudeArg !== undefined) opts.claudeBin = claudeArg;
+      const r = await runOrchestrate(opts);
+      if (r.message) console.error(r.message);
+      process.exit(r.exitCode);
     }
     case "inbox": {
       const root = findRoot();
@@ -395,6 +416,7 @@ Usage:
                                              set status: done, stamp closed, log; archives by type
   tpm block <task> "<reason>"                set status: blocked, log the reason
   tpm reopen <task>                          set status: open, log it
+  tpm revert <task> ["<reason>"]             flip in-progress -> ready, log a timeout/revert (no-op otherwise)
   tpm status <task> <new-status>             generic status setter (validated)
   tpm log <task> "<message>"                 append a single timestamped Log line
   tpm pr <task> <url>                        add URL to prs:, log opened PR
@@ -405,6 +427,8 @@ Usage:
   tpm drift-check <project | task>           verify the project's repo.local is on its default branch + clean
   tpm next [--project <slug>] [--autonomous] print next leaf task (needs-feedback > ready, oldest first)
   tpm inbox                                  list human-queue tasks (needs-review, blocked, open) cross-project
+  tpm orchestrate [--minutes <N>] [--claude <path>]
+                                             pick next --autonomous task and run claude with a hard time bound
   tpm report [--md]
   tpm root                                   print the tree root
   tpm path <project | task | project/task>   print the local repo path

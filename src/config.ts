@@ -8,9 +8,11 @@ export const CONFIG_PATH = resolve(CONFIG_DIR, "config.json");
 export interface Config {
   root?: string;
   timezone?: string;
+  time_bound_minutes?: number;
 }
 
 export const DEFAULT_TIMEZONE = "America/Los_Angeles";
+export const DEFAULT_TIME_BOUND_MINUTES = 30;
 
 export function readConfig(): Config {
   if (!existsSync(CONFIG_PATH)) return {};
@@ -36,12 +38,22 @@ export function readConfig(): Config {
   if (record.timezone !== undefined) {
     cfg.timezone = expectString(record.timezone, "timezone");
   }
+  if (record.time_bound_minutes !== undefined) {
+    cfg.time_bound_minutes = expectPositiveInt(record.time_bound_minutes, "time_bound_minutes");
+  }
   return cfg;
 }
 
 function expectString(value: unknown, field: string): string {
   if (typeof value !== "string") {
     throw new Error(`${CONFIG_PATH}: "${field}" must be a string, got ${value === null ? "null" : Array.isArray(value) ? "array" : typeof value}`);
+  }
+  return value;
+}
+
+function expectPositiveInt(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`${CONFIG_PATH}: "${field}" must be a positive integer, got ${JSON.stringify(value)}`);
   }
   return value;
 }

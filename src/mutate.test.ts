@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
 import { loadProjects } from "./tree.ts";
 import {
-  start, ready, block, reopen, logEntry, addPr, setStatus, complete,
+  start, ready, block, reopen, revert, logEntry, addPr, setStatus, complete,
   appendLog, setSection, sectionHasContent,
 } from "./mutate.ts";
 import { parse } from "./frontmatter.ts";
@@ -433,6 +433,71 @@ test("status: rejects unknown status", () => {
     writeTask(dir, "001-a.md", "open");
     const t = loadTask(root, "alpha", "001-a");
     assert.throws(() => setStatus(t, "rotten"), /Unknown status/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("revert: in-progress -> ready, logs timeout reason", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    revert(t, "time bound 30m exceeded");
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: ready/);
+    assert.match(text, /timed out — reverted to ready \(time bound 30m exceeded\)/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("revert: no reason still logs the verb", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    revert(t);
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: ready/);
+    assert.match(text, /timed out — reverted to ready/);
+    assert.doesNotMatch(text, /reverted to ready \(/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("revert: idempotent on non-in-progress (does not flip or log)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "ready");
+    const t = loadTask(root, "alpha", "001-a");
+    const r = revert(t);
+    assert.match(r.message, /not in-progress/);
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: ready/);
+    assert.doesNotMatch(text, /timed out/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("revert: refuses done and dropped (terminal states)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "done");
+    const t1 = loadTask(root, "alpha", "001-a");
+    const r1 = revert(t1);
+    assert.match(r1.message, /not in-progress/);
+
+    writeTask(dir, "002-b.md", "dropped");
+    const t2 = loadTask(root, "alpha", "002-b");
+    const r2 = revert(t2);
+    assert.match(r2.message, /not in-progress/);
   } finally {
     rmTempDir(root);
   }
