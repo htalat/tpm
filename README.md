@@ -21,6 +21,7 @@ docs/agents/                       per-agent setup notes (Claude Code, Codex, Co
 A tpm tree (data — lives wherever `tpm init` was run, e.g. `~/Documents/projects/`):
 ```
 <root>/.tpm/templates/                          per-tree templates (copied from defaults)
+<root>/.tpm/locks/<project>--<slug>.lock        per-task orchestrator locks (gitignore if syncing)
 <root>/reports/index.html                       generated rollup
 <root>/<slug>/project.md                        goals, context, notes, project log
 <root>/<slug>/tasks/NNN-*.md                    file-form task (one file)
@@ -191,17 +192,19 @@ crontab -e
 ```
 
 ```cron
-# Every 4 hours, guarded by lock + drift check, dispatched through tpm orchestrate
-0 */4 * * * /opt/homebrew/bin/tpm lock acquire >/dev/null 2>&1 && (task=$(/opt/homebrew/bin/tpm next --autonomous) && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/tpm orchestrate --claude /opt/homebrew/bin/claude; /opt/homebrew/bin/tpm lock release) >> /tmp/tpm-cron.log 2>&1
+# Every 4 hours, atomic per-task claim + drift-check, dispatched through tpm orchestrate
+0 */4 * * * TPM_AGENT_ID=nightly-runner task=$(/opt/homebrew/bin/tpm next --autonomous --claim "$TPM_AGENT_ID") && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/tpm orchestrate --task "$task" --claude /opt/homebrew/bin/claude >> /tmp/tpm-cron.log 2>&1
 ```
 
 Substitute the absolute paths from `which`. cron has a minimal `PATH`, so absolute paths are required. The machine must be awake and logged in for cron to fire.
 
-The `--autonomous` gate is the safety boundary between "an agent can run this when I ask" and "an agent can run this while I'm asleep." `tpm next --autonomous` skips ready tasks unless they have `allow_orchestrator: true` in their frontmatter; opt in per task as you trust each.
+`TPM_AGENT_ID` names the agent for `tpm lock list` and stale-lock recovery. Pick a stable string per cron entry (`nightly-runner`, `pr-feedback-runner`, etc.) so the lock listing is human-readable. For ad-hoc shell use, `${HOSTNAME}-$$` is a fine default.
 
-`tpm orchestrate` (the dispatcher used in flavor 3) layers four safety rails on top of a bare `claude -p` invocation:
+The `--autonomous` gate is the safety boundary between "an agent can run this when I ask" and "an agent can run this while I'm asleep." `tpm next --autonomous --claim` skips ready tasks unless they have `allow_orchestrator: true`; opt in per task as you trust each. The `--claim` flag turns the pick into an atomic claim (`O_CREAT | O_EXCL` on `<root>/.tpm/locks/<project>--<slug>.lock`) so multiple cron entries running in parallel don't double-dispatch on the same task.
 
-- **Lock** — `tpm lock acquire` / `release`. One in-flight run at a time. Stale-lock recovery clears entries with dead PIDs. `tpm lock status` peeks at the holder; `tpm lock release --force` clears a wedge.
+`tpm orchestrate` (the dispatcher) layers four safety rails on top of a bare `claude -p` invocation:
+
+- **Per-task lock** — atomic claim via `O_CREAT|O_EXCL`. The orchestrator heartbeats every 60s during the run so a sibling agent's stale-lock sweep doesn't reclaim it. Released on exit (success, timeout, or error). `tpm lock list` shows what's currently in flight; `tpm lock release-stale [--ttl <minutes>]` clears anything past TTL (default: time-bound + 5min). The legacy single global lock (`tpm lock acquire` with no task argument) still works for one release with a deprecation warning, then will be removed.
 - **Drift check** — `tpm drift-check <task>` refuses to dispatch if the project's `repo.local` is on a non-default branch or has uncommitted changes. Manual `/tpm <slug>` runs skip this; humans can knowingly work on a dirty tree.
 - **Time bound + revert** — the dispatched run is hard-killed at the `time_bound_minutes` boundary (cascade: task > project > global config > built-in default 30m). On timeout, `tpm revert <task>` flips the task back to `ready` so the next cron tick can retry. Exit codes mirror `timeout(1)` (`124` on timeout).
 - **Notifications** — `osascript` pings at start/finish/fail, gated by a `notifications` cascade (task > project > global config > default `{ start: false, finish: true, fail: true }`). v0 channel is mac only; non-darwin runs log to stderr and skip. `tpm notify <event> <task>` is the same hook as a CLI verb.
@@ -232,7 +235,7 @@ Cron pattern combining intake, signal poller, and drain:
 # Every 15 min during work hours: flip in-flight PRs to needs-feedback / needs-review
 */15 9-19 * * 1-5   ~/Developer/tpm/scripts/recurring/check-pr-signal.sh >> ~/.tpm/recurring.log 2>&1
 # Nightly: drain whatever is ready or needs-feedback + allow_orchestrator: true
-0 6 * * *    /opt/homebrew/bin/tpm lock acquire >/dev/null 2>&1 && (task=$(/opt/homebrew/bin/tpm next --autonomous) && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/tpm orchestrate --claude /opt/homebrew/bin/claude; /opt/homebrew/bin/tpm lock release) >> /tmp/tpm-cron.log 2>&1
+0 6 * * *    TPM_AGENT_ID=nightly-runner task=$(/opt/homebrew/bin/tpm next --autonomous --claim "$TPM_AGENT_ID") && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/tpm orchestrate --task "$task" --claude /opt/homebrew/bin/claude >> /tmp/tpm-cron.log 2>&1
 ```
 
 The pipeline: **scripts populate the queue → loops drain it.** Don't put judgment work in scripts; if a job needs an LLM, do it in a `/tpm <slug>` flavor instead.
@@ -305,7 +308,7 @@ tpm context sandbox/hello-world | tail -20    # check the Outcome section
 The walkthrough exercises every harness piece: project + task creation, the `open` → `ready` gate, manual `tpm next`, the `--autonomous` filter, `tpm orchestrate`'s spawn + time bound + revert, and the close-out flow. If any step surprises you, the diagnostic order is:
 
 - `tpm ls --all --project sandbox` — current frontmatter state.
-- `tpm lock status` — is something else holding the lock?
+- `tpm lock list` — what's currently locked, and by which agent?
 - `tpm drift-check sandbox` — is the working tree clean?
 - `/tmp/tpm-cron.log` (or wherever you redirected) — agent stdout/stderr from the last run.
 
@@ -330,9 +333,15 @@ tpm log <task> "<message>"                # append a single timestamped Log line
 tpm pr <task> <url>                       # add URL to prs:, log opened PR
 tpm archive <task | project/task>         # move a done/dropped task (or whole folder-form parent) to tasks/archive/
 tpm fold <task | project/task>            # promote a file-form task to folder-form (idempotent)
-tpm next [--project <slug>] [--autonomous]  # print next leaf task (needs-feedback > ready, oldest first); exits non-zero if none
+tpm next [--project <slug>] [--autonomous] [--claim <id>]  # print next leaf task (--claim atomically locks it); exits non-zero if none/all-locked
 tpm inbox                                 # list human-queue tasks (needs-review, blocked, open) cross-project
-tpm orchestrate [--minutes <N>] [--claude <path>]  # pick next --autonomous task and run claude with a hard time bound
+tpm orchestrate [--minutes <N>] [--claude <path>] [--task <slug>]  # claim next --autonomous (or use --task pre-claimed) and run claude with a hard time bound
+tpm lock acquire <task> --as <id>         # claim a per-task lock (atomic O_CREAT|O_EXCL)
+tpm lock release <task> --as <id> [--force]  # release a per-task lock
+tpm lock heartbeat <task> --as <id>       # refresh a held lock so stale-lock sweeps don't reclaim it
+tpm lock status [<task>]                  # holder + age (legacy global if no task)
+tpm lock list                             # every claimed task across the tree
+tpm lock release-stale [--ttl <minutes>]  # clear locks past TTL (default: time-bound + 5min)
 tpm notify <start|finish|fail> <task>     # best-effort osascript notification (cascade: task > project > global)
 tpm serve [--port 7777] [--host 127.0.0.1]  # start a localhost HTTP UI for the queues (read-only)
 tpm report [--md]

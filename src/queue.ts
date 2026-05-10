@@ -13,10 +13,11 @@ export interface QueueItem {
 
 const NEXT_STATUSES = ["needs-feedback", "ready"] as const;
 
-// `tpm next` selection. Picks the next eligible leaf task across projects:
-// needs-feedback > ready (in-flight signal is time-sensitive); within each
-// bucket, oldest by created. Parents and archived tasks are excluded.
-export function selectNext(projects: Project[], opts: SelectNextOpts = {}): QueueItem | null {
+// All eligible leaf candidates in selection order: needs-feedback > ready,
+// then oldest by created within each bucket. Parents and archived excluded.
+// Used by both `selectNext` (head) and `tpm next --claim` (walk until one
+// can be locked).
+export function selectCandidates(projects: Project[], opts: SelectNextOpts = {}): QueueItem[] {
   const candidates: QueueItem[] = [];
   for (const p of projects) {
     if (opts.projectFilter && p.slug !== opts.projectFilter) continue;
@@ -29,7 +30,6 @@ export function selectNext(projects: Project[], opts: SelectNextOpts = {}): Queu
       candidates.push({ project: p, task: t });
     }
   }
-  if (candidates.length === 0) return null;
   const priority = (s: unknown): number => (s === "needs-feedback" ? 0 : 1);
   candidates.sort((a, b) => {
     const dp = priority(a.task.data.status) - priority(b.task.data.status);
@@ -38,7 +38,13 @@ export function selectNext(projects: Project[], opts: SelectNextOpts = {}): Queu
     const bc = String(b.task.data.created ?? "");
     return ac.localeCompare(bc);
   });
-  return candidates[0];
+  return candidates;
+}
+
+// `tpm next` selection: head of the candidate list, or null if empty.
+export function selectNext(projects: Project[], opts: SelectNextOpts = {}): QueueItem | null {
+  const candidates = selectCandidates(projects, opts);
+  return candidates[0] ?? null;
 }
 
 export const INBOX_STATUSES = ["needs-review", "blocked", "open"] as const;

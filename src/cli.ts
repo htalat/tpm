@@ -7,7 +7,7 @@ import { context, repoPath } from "./context.ts";
 import { report } from "./report.ts";
 import { archiveTask, foldTask, loadProjects, flatTasks, rollupStatus } from "./tree.ts";
 import type { Task } from "./tree.ts";
-import { selectNext, inboxItems } from "./queue.ts";
+import { selectNext, selectCandidates, inboxItems } from "./queue.ts";
 import { findTask, findRepoTarget } from "./resolve.ts";
 import { init } from "./init.ts";
 import { CONFIG_PATH, readConfig } from "./config.ts";
@@ -220,37 +220,106 @@ try {
     case "lock": {
       const sub = args[1];
       const root = findRoot();
+      // The 3rd positional is either a task slug or a flag. If it's a flag
+      // (or absent), we're in legacy global-lock territory.
+      const positional = args[2] && !args[2].startsWith("--") ? args[2] : undefined;
+      const agentId = parseFlag(args, "--as") ?? process.env.TPM_AGENT_ID;
       switch (sub) {
         case "acquire": {
-          const r = lock.acquire(root);
+          if (!positional) {
+            warnLegacyGlobalLock("acquire");
+            const r = lock.acquire(root);
+            if (!r.acquired) {
+              console.error(`tpm lock: ${r.reason}`);
+              process.exit(1);
+            }
+            if (r.takeover) {
+              const prior = r.prior ? `(stale lock from pid ${r.prior.pid}, started ${r.prior.started_at})` : "(stale lock)";
+              console.log(`acquired ${prior}`);
+            } else {
+              console.log("acquired");
+            }
+            break;
+          }
+          if (!agentId) usage("tpm lock acquire <task> --as <agent-id>");
+          const slug = qualifySlugString(root, positional);
+          const r = lock.acquireTask(root, slug, agentId);
           if (!r.acquired) {
             console.error(`tpm lock: ${r.reason}`);
             process.exit(1);
           }
-          if (r.takeover) {
-            const prior = r.prior ? `(stale lock from pid ${r.prior.pid}, started ${r.prior.started_at})` : "(stale lock)";
-            console.log(`acquired ${prior}`);
-          } else {
-            console.log("acquired");
-          }
+          console.log(`acquired ${slug} as ${agentId}`);
           break;
         }
         case "release": {
           const force = args.includes("--force");
-          const r = lock.release(root, force);
+          if (!positional) {
+            warnLegacyGlobalLock("release");
+            const r = lock.release(root, force);
+            if (!r.released) {
+              console.error(`tpm lock: ${r.message}`);
+              process.exit(1);
+            }
+            console.log(r.message);
+            break;
+          }
+          const slug = qualifySlugString(root, positional);
+          const r = lock.releaseTask(root, slug, agentId ?? "", force);
           if (!r.released) {
             console.error(`tpm lock: ${r.message}`);
             process.exit(1);
           }
-          console.log(r.message);
+          console.log(`${r.message}: ${slug}`);
+          break;
+        }
+        case "heartbeat": {
+          if (!positional) usage("tpm lock heartbeat <task> --as <agent-id>");
+          if (!agentId) usage("tpm lock heartbeat <task> --as <agent-id>");
+          const slug = qualifySlugString(root, positional);
+          const r = lock.heartbeatTask(root, slug, agentId);
+          if (!r.ok) {
+            console.error(`tpm lock: ${r.message}`);
+            process.exit(1);
+          }
+          console.log(`${r.message}: ${slug}`);
           break;
         }
         case "status": {
-          console.log(lock.status(root));
+          if (!positional) {
+            console.log(lock.status(root));
+            break;
+          }
+          const slug = qualifySlugString(root, positional);
+          console.log(lock.statusTask(root, slug));
+          break;
+        }
+        case "list": {
+          const entries = lock.listTaskLocks(root);
+          if (entries.length === 0) {
+            console.log("no per-task locks");
+            break;
+          }
+          for (const e of entries) {
+            console.log(`${pad(e.qualifiedSlug, 40)} ${pad(e.data.agentId, 24)} pid=${pad(String(e.data.pid), 8)} age=${e.ageMinutes.toFixed(1)}m`);
+          }
+          break;
+        }
+        case "release-stale": {
+          const ttlArg = parseFlag(args, "--ttl");
+          const ttl = ttlArg !== undefined ? Number(ttlArg) : staleTtlDefault(root);
+          if (!Number.isFinite(ttl) || ttl <= 0) usage("--ttl must be a positive number (minutes)");
+          const removed = lock.releaseStaleTaskLocks(root, ttl);
+          if (removed.length === 0) {
+            console.log(`no stale locks (ttl ${ttl}m)`);
+            break;
+          }
+          for (const e of removed) {
+            console.log(`released ${e.qualifiedSlug} (was ${e.data.agentId}, age ${e.ageMinutes.toFixed(1)}m)`);
+          }
           break;
         }
         default:
-          usage("tpm lock acquire | release [--force] | status");
+          usage("tpm lock acquire <task> --as <id> | release <task> --as <id> [--force] | heartbeat <task> --as <id> | status [<task>] | list | release-stale [--ttl <minutes>]");
       }
       break;
     }
@@ -279,15 +348,35 @@ try {
       const projects = loadProjects(root);
       const projectFilter = parseFlag(args, "--project");
       const autonomous = args.includes("--autonomous");
-      const pick = selectNext(projects, { projectFilter, autonomous });
-      if (!pick) {
-        const where = projectFilter ? ` in project "${projectFilter}"` : "";
-        const gate = autonomous ? " with allow_orchestrator: true" : "";
-        console.error(`No ready or needs-feedback tasks${where}${gate}.`);
-        process.exit(1);
+      const claimAgent = parseFlag(args, "--claim") ?? (args.includes("--claim") ? process.env.TPM_AGENT_ID : undefined);
+      if (!claimAgent) {
+        const pick = selectNext(projects, { projectFilter, autonomous });
+        if (!pick) {
+          const where = projectFilter ? ` in project "${projectFilter}"` : "";
+          const gate = autonomous ? " with allow_orchestrator: true" : "";
+          console.error(`No ready or needs-feedback tasks${where}${gate}.`);
+          process.exit(1);
+        }
+        console.log(qualifySlug(pick.project.slug, pick.task));
+        break;
       }
-      console.log(qualifySlug(pick.project.slug, pick.task));
-      break;
+      // --claim: walk candidates in order, atomically lock the first one we can.
+      // Skip a stale-lock sweep first as a hygiene step.
+      const ttl = staleTtlDefault(root);
+      lock.releaseStaleTaskLocks(root, ttl);
+      const candidates = selectCandidates(projects, { projectFilter, autonomous });
+      for (const c of candidates) {
+        const slug = qualifySlug(c.project.slug, c.task);
+        const r = lock.acquireTask(root, slug, claimAgent);
+        if (r.acquired) {
+          console.log(slug);
+          process.exit(0);
+        }
+      }
+      const where = projectFilter ? ` in project "${projectFilter}"` : "";
+      const gate = autonomous ? " with allow_orchestrator: true" : "";
+      console.error(`No claimable ready or needs-feedback tasks${where}${gate} (all candidates locked).`);
+      process.exit(1);
     }
     case "serve": {
       const portArg = parseFlag(args, "--port");
@@ -329,13 +418,15 @@ try {
     case "orchestrate": {
       const minutesArg = parseFlag(args, "--minutes");
       const claudeArg = parseFlag(args, "--claude");
-      const opts: { minutesOverride?: number; claudeBin?: string } = {};
+      const taskArg = parseFlag(args, "--task");
+      const opts: { minutesOverride?: number; claudeBin?: string; preClaimedTask?: string } = {};
       if (minutesArg !== undefined) {
         const n = Number(minutesArg);
         if (!Number.isInteger(n) || n <= 0) usage("--minutes must be a positive integer");
         opts.minutesOverride = n;
       }
       if (claudeArg !== undefined) opts.claudeBin = claudeArg;
+      if (taskArg !== undefined) opts.preClaimedTask = taskArg;
       const r = await runOrchestrate(opts);
       if (r.message) console.error(r.message);
       process.exit(r.exitCode);
@@ -407,6 +498,36 @@ function qualifySlug(projectSlug: string, task: Task): string {
   return task.parent ? `${projectSlug}/${task.parent}/${task.slug}` : `${projectSlug}/${task.slug}`;
 }
 
+// Resolve a user-supplied slug (bare, project/slug, or project/parent/child)
+// to its fully-qualified form. Used by `tpm lock` so the lock-file path is
+// stable regardless of how the user typed the task name.
+function qualifySlugString(root: string, query: string): string {
+  const projects = loadProjects(root);
+  const match = findTask(projects, query);
+  if (!match) throw new Error(`No task matched "${query}". Try \`tpm ls\`.`);
+  return qualifySlug(match.project.slug, match.task);
+}
+
+let legacyLockWarned = false;
+function warnLegacyGlobalLock(sub: string): void {
+  if (legacyLockWarned) return;
+  legacyLockWarned = true;
+  console.error(
+    `tpm lock: \`tpm lock ${sub}\` (no task argument) is the legacy global lock and will be removed in a future release. ` +
+    `Switch to \`tpm lock ${sub} <task> --as <agent-id>\` for per-task locking.`,
+  );
+}
+
+// Default stale-lock TTL: the global time-bound (or built-in 30m) plus a 5m
+// buffer so a long-running task hovering near the bound doesn't get yanked.
+// The per-task variant of this would resolve via project/task frontmatter,
+// but `release-stale` walks all locks at once — a single global value is fine.
+function staleTtlDefault(_root: string): number {
+  const cfg = readConfig();
+  const baseline = cfg.time_bound_minutes ?? 30;
+  return baseline + 5;
+}
+
 function filterTaskTree(tasks: Task[], passes: (t: Task) => boolean, flat: boolean): Task[] {
   if (flat) return flatTasks(tasks).filter(passes);
   const out: Task[] = [];
@@ -462,13 +583,18 @@ Usage:
   tpm pr <task> <url>                        add URL to prs:, log opened PR
   tpm archive <task | project/task>          move a done/dropped task to tasks/archive/
   tpm fold <task | project/task>             promote a file-form task to folder-form (idempotent)
-  tpm lock acquire | release [--force] | status
-                                             concurrency guard for unattended orchestrator runs
+  tpm lock acquire <task> --as <id>          claim a per-task lock (atomic O_CREAT|O_EXCL)
+  tpm lock release <task> --as <id> [--force]  release a per-task lock
+  tpm lock heartbeat <task> --as <id>        refresh a held lock so stale-lock sweeps don't reclaim it
+  tpm lock status [<task>]                   show holder + age (or legacy global lock if no task)
+  tpm lock list                              list every claimed task across the tree
+  tpm lock release-stale [--ttl <minutes>]   clear locks whose heartbeat is older than ttl
   tpm drift-check <project | task>           verify the project's repo.local is on its default branch + clean
-  tpm next [--project <slug>] [--autonomous] print next leaf task (needs-feedback > ready, oldest first)
+  tpm next [--project <slug>] [--autonomous] [--claim <id>]
+                                             print next leaf task (needs-feedback > ready, oldest first); --claim atomically locks the picked task
   tpm inbox                                  list human-queue tasks (needs-review, blocked, open) cross-project
-  tpm orchestrate [--minutes <N>] [--claude <path>]
-                                             pick next --autonomous task and run claude with a hard time bound
+  tpm orchestrate [--minutes <N>] [--claude <path>] [--task <slug>]
+                                             pick next --autonomous task (or --task pre-claimed) and run claude with a hard time bound
   tpm notify <start|finish|fail> <task>      best-effort osascript notification (cascade: task > project > global)
   tpm serve [--port 7777] [--host 127.0.0.1] start a localhost HTTP UI for the queues (read-only)
   tpm report [--md]

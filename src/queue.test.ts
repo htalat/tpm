@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Project, Task } from "./tree.ts";
-import { selectNext, inboxItems } from "./queue.ts";
+import { selectNext, selectCandidates, inboxItems } from "./queue.ts";
 
 function task(slug: string, status: string, created: string, extra: Record<string, unknown> = {}): Task {
   return {
@@ -109,6 +109,26 @@ test("selectNext: skips parents (containers) and archived", () => {
   const pick = selectNext([p]);
   // parent is skipped (container), archived is skipped, only the child remains
   assert.equal(pick?.task.slug, "003-child");
+});
+
+test("selectCandidates: returns full sorted list (used by tpm next --claim fall-through)", () => {
+  const p = project("a", [
+    task("001-newer-ready",   "ready",          "2026-05-01 10:00 PDT"),
+    task("002-older-ready",   "ready",          "2026-04-01 10:00 PDT"),
+    task("003-feedback",      "needs-feedback", "2026-05-09 10:00 PDT"),
+    task("004-skipped",       "in-progress",    "2026-05-09 10:00 PDT"),
+  ]);
+  const list = selectCandidates([p]);
+  assert.deepEqual(list.map(c => c.task.slug), [
+    "003-feedback",        // needs-feedback bucket first
+    "002-older-ready",     // then ready, oldest first
+    "001-newer-ready",
+  ]);
+});
+
+test("selectCandidates: empty when no eligible tasks", () => {
+  const p = project("a", [task("001", "in-progress", "2026-01-01 10:00 PDT")]);
+  assert.deepEqual(selectCandidates([p]), []);
 });
 
 test("inboxItems: empty when nothing in human queue", () => {
