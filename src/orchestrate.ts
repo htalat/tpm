@@ -125,7 +125,7 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   }, 60_000);
 
   if (shouldNotify("start", { task: pick.task, project: pick.project, globalConfig: cfg.notifications })) {
-    fireNotification("tpm", `${pick.task.slug}: start`);
+    fireNotification("tpm", `${agentId} starting ${pick.task.slug}`);
   }
 
   let result: OrchestrateResult;
@@ -162,7 +162,8 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   const notifyProject = matchAfter?.project ?? pick.project;
   const event = result.exitCode === 0 ? "finish" : "fail";
   if (shouldNotify(event, { task: notifyTask, project: notifyProject, globalConfig: cfg.notifications })) {
-    fireNotification("tpm", `${pick.task.slug}: ${event}`);
+    const verb = event === "finish" ? "finished" : "failed";
+    fireNotification("tpm", `${agentId} ${verb} ${pick.task.slug}`);
   }
 
   return result;

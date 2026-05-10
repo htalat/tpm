@@ -109,7 +109,12 @@ export interface TaskLockEntry {
   qualifiedSlug: string;
   path: string;
   data: TaskLockData;
-  ageMinutes: number; // from heartbeat to now
+  // Both ages in minutes. `acquiredAgeMinutes` from file birthtime (creation
+  // time, set once on acquire); `ageMinutes` from mtime (refreshed every
+  // heartbeat). On filesystems without birthtime, acquiredAgeMinutes falls
+  // back to ageMinutes.
+  acquiredAgeMinutes: number;
+  ageMinutes: number;
 }
 
 export function locksDir(root: string): string {
@@ -227,7 +232,13 @@ export function listTaskLocks(root: string): TaskLockEntry[] {
     const data = readTaskLock(path);
     if (!data) continue;
     const slug = entry.replace(/\.lock$/, "").replace(/--/g, "/");
-    out.push({ qualifiedSlug: slug, path, data, ageMinutes: lockAgeMinutes(path) });
+    out.push({
+      qualifiedSlug: slug,
+      path,
+      data,
+      ageMinutes: lockAgeMinutes(path),
+      acquiredAgeMinutes: lockAcquiredAgeMinutes(path),
+    });
   }
   return out;
 }
@@ -299,6 +310,19 @@ function lockAgeMinutes(path: string): number {
   try {
     const mtime = statSync(path).mtimeMs;
     return (Date.now() - mtime) / 60_000;
+  } catch {
+    return Infinity;
+  }
+}
+
+// File birthtime: creation time, set once on acquire. macOS APFS exposes it
+// reliably; some Linux filesystems return 0. Fall back to mtime when birthtime
+// is unavailable so the column always renders something useful.
+function lockAcquiredAgeMinutes(path: string): number {
+  try {
+    const st = statSync(path);
+    const birth = st.birthtimeMs > 0 ? st.birthtimeMs : st.mtimeMs;
+    return (Date.now() - birth) / 60_000;
   } catch {
     return Infinity;
   }

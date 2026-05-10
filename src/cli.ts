@@ -299,8 +299,19 @@ try {
             console.log("no per-task locks");
             break;
           }
+          // Pad each column to the widest content (or its header), so output
+          // stays readable when long slugs and short ones mix.
+          const slugW    = Math.max("PROJECT/SLUG".length, ...entries.map(e => e.qualifiedSlug.length));
+          const agentW   = Math.max("AGENT-ID".length, ...entries.map(e => e.data.agentId.length));
+          const acqW     = Math.max("ACQUIRED".length, 8);
+          const beatW    = Math.max("HEARTBEAT".length, 9);
+          console.log(
+            `${pad("PROJECT/SLUG", slugW)}  ${pad("AGENT-ID", agentW)}  ${pad("ACQUIRED", acqW)}  ${pad("HEARTBEAT", beatW)}`,
+          );
           for (const e of entries) {
-            console.log(`${pad(e.qualifiedSlug, 40)} ${pad(e.data.agentId, 24)} pid=${pad(String(e.data.pid), 8)} age=${e.ageMinutes.toFixed(1)}m`);
+            console.log(
+              `${pad(e.qualifiedSlug, slugW)}  ${pad(e.data.agentId, agentW)}  ${pad(formatAge(e.acquiredAgeMinutes), acqW)}  ${pad(formatAge(e.ageMinutes), beatW)}`,
+            );
           }
           break;
         }
@@ -395,10 +406,11 @@ try {
     }
     case "notify": {
       const event = args[1] as NotifyEvent | undefined;
-      const query = args[2];
-      if (!event || !query) usage(`tpm notify <${NOTIFY_EVENTS.join("|")}> <task>`);
+      // args[2] is either the task slug or a flag.
+      const query = args[2] && !args[2].startsWith("--") ? args[2] : undefined;
+      if (!event || !query) usage(`tpm notify <${NOTIFY_EVENTS.join("|")}> <task> [--as <agent-id>]`);
       if (!NOTIFY_EVENTS.includes(event as NotifyEvent)) {
-        usage(`tpm notify <${NOTIFY_EVENTS.join("|")}> <task>`);
+        usage(`tpm notify <${NOTIFY_EVENTS.join("|")}> <task> [--as <agent-id>]`);
       }
       const root = findRoot();
       const projects = loadProjects(root);
@@ -410,7 +422,16 @@ try {
         project: match.project,
         globalConfig: cfg.notifications,
       })) {
-        fireNotification("tpm", `${match.task.slug}: ${event}`);
+        // Include agent-id in the message body so multi-agent setups can tell
+        // which runner pinged. Defaults to TPM_AGENT_ID env or hostname-pid.
+        const notifyAgent = parseFlag(args, "--as") ?? process.env.TPM_AGENT_ID;
+        const verb = event === "start" ? "starting"
+                   : event === "finish" ? "finished"
+                   : "failed";
+        const message = notifyAgent
+          ? `${notifyAgent} ${verb} ${match.task.slug}`
+          : `${match.task.slug}: ${event}`;
+        fireNotification("tpm", message);
       }
       // Best-effort — never propagate failure.
       break;
@@ -484,6 +505,19 @@ function resolveLiveTask(query: string | undefined, usageMsg: string): Task {
 
 function pad(s: string, n: number): string {
   return s.length >= n ? s : s + " ".repeat(n - s.length);
+}
+
+// Human-friendly age (seconds < 1m, minutes < 1h, hours < 24h, days otherwise).
+// Used by `tpm lock list` so a freshly-acquired lock reads "5s" rather than
+// "0.1m". Negatives (sub-ms clock skew) clamp to "0s".
+function formatAge(minutes: number): string {
+  if (!Number.isFinite(minutes) || minutes < 0) return "0s";
+  const seconds = minutes * 60;
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (minutes < 60) return `${Math.round(minutes)}m`;
+  const hours = minutes / 60;
+  if (hours < 24) return `${Math.round(hours)}h`;
+  return `${Math.round(hours / 24)}d`;
 }
 
 function strOr(v: unknown, fallback: string): string {
