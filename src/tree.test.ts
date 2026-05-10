@@ -469,6 +469,76 @@ test("archiveTask: refuses parent with live children", () => {
   }
 });
 
+test("archiveTask: parent merges into existing archive folder when children were archived first", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeFolderTask(dir, "002-parent", "done");
+    writeChildTask(dir, "002-parent", "001-a.md", "done");
+    writeChildTask(dir, "002-parent", "002-b.md", "done");
+
+    // Archive both children individually, leaving only task.md in the live folder
+    // and the children under tasks/archive/002-parent/.
+    let proj = loadProjects(root)[0];
+    for (const child of proj.tasks[0].children!) archiveTask(child);
+
+    // Reload and archive the now-childless parent.
+    proj = loadProjects(root)[0];
+    const dest = archiveTask(proj.tasks[0]);
+
+    assert.equal(dest, join(dir, "tasks", "archive", "002-parent", "task.md"));
+    assert.ok(existsSync(dest));
+    assert.ok(existsSync(join(dir, "tasks", "archive", "002-parent", "001-a.md")));
+    assert.ok(existsSync(join(dir, "tasks", "archive", "002-parent", "002-b.md")));
+    assert.ok(!existsSync(join(dir, "tasks", "002-parent")));
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("archiveTask: parent merge also moves supporting files alongside task.md", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeFolderTask(dir, "002-parent", "done");
+    writeChildTask(dir, "002-parent", "001-a.md", "done");
+    writeFileSync(join(dir, "tasks", "002-parent", "scratch.md"), "scratch notes\n");
+    writeFileSync(join(dir, "tasks", "002-parent", "design.md"), "---\ntitle: design\n---\n\nbody\n");
+
+    let proj = loadProjects(root)[0];
+    archiveTask(proj.tasks[0].children![0]);
+
+    proj = loadProjects(root)[0];
+    archiveTask(proj.tasks[0]);
+
+    assert.ok(existsSync(join(dir, "tasks", "archive", "002-parent", "task.md")));
+    assert.ok(existsSync(join(dir, "tasks", "archive", "002-parent", "scratch.md")));
+    assert.ok(existsSync(join(dir, "tasks", "archive", "002-parent", "design.md")));
+    assert.ok(!existsSync(join(dir, "tasks", "002-parent")));
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("archiveTask: parent merge refuses on filename collision in archive folder", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeFolderTask(dir, "002-parent", "done");
+    // Pre-existing archive folder already contains a task.md (e.g. earlier parent archived).
+    const archParentDir = join(dir, "tasks", "archive", "002-parent");
+    mkdirSync(archParentDir, { recursive: true });
+    writeFileSync(join(archParentDir, "task.md"), taskMd("002-parent", "done"));
+
+    const [proj] = loadProjects(root);
+    assert.throws(() => archiveTask(proj.tasks[0]), /Archived task already exists/);
+    // Live folder untouched.
+    assert.ok(existsSync(join(dir, "tasks", "002-parent", "task.md")));
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 test("archiveTask: child -> moves to tasks/archive/<parent>/<child>.md", () => {
   const root = mkTempDir();
   try {
