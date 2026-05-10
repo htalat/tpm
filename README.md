@@ -272,6 +272,8 @@ $EDITOR ~/.tpm/scripts/recurring/intake-prs.sh
 
 By default, tasks created by a recurring script are `ready` but **not** `allow_orchestrator: true`, so manual `tpm next` picks them up but the unattended drain doesn't. Opt a task in for autonomous runs by adding `allow_orchestrator: true` to its frontmatter — or set it inside the recurring script for a class of tasks you trust.
 
+**Portability.** Recurring scripts must run on stock macOS — BSD `awk`, BSD `sed`, no `gawk` / `gnu-sed` / `grep -P`. tpm is zero-deps; a cron-fired script that requires `brew install gawk` violates that. In practice: stick to 2-arg `match()` + `substr` (not gawk's 3-arg capture-array form), `sed -E` (portable on both sides), and `grep -E` instead of `grep -P`.
+
 Cron pattern combining intake, signal poller, and drain:
 
 ```cron

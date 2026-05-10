@@ -31,7 +31,8 @@ command -v jq  >/dev/null || { printf 'check-pr-signal: jq not found\n' >&2; exi
 #     · <status>    <type>           <task-slug>  [prs...]
 slugs=$(tpm ls --status in-progress --flat | awk '
   /^[^ ]/ {
-    if (match($0, /\(([^)]+)\)/, a)) proj = a[1]
+    # 2-arg match() + substr is portable; 3-arg match(..., arr) is gawk-only.
+    if (match($0, /\([^)]+\)/)) proj = substr($0, RSTART + 1, RLENGTH - 2)
     next
   }
   /^  · / && proj != "" {
