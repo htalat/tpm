@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
-import { acquire, release, status, lockPath } from "./lock.ts";
+import { utimesSync } from "node:fs";
+import {
+  acquire, release, status, lockPath,
+  acquireTask, releaseTask, heartbeatTask, statusTask,
+  listTaskLocks, releaseStaleTaskLocks, taskLockPath, locksDir,
+} from "./lock.ts";
 
 // PIDs that won't exist on any sane machine. Picked high to avoid collision
 // with real processes; verified at test setup time below.
@@ -174,6 +179,221 @@ test("status: stale lock", () => {
     writeLockFile(root, DEAD_PID, "2026-04-29 00:35 PDT");
     const s = status(root);
     assert.match(s, /\(stale\)/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+// ---- per-task locks --------------------------------------------------------
+
+test("acquireTask: creates lock file with agent-id, pid, and timestamps", () => {
+  const root = setupRoot();
+  try {
+    const r = acquireTask(root, "alpha/001-foo", "claude-laptop");
+    assert.equal(r.acquired, true);
+    const path = taskLockPath(root, "alpha/001-foo");
+    assert.ok(existsSync(path));
+    const contents = readFileSync(path, "utf8");
+    assert.match(contents, /^agent-id: claude-laptop$/m);
+    assert.match(contents, new RegExp(`^pid: ${process.pid}$`, "m"));
+    assert.match(contents, /^acquired: /m);
+    assert.match(contents, /^heartbeat: /m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("acquireTask: filename flattens project/task slugs with --", () => {
+  const root = setupRoot();
+  try {
+    acquireTask(root, "tpm/018-orchestrator/003-time-bound", "a");
+    const path = taskLockPath(root, "tpm/018-orchestrator/003-time-bound");
+    assert.match(path, /tpm--018-orchestrator--003-time-bound\.lock$/);
+    assert.ok(existsSync(path));
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("acquireTask: rejects empty agent-id", () => {
+  const root = setupRoot();
+  try {
+    assert.throws(() => acquireTask(root, "alpha/001", ""), /agent-id.*required/);
+    assert.throws(() => acquireTask(root, "alpha/001", "  "), /agent-id.*required/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("acquireTask: second concurrent acquire fails atomically (O_CREAT|O_EXCL)", () => {
+  // Single-process simulation of the race: two acquires, the second sees EEXIST.
+  const root = setupRoot();
+  try {
+    const first = acquireTask(root, "alpha/001", "agent-a");
+    assert.equal(first.acquired, true);
+    const second = acquireTask(root, "alpha/001", "agent-b");
+    assert.equal(second.acquired, false);
+    assert.match(second.reason!, /held by agent-a/);
+    assert.equal(second.prior?.agentId, "agent-a");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("releaseTask: refuses to release a lock held by a different agent", () => {
+  const root = setupRoot();
+  try {
+    acquireTask(root, "alpha/001", "agent-a");
+    const r = releaseTask(root, "alpha/001", "agent-b");
+    assert.equal(r.released, false);
+    assert.match(r.message, /held by agent-a, not agent-b/);
+    // Lock file is still there.
+    assert.ok(existsSync(taskLockPath(root, "alpha/001")));
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("releaseTask --force: removes a lock held by another agent", () => {
+  const root = setupRoot();
+  try {
+    acquireTask(root, "alpha/001", "agent-a");
+    const r = releaseTask(root, "alpha/001", "agent-b", true);
+    assert.equal(r.released, true);
+    assert.equal(existsSync(taskLockPath(root, "alpha/001")), false);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("releaseTask: 'no lock file' when nothing to release", () => {
+  const root = setupRoot();
+  try {
+    const r = releaseTask(root, "alpha/001", "agent-a");
+    assert.equal(r.released, false);
+    assert.match(r.message, /no lock file/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("heartbeatTask: refreshes mtime, only for the lock owner", () => {
+  const root = setupRoot();
+  try {
+    acquireTask(root, "alpha/001", "agent-a");
+    const path = taskLockPath(root, "alpha/001");
+    // Backdate mtime by 10 minutes so we can detect the refresh.
+    const tenMinAgo = (Date.now() - 10 * 60_000) / 1000;
+    utimesSync(path, tenMinAgo, tenMinAgo);
+    const r = heartbeatTask(root, "alpha/001", "agent-a");
+    assert.equal(r.ok, true);
+    const s = statusTask(root, "alpha/001");
+    // Age should be small (just refreshed), not 10m. Allow leading `-` from
+    // sub-ms clock skew between fs mtime and Date.now().
+    const m = s.match(/age (-?\d+\.\d+)m/);
+    assert.ok(m, `expected age in status: ${s}`);
+    assert.ok(Number(m![1]) < 1, `expected fresh heartbeat, got ${m![1]}m`);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("heartbeatTask: refuses to refresh a sibling's lock", () => {
+  const root = setupRoot();
+  try {
+    acquireTask(root, "alpha/001", "agent-a");
+    const r = heartbeatTask(root, "alpha/001", "agent-b");
+    assert.equal(r.ok, false);
+    assert.match(r.message, /held by agent-a, not agent-b/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("statusTask: 'no lock' when nothing claimed", () => {
+  const root = setupRoot();
+  try {
+    assert.equal(statusTask(root, "alpha/001"), "no lock");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("listTaskLocks: returns every claimed task with agent-id + age", () => {
+  const root = setupRoot();
+  try {
+    acquireTask(root, "alpha/001", "agent-a");
+    acquireTask(root, "beta/002-thing", "agent-b");
+    acquireTask(root, "gamma/003-x/004-y", "agent-c");
+    const list = listTaskLocks(root);
+    assert.equal(list.length, 3);
+    const slugs = list.map(e => e.qualifiedSlug).sort();
+    assert.deepEqual(slugs, ["alpha/001", "beta/002-thing", "gamma/003-x/004-y"]);
+    for (const e of list) {
+      // Allow tiny negatives — fs mtime granularity can be coarser than Date.now().
+      assert.ok(e.ageMinutes < 1, `age sanity: ${e.qualifiedSlug} -> ${e.ageMinutes}`);
+      assert.ok(e.data.agentId.length > 0);
+    }
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("listTaskLocks: returns [] when locks dir missing", () => {
+  const root = setupRoot();
+  try {
+    assert.deepEqual(listTaskLocks(root), []);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("releaseStaleTaskLocks: removes locks past TTL, leaves fresh ones", () => {
+  const root = setupRoot();
+  try {
+    acquireTask(root, "alpha/001-stale", "agent-a");
+    acquireTask(root, "alpha/002-fresh", "agent-b");
+    // Backdate the stale one by 60 minutes.
+    const stalePath = taskLockPath(root, "alpha/001-stale");
+    const sixtyMinAgo = (Date.now() - 60 * 60_000) / 1000;
+    utimesSync(stalePath, sixtyMinAgo, sixtyMinAgo);
+    const removed = releaseStaleTaskLocks(root, 30);
+    assert.equal(removed.length, 1);
+    assert.equal(removed[0].qualifiedSlug, "alpha/001-stale");
+    assert.equal(existsSync(stalePath), false);
+    // Fresh one survives.
+    assert.ok(existsSync(taskLockPath(root, "alpha/002-fresh")));
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("releaseStaleTaskLocks: idempotent — no-op when nothing is stale", () => {
+  const root = setupRoot();
+  try {
+    acquireTask(root, "alpha/001", "agent-a");
+    const removed = releaseStaleTaskLocks(root, 30);
+    assert.equal(removed.length, 0);
+    assert.ok(existsSync(taskLockPath(root, "alpha/001")));
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("releaseStaleTaskLocks: rejects non-positive ttl", () => {
+  const root = setupRoot();
+  try {
+    assert.throws(() => releaseStaleTaskLocks(root, 0), /positive number/);
+    assert.throws(() => releaseStaleTaskLocks(root, -1), /positive number/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("locksDir: under <root>/.tpm/locks", () => {
+  const root = setupRoot();
+  try {
+    assert.equal(locksDir(root), join(root, ".tpm", "locks"));
   } finally {
     rmTempDir(root);
   }
