@@ -42,7 +42,9 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   }
   const url = new URL(req.url ?? "/", "http://localhost");
   const root = findRoot();
-  const projects = loadProjects(root);
+  // Always load archived so `/t/<project>/<slug>` resolves an archived task and
+  // `/p/<slug>?archived=1` has them available. Filtering happens per-route.
+  const projects = loadProjects(root, { archived: true });
   const result = route(url.pathname, url.searchParams, projects);
   res.writeHead(result.status, { "content-type": result.contentType });
   res.end(result.body);
@@ -68,7 +70,8 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const slug = decodeURIComponent(projectMatch[1]);
     const project = projects.find(p => p.slug === slug);
     if (!project) return notFound(`No project: ${slug}`);
-    return ok("text/html; charset=utf-8", renderProject(project));
+    const showArchived = params.get("archived") === "1";
+    return ok("text/html; charset=utf-8", renderProject(project, projects, showArchived));
   }
   const taskMatch = pathname.match(/^\/t\/(.+?)\/?$/);
   if (taskMatch) {
@@ -123,6 +126,7 @@ function renderIndex(projects: Project[], projectFilter: string | null): string 
     : "";
 
   const body = `
+${projectChips(projects, null)}
 <header>
   <h1>tpm</h1>
   <p class="meta">${esc(now())}  ·  ${projects.length} project${projects.length === 1 ? "" : "s"}</p>
@@ -144,37 +148,71 @@ function renderIndex(projects: Project[], projectFilter: string | null): string 
   return layout("tpm", body, { autoRefresh: 30 });
 }
 
-function renderProject(project: Project): string {
+function renderProject(project: Project, allProjects: Project[], showArchived: boolean): string {
   const repo = resolveRepo(project);
-  const liveTasks = flatTasks(project.tasks).filter(t => !t.archived && !isParent(t));
+  const tasks = flatTasks(project.tasks).filter(t => !isParent(t) && (showArchived || !t.archived));
   const byStatus = new Map<string, Task[]>();
-  for (const t of liveTasks) {
+  for (const t of tasks) {
     const s = String(t.data.status ?? "?");
     const arr = byStatus.get(s) ?? [];
     arr.push(t);
     byStatus.set(s, arr);
   }
+  // Live queues first, archived terminal states last.
   const order = ["needs-review", "needs-feedback", "in-progress", "blocked", "ready", "open", "done", "dropped"];
   const sectionsHtml = order
     .filter(s => byStatus.has(s))
     .map(s => {
-      const rows = byStatus.get(s)!.map(t => taskRow(project, t, s)).join("");
-      return `<section class="queue"><h2>${esc(s)} <span class="meta">(${byStatus.get(s)!.length})</span></h2>${rows}</section>`;
+      const group = byStatus.get(s)!.slice();
+      // Archived rows sort by `closed:` desc; live rows keep slug order from the loader.
+      if (s === "done" || s === "dropped") {
+        group.sort((a, b) => String(b.data.closed ?? "").localeCompare(String(a.data.closed ?? "")));
+      }
+      const rows = group.map(t => taskRow(project, t, s)).join("");
+      return `<section class="queue"><h2>${esc(s)} <span class="meta">(${group.length})</span></h2>${rows}</section>`;
     })
     .join("");
 
   const repoLink = repo.remote ? `<a href="${escAttr(repo.remote)}">${esc(repo.remote)}</a>` : "<em>no remote</em>";
   const projectName = strOr(project.data.name, project.slug);
   const status = strOr(project.data.status, "?");
+  const host = strOr(project.data.host, "");
+  const tagsField = project.data.tags;
+  const tags = Array.isArray(tagsField) ? tagsField.map(String) : [];
+  const created = strOr(project.data.created, "");
+
+  const toggleHref = showArchived ? `/p/${esc(project.slug)}` : `/p/${esc(project.slug)}?archived=1`;
+  const toggleLabel = showArchived ? "Hide archived" : "Show archived";
+
+  const tagsBlock = tags.length
+    ? `<dt>Tags</dt><dd>${tags.map(t => `<code>${esc(t)}</code>`).join(" ")}</dd>`
+    : "";
+  const hostBlock = host ? `<dt>Host</dt><dd>${esc(host)}</dd>` : "";
+  const createdBlock = created ? `<dt>Created</dt><dd>${esc(created)}</dd>` : "";
 
   const body = `
+${projectChips(allProjects, project.slug)}
 <nav class="crumbs"><a href="/">tpm</a><a href="/p/${esc(project.slug)}">${esc(project.slug)}</a></nav>
 <header>
   <h1>${esc(projectName)} <span class="badge s-${cls(status)}">${esc(status)}</span></h1>
-  <p class="meta"><code>${esc(project.slug)}</code>  ·  ${repoLink}  ·  ${liveTasks.length} task${liveTasks.length === 1 ? "" : "s"}</p>
+  <p class="meta"><code>${esc(project.slug)}</code>  ·  ${repoLink}  ·  ${tasks.length} task${tasks.length === 1 ? "" : "s"}${showArchived ? " (incl. archived)" : ""}</p>
+  <p class="archive-toggle"><a href="${toggleHref}">${showArchived ? "[x]" : "[ ]"} ${toggleLabel}</a></p>
 </header>
-<div class="body">${renderMarkdown(extractGoalAndContext(project.body))}</div>
-${sectionsHtml || `<p class="queue-empty">No active tasks.</p>`}
+<div class="layout">
+  <aside class="sidebar">
+    <dl>
+      <dt>Status</dt><dd><span class="badge s-${cls(status)}">${esc(status)}</span></dd>
+      <dt>Repo</dt><dd>${repoLink}</dd>
+      ${hostBlock}
+      ${tagsBlock}
+      ${createdBlock}
+    </dl>
+  </aside>
+  <main>
+    <div class="body">${renderMarkdown(extractProjectBody(project.body))}</div>
+    ${sectionsHtml || `<p class="queue-empty">No active tasks.</p>`}
+  </main>
+</div>
 `;
   return layout(`tpm · ${projectName}`, body);
 }
@@ -248,21 +286,41 @@ function taskRow(project: Project, task: Task, status: string): string {
     : `${project.slug}/${task.slug}`;
   const href = `/t/${slug.split("/").map(esc).join("/")}`;
   const title = strOr(task.data.title, task.slug);
-  const created = strOr(task.data.created, "");
-  return `<div class="task-row">
-    <span class="badge s-${cls(status)}">${esc(status)}</span>
+  const when = task.archived
+    ? strOr(task.data.closed, strOr(task.data.created, ""))
+    : strOr(task.data.created, "");
+  const classes = ["task-row"];
+  if (task.parent) classes.push("child");
+  if (task.archived) classes.push("archived");
+  const archivedTag = task.archived ? `<span class="archived-tag">archived</span>` : "";
+  return `<div class="${classes.join(" ")}">
+    <span class="badge s-${cls(status)}${task.archived ? " s-archived" : ""}">${esc(status)}</span>
     <a class="title" href="${href}">${esc(title)}</a>
     <span class="slug">${esc(slug)}</span>
-    <span class="when">${esc(created)}</span>
+    ${archivedTag}
+    <span class="when">${esc(when)}</span>
   </div>`;
 }
 
-function extractGoalAndContext(body: string): string {
-  const goal = extractSection(body, "Goal");
-  const ctx = extractSection(body, "Context");
+// Inline list of project links shown above the page header. The current
+// project (if any) is rendered as a non-link "active" chip.
+function projectChips(projects: Project[], activeSlug: string | null): string {
+  if (projects.length === 0) return "";
+  const chips = projects.map(p => {
+    if (p.slug === activeSlug) {
+      return `<span class="chip active">${esc(strOr(p.data.name, p.slug))}</span>`;
+    }
+    return `<a class="chip" href="/p/${esc(p.slug)}">${esc(strOr(p.data.name, p.slug))}</a>`;
+  }).join("");
+  return `<nav class="project-chips">${chips}</nav>`;
+}
+
+function extractProjectBody(body: string): string {
   const parts: string[] = [];
-  if (goal) parts.push(`## Goal\n\n${goal}`);
-  if (ctx) parts.push(`## Context\n\n${ctx}`);
+  for (const heading of ["Goal", "Context", "Notes", "Log"]) {
+    const section = extractSection(body, heading);
+    if (section) parts.push(`## ${heading}\n\n${section}`);
+  }
   return parts.join("\n\n");
 }
 

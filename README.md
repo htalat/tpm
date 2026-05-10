@@ -304,7 +304,7 @@ open http://127.0.0.1:7777
 tmux kill-session -t tpm-web     # stop
 ```
 
-Routes: `/` (Your inbox / Agent queue / In flight; append `?project=<slug>` to filter), `/p/<project>` (project view), `/t/<project>/<slug>` (task view with rendered Context / Plan / Log / Outcome), `/api/refresh` (JSON for client polling). Auto-refreshes every 30s via meta-refresh — no JS framework. The markdown subset rendered in task bodies covers headings, lists, fenced code, links, and basic emphasis; intentionally rejects GFM tables / footnotes (write HTML in the body if you need them).
+Routes: `/` (Your inbox / Agent queue / In flight, with a project-chip nav across the top to jump into any project; append `?project=<slug>` to filter the queues), `/p/<project>` (project view — sidebar with project frontmatter, rendered Goal / Context / Notes / Log, and tasks grouped by status; archived tasks hidden by default, append `?archived=1` or use the "Show archived" toggle), `/t/<project>/<slug>` (task view with rendered Context / Plan / Log / Outcome; resolves archived tasks too), `/api/refresh` (JSON for client polling). Auto-refreshes every 30s via meta-refresh — no JS framework. The markdown subset rendered in task bodies covers headings, lists, fenced code, links, and basic emphasis; intentionally rejects GFM tables / footnotes (write HTML in the body if you need them).
 
 ### Per-repo wiring
 
