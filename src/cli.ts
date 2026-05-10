@@ -8,6 +8,7 @@ import { report } from "./report.ts";
 import { archiveTask, foldTask, loadProjects, flatTasks, rollupStatus } from "./tree.ts";
 import type { Task } from "./tree.ts";
 import { selectNext, selectCandidates, inboxItems } from "./queue.ts";
+import { resolveSameRepoStrategy } from "./strategy.ts";
 import { findTask, findRepoTarget } from "./resolve.ts";
 import { init } from "./init.ts";
 import { CONFIG_PATH, readConfig } from "./config.ts";
@@ -372,21 +373,37 @@ try {
         break;
       }
       // --claim: walk candidates in order, atomically lock the first one we can.
+      // Strategy `serialize` also requires the repo lock — fall through to
+      // the next candidate if a sibling task is already running in this repo.
       // Skip a stale-lock sweep first as a hygiene step.
       const ttl = staleTtlDefault(root);
       lock.releaseStaleTaskLocks(root, ttl);
       const candidates = selectCandidates(projects, { projectFilter, autonomous });
       for (const c of candidates) {
         const slug = qualifySlug(c.project.slug, c.task);
-        const r = lock.acquireTask(root, slug, claimAgent);
-        if (r.acquired) {
-          console.log(slug);
-          process.exit(0);
+        const strategy = resolveSameRepoStrategy(c.project);
+        if (strategy === "worktree") {
+          // Declared but not yet implemented (035/003 ships the field +
+          // serialize; worktree lifecycle is a follow-up). Skip rather than
+          // claim a task we can't safely dispatch in parallel.
+          continue;
         }
+        const taskR = lock.acquireTask(root, slug, claimAgent);
+        if (!taskR.acquired) continue;
+        if (strategy === "serialize") {
+          const repoR = lock.acquireRepo(root, c.project.slug, claimAgent);
+          if (!repoR.acquired) {
+            // Release the per-task lock so future claims see it free.
+            lock.releaseTask(root, slug, claimAgent);
+            continue;
+          }
+        }
+        console.log(slug);
+        process.exit(0);
       }
       const where = projectFilter ? ` in project "${projectFilter}"` : "";
       const gate = autonomous ? " with allow_orchestrator: true" : "";
-      console.error(`No claimable ready or needs-feedback tasks${where}${gate} (all candidates locked).`);
+      console.error(`No claimable ready or needs-feedback tasks${where}${gate} (all candidates locked or their repos busy).`);
       process.exit(1);
     }
     case "serve": {

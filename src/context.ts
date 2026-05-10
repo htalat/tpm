@@ -1,6 +1,7 @@
 import { loadProjects } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
 import { findTask, findRepoTarget } from "./resolve.ts";
+import { resolveSameRepoStrategy, DEFAULT_SAME_REPO_STRATEGY } from "./strategy.ts";
 
 export interface Repo {
   remote: string | null;
@@ -37,6 +38,12 @@ export function context(root: string, query: string): string {
   if (repo.remote) lines.push(`- Repo: ${repo.remote}`);
   if (repo.local) lines.push(`- Local: ${repo.local}`);
   lines.push(`- Host: ${str(project.data.host) ?? "github"}`);
+  const strategy = resolveSameRepoStrategy(project);
+  if (strategy !== DEFAULT_SAME_REPO_STRATEGY) {
+    // Only surface when explicitly non-default; default is "serialize" and
+    // mentioning it on every briefing would be noise.
+    lines.push(`- Same-repo strategy: ${strategy}`);
+  }
   const workflow = str(task.data.workflow) ?? str(project.data.workflow);
   if (workflow) lines.push(`- Workflow: ${workflow}`);
   lines.push(`- Status: ${str(task.data.status) ?? "?"}  ·  Type: ${str(task.data.type) ?? "?"}`);
