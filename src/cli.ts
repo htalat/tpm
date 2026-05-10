@@ -15,6 +15,7 @@ import { now } from "./time.ts";
 import * as mutate from "./mutate.ts";
 import * as lock from "./lock.ts";
 import { runOrchestrate } from "./orchestrate.ts";
+import { runServe } from "./serve.ts";
 import { shouldNotify, fireNotification, NOTIFY_EVENTS } from "./notify.ts";
 import type { NotifyEvent } from "./notify.ts";
 import { resolveRepo } from "./context.ts";
@@ -288,6 +289,21 @@ try {
       console.log(qualifySlug(pick.project.slug, pick.task));
       break;
     }
+    case "serve": {
+      const portArg = parseFlag(args, "--port");
+      const hostArg = parseFlag(args, "--host");
+      const opts: { port?: number; host?: string } = {};
+      if (portArg !== undefined) {
+        const n = Number(portArg);
+        if (!Number.isInteger(n) || n <= 0 || n > 65535) usage("--port must be an integer 1..65535");
+        opts.port = n;
+      }
+      if (hostArg !== undefined) opts.host = hostArg;
+      await runServe(opts);
+      // runServe never resolves under normal operation (server is listening).
+      // We hit this only on listen-error → process.exit already fired.
+      break;
+    }
     case "notify": {
       const event = args[1] as NotifyEvent | undefined;
       const query = args[2];
@@ -454,6 +470,7 @@ Usage:
   tpm orchestrate [--minutes <N>] [--claude <path>]
                                              pick next --autonomous task and run claude with a hard time bound
   tpm notify <start|finish|fail> <task>      best-effort osascript notification (cascade: task > project > global)
+  tpm serve [--port 7777] [--host 127.0.0.1] start a localhost HTTP UI for the queues (read-only)
   tpm report [--md]
   tpm root                                   print the tree root
   tpm path <project | task | project/task>   print the local repo path

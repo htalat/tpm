@@ -139,6 +139,7 @@ tpm next [--project <slug>] [--autonomous]  # print next leaf task (needs-feedba
 tpm inbox                                 # list human-queue tasks (needs-review, blocked, open) cross-project
 tpm orchestrate [--minutes <N>] [--claude <path>]  # pick next --autonomous task and run claude with a hard time bound
 tpm notify <start|finish|fail> <task>     # best-effort osascript notification (cascade: task > project > global)
+tpm serve [--port 7777] [--host 127.0.0.1]  # start a localhost HTTP UI for the queues (read-only)
 tpm report [--md]
 tpm root                                  # print the tree root
 tpm path <project | task | project/task>  # print the local checkout path
@@ -474,6 +475,34 @@ tpm report --md      # writes reports/index.md
 ```
 
 The HTML report is one self-contained file with no external assets. Dark mode supported via `prefers-color-scheme`.
+
+### Live dashboard (`tpm serve`)
+
+`tpm serve` starts a tiny local HTTP server (`127.0.0.1:7777` by default) that renders the same tree as a live dashboard. Different shape from `tpm report` — that's a static, point-in-time rollup; this is a tab you keep open while doing other work. Read-only in v0; the CLI is the writer.
+
+```sh
+tpm serve                           # http://127.0.0.1:7777/
+tpm serve --port 9000               # different port
+```
+
+Routes:
+
+- `GET /` — three queue sections: **Your inbox** (`needs-review` / `blocked` / `open`), **Agent queue** (`needs-feedback` > `ready`), **In flight** (`in-progress`). Auto-refreshes via meta-refresh every 30s. Append `?project=<slug>` to filter to a single project.
+- `GET /p/<project>` — project view: goal/context block + tasks grouped by status.
+- `GET /t/<project>/<slug>` (or `/t/<project>/<parent>/<child>`) — task view: status / type / repo / PRs / parent / children sidebar, plus the rendered Context / Plan / Log / Outcome body.
+- `GET /api/refresh` — JSON `{ generated, counts }` for client-side polling.
+
+The markdown subset rendered in task bodies covers ATX headings, paragraphs, lists (single-level nesting), fenced code blocks, links, and `**bold**`/`*italic*`/`` `code` ``. No tables, no GFM extensions — write HTML in the body if you need them. Same ethos as the YAML parser: extending the in-tree implementation is cheaper than adding a dep.
+
+**Background it.** `tpm serve` runs in the foreground and prints to stderr; for an always-on dashboard, throw it in tmux:
+
+```sh
+tmux new -d -s tpm-web 'tpm serve'
+tmux attach -t tpm-web    # peek
+tmux kill-session -t tpm-web
+```
+
+No daemonization built into the CLI on purpose — tmux/launchd/systemd already do that job better.
 
 ## Tests
 
