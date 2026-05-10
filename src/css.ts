@@ -62,7 +62,13 @@ a.repo:hover { background: #eaeef2; text-decoration: none; }
 // render bodies and doesn't need the sidebar layout).
 export const SERVE_CSS = `
 nav.crumbs { font-size: .9em; color: #57606a; margin-bottom: 1rem; }
-nav.crumbs a + a::before { content: " / "; color: #8d96a0; padding: 0 .25rem; }
+nav.crumbs a + a::before { content: " \\203A "; color: #8d96a0; padding: 0 .25rem; }
+nav.project-chips { display: flex; gap: .4rem; flex-wrap: wrap; margin-bottom: 1rem; padding-bottom: .75rem; border-bottom: 1px solid #eaeef2; }
+.chip { display: inline-block; padding: .2rem .65rem; border-radius: 999px; background: #f6f8fa; color: #0969da; font-size: .85em; border: 1px solid #d0d7de; }
+.chip:hover { background: #eaeef2; text-decoration: none; }
+.chip.active { background: #0969da; color: #fff; border-color: #0969da; cursor: default; }
+.archive-toggle { margin: .5rem 0 0; font-size: .85em; }
+.archive-toggle a { color: #57606a; }
 .queue { margin-bottom: 1.5rem; }
 .queue h2 { font-size: 1.05rem; margin-top: 1rem; padding-bottom: .2rem; }
 .queue-empty { color: #8d96a0; font-size: .9em; padding: .35rem 0; }
@@ -72,6 +78,10 @@ nav.crumbs a + a::before { content: " / "; color: #8d96a0; padding: 0 .25rem; }
 .task-row .when { color: #57606a; font-size: .85em; margin-left: auto; }
 .task-row a.title { font-weight: 500; }
 .task-row .slug { color: #8d96a0; font-size: .85em; }
+.task-row.child { padding-left: 1.5rem; border-left: 2px solid #eaeef2; }
+.task-row.archived { opacity: .65; }
+.task-row.archived a.title { font-weight: 400; }
+.archived-tag { font-size: .7em; text-transform: uppercase; letter-spacing: .04em; color: #8d96a0; padding: 1px 6px; border-radius: 4px; background: #eaeef2; }
 .layout { display: grid; grid-template-columns: 220px 1fr; gap: 1.5rem; align-items: start; }
 .sidebar { font-size: .9em; }
 .sidebar dt { color: #57606a; font-weight: 600; font-size: .75em; text-transform: uppercase; letter-spacing: .04em; margin-top: .8rem; }
@@ -84,8 +94,15 @@ nav.crumbs a + a::before { content: " / "; color: #8d96a0; padding: 0 .25rem; }
 .body pre code { background: none; padding: 0; }
 .body ul, .body ol { padding-left: 1.4rem; }
 @media (prefers-color-scheme: dark) {
+  nav.project-chips { border-color: #21262d; }
+  .chip { background: #161b22; border-color: #30363d; color: #79c0ff; }
+  .chip:hover { background: #21262d; }
+  .chip.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+  .archive-toggle a { color: #8d96a0; }
+  .archived-tag { background: #21262d; color: #8d96a0; }
   .task-row { border-color: #21262d; }
   .task-row:hover { background: #161b22; }
+  .task-row.child { border-left-color: #21262d; }
   .sidebar dt { color: #8d96a0; }
   .body pre { background: #161b22; }
 }

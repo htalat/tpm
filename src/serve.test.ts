@@ -141,3 +141,74 @@ test("route: archived and parent tasks are excluded from index queue lists", () 
   assert.match(r.body, /003-child/);
   assert.doesNotMatch(r.body, /001-old/);
 });
+
+test("route: / renders a project chips nav with all projects", () => {
+  const a = project("alpha", [task("001", "ready")]);
+  const b = project("beta",  [task("002", "open")]);
+  const r = route("/", new URLSearchParams(), [a, b]);
+  assert.match(r.body, /project-chips/);
+  assert.match(r.body, /href="\/p\/alpha"/);
+  assert.match(r.body, /href="\/p\/beta"/);
+});
+
+test("route: /p/<slug> hides archived tasks by default", () => {
+  const live = task("001-live", "ready");
+  const old = task("099-old", "done", { closed: "2026-01-01 12:00 PDT" });
+  old.archived = true;
+  const p = project("alpha", [live, old]);
+  const r = route("/p/alpha", new URLSearchParams(), [p]);
+  assert.match(r.body, /001-live/);
+  assert.doesNotMatch(r.body, /099-old/);
+  // Toggle link offers to show archived.
+  assert.match(r.body, /Show archived/);
+  assert.match(r.body, /href="\/p\/alpha\?archived=1"/);
+});
+
+test("route: /p/<slug>?archived=1 includes archived tasks deemphasized", () => {
+  const live = task("001-live", "ready");
+  const old = task("099-old", "done", { closed: "2026-01-01 12:00 PDT" });
+  old.archived = true;
+  const p = project("alpha", [live, old]);
+  const r = route("/p/alpha", new URLSearchParams("archived=1"), [p]);
+  assert.match(r.body, /099-old/);
+  // Row carries the archived class so CSS can deemphasize it.
+  assert.match(r.body, /task-row[^"]*\barchived\b/);
+  // Toggle link offers to hide archived.
+  assert.match(r.body, /Hide archived/);
+});
+
+test("route: /p/<slug> sidebar shows project status, repo, host", () => {
+  const p = project("alpha", [task("001", "ready")], {
+    status: "active",
+    repo: { remote: "https://github.com/x/alpha.git" },
+    host: "github",
+  });
+  const r = route("/p/alpha", new URLSearchParams(), [p]);
+  // Sidebar element present with project meta.
+  assert.match(r.body, /<aside class="sidebar">/);
+  assert.match(r.body, /github\.com\/x\/alpha/);
+  assert.match(r.body, /github/);
+});
+
+test("route: /p/<slug> archived done tasks sort by closed desc", () => {
+  const older = task("001-older", "done", { closed: "2026-01-01 12:00 PDT" });
+  older.archived = true;
+  const newer = task("002-newer", "done", { closed: "2026-03-01 12:00 PDT" });
+  newer.archived = true;
+  const p = project("alpha", [older, newer]);
+  const r = route("/p/alpha", new URLSearchParams("archived=1"), [p]);
+  // Newer (002) appears before older (001) in the rendered HTML.
+  const idxNewer = r.body.indexOf("002-newer");
+  const idxOlder = r.body.indexOf("001-older");
+  assert.ok(idxNewer >= 0 && idxOlder >= 0);
+  assert.ok(idxNewer < idxOlder, "archived done tasks should sort by closed desc");
+});
+
+test("route: /t/<project>/<slug> resolves an archived task", () => {
+  const old = task("099-old", "done");
+  old.archived = true;
+  const p = project("alpha", [old]);
+  const r = route("/t/alpha/099-old", new URLSearchParams(), [p]);
+  assert.equal(r.status, 200);
+  assert.match(r.body, /Task 099-old/);
+});
