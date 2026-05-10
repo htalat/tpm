@@ -175,7 +175,9 @@ function cls(s: unknown): string {
   return String(s ?? "unknown").replace(/[^a-z0-9-]/gi, "-").toLowerCase();
 }
 
-function repoShort(url: string): string {
+export function repoShort(url: string): string {
+  const ado = url.match(/dev\.azure\.com\/([^/]+)\/[^/]+\/_git\/([^/?#]+)/);
+  if (ado) return `${ado[1]}/${ado[2]}`;
   const m = url.match(/github\.com[:/]([^/]+\/[^/.]+)/);
   if (m) return m[1];
   const ssh = url.match(/^[^:]+:([^/]+\/[^/.]+)/);
@@ -183,7 +185,9 @@ function repoShort(url: string): string {
   return url.length > 40 ? url.slice(0, 37) + "…" : url;
 }
 
-function prShort(url: string): string {
+export function prShort(url: string): string {
+  const ado = url.match(/dev\.azure\.com\/([^/]+)\/[^/]+\/_git\/([^/]+)\/pullrequest\/(\d+)/);
+  if (ado) return `${ado[1]}/${ado[2]}!${ado[3]}`;
   const m = url.match(/\/(?:pull|pulls)\/(\d+)/);
   if (m) {
     const repo = url.match(/github\.com\/([^/]+\/[^/]+)/);

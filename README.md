@@ -188,6 +188,7 @@ created: 2026-04-25 09:30 PDT
 repo:
   remote: https://github.com/owner/repo
   local:  /Users/you/code/repo
+host: github          # github | ado — selects the CLI agents use for PR ops (gh / az repos pr). Default github.
 tags: []
 workflow: AGENTS.md   # optional: path (relative to repo root) to the doc agents follow when shipping work
 ```

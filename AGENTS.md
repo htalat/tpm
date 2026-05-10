@@ -14,7 +14,7 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
 
 ## Schema
 
-- **Project frontmatter**: `name, slug, status, created, repo: {remote, local}, tags`
+- **Project frontmatter**: `name, slug, status, created, repo: {remote, local}, host, tags`. `host` is `github` (default) or `ado` — see the dispatch bullet under Conventions.
 - **Task frontmatter**: `title, slug, project, status, type, created, closed, prs, tags` (inherits `repo` from project; can override by adding own `repo:` block). Optional `parent: <parent-slug>` marks the task as a child within a folder-form parent.
 - **Task shapes**:
   - **File form** (default): `tasks/NNN-slug.md`. Single file.
@@ -122,3 +122,4 @@ Use when a task needs supporting files (subtasks, scratch notes, screenshots) al
 - If `tpm` errors with "No tpm tree configured", offer to run `tpm init` (default `~/tpm`).
 - Keep edits to the user's actual code repos separate from edits to task files — task files are tracker state, not code.
 - Surface CLI errors directly; don't paper over them.
+- **PR-related commands dispatch on `Host:` in the briefing.** `github` → `gh` (e.g. `gh pr view`, `gh pr checkout`); `ado` → `az repos pr` (e.g. `az repos pr show`, `az repos pr checkout`). The procedures below show `gh` examples for brevity; substitute the ADO equivalent when the project's host is `ado`. No adapter layer in tpm — agents map commands themselves.

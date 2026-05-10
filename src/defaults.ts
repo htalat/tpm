@@ -6,6 +6,7 @@ created: {{date}}
 repo:
   remote: {{repo_remote}}
   local: {{repo_local}}
+host: github                # github | ado — selects the CLI agents use for PR ops (gh / az repos pr).
 tags: []
 # workflow: AGENTS.md       # optional: path (relative to repo) to the doc agents follow when shipping work.
                             # If unset, agents look for AGENTS.md, then CLAUDE.md, then fall back to ask-before-each-step.
