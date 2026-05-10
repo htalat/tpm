@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { hostname } from "node:os";
 import { findRoot } from "./root.ts";
 import { loadProjects } from "./tree.ts";
@@ -8,6 +9,8 @@ import * as mutate from "./mutate.ts";
 import * as lock from "./lock.ts";
 import { readConfig, DEFAULT_TIME_BOUND_MINUTES } from "./config.ts";
 import { shouldNotify, fireNotification } from "./notify.ts";
+import { resolveRepo } from "./context.ts";
+import { resolveSameRepoStrategy, worktreePath, worktreeBranch } from "./strategy.ts";
 import type { Project, Task } from "./tree.ts";
 
 export interface ResolveTimeBoundInput {
@@ -88,23 +91,46 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     }
   } else {
     // Atomic pick + claim: walk candidates, lock the first one we can.
+    // Strategy `serialize` also requires the repo lock — falls through to
+    // the next candidate if a sibling task is already running in this repo.
     const candidates = selectCandidates(projects, { autonomous: true });
     for (const c of candidates) {
-      slug = c.task.parent
+      const candSlug = c.task.parent
         ? `${c.project.slug}/${c.task.parent}/${c.task.slug}`
         : `${c.project.slug}/${c.task.slug}`;
-      const r = lock.acquireTask(root, slug, agentId);
-      if (r.acquired) {
-        pick = c;
-        break;
+      const taskR = lock.acquireTask(root, candSlug, agentId);
+      if (!taskR.acquired) continue;
+      const strategy = resolveSameRepoStrategy(c.project);
+      if (strategy === "worktree") {
+        // Worktree strategy is declared but the orchestrator-managed
+        // create/cleanup path isn't shipped yet (tracked as a follow-up to
+        // 035/003). Refuse to dispatch rather than silently colliding on
+        // the working tree.
+        lock.releaseTask(root, candSlug, agentId);
+        return {
+          exitCode: 1,
+          message: `${candSlug}: same_repo_strategy: worktree is declared but not yet implemented in tpm orchestrate. Switch to serialize or run the task manually.`,
+        };
       }
+      if (strategy === "serialize") {
+        const repoR = lock.acquireRepo(root, c.project.slug, agentId);
+        if (!repoR.acquired) {
+          // Repo busy with a sibling task. Release the per-task lock we just
+          // grabbed so a future claim can pick it up, then try the next.
+          lock.releaseTask(root, candSlug, agentId);
+          continue;
+        }
+      }
+      slug = candSlug;
+      pick = c;
+      break;
     }
     if (!pick) {
       return {
         exitCode: 1,
         message: candidates.length === 0
           ? "No ready or needs-feedback tasks with allow_orchestrator: true."
-          : "All eligible tasks are locked by other agents.",
+          : "All eligible tasks are claimable but their repos are busy or already locked.",
       };
     }
   }
@@ -146,11 +172,18 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     });
   } finally {
     clearInterval(heartbeatTimer);
-    // Always release the lock on exit (success, timeout, or thrown error).
+    // Always release locks on exit (success, timeout, or thrown error).
     try {
       lock.releaseTask(root, slug, agentId);
     } catch (e) {
       console.error(`tpm orchestrate: lock release failed: ${(e as Error).message}`);
+    }
+    if (resolveSameRepoStrategy(pick.project) === "serialize") {
+      try {
+        lock.releaseRepo(root, pick.project.slug, agentId);
+      } catch (e) {
+        console.error(`tpm orchestrate: repo lock release failed: ${(e as Error).message}`);
+      }
     }
   }
 

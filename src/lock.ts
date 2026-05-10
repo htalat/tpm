@@ -129,6 +129,67 @@ export function taskLockPath(root: string, qualifiedSlug: string): string {
   return join(locksDir(root), `${flattened}.lock`);
 }
 
+// Repo-level lock for the `serialize` same-repo strategy. Lives alongside
+// per-task locks; lock-file format is identical so `tpm lock list` surfaces
+// it the same way. Slug is `repo--<project>` so it sorts naturally with
+// per-task locks for the same project.
+export function repoLockPath(root: string, projectSlug: string): string {
+  return join(locksDir(root), `repo--${projectSlug}.lock`);
+}
+
+export function acquireRepo(root: string, projectSlug: string, agentId: string): TaskAcquireResult {
+  if (!agentId || !agentId.trim()) {
+    throw new Error("tpm lock: --as <agent-id> is required for repo lock");
+  }
+  const path = repoLockPath(root, projectSlug);
+  mkdirSync(dirname(path), { recursive: true });
+  const stamp = now();
+  const body = renderTaskLock({
+    agentId: agentId.trim(),
+    pid: process.pid,
+    acquired: stamp,
+    heartbeat: stamp,
+  });
+  let fd: number;
+  try {
+    fd = openSync(path, "wx");
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+      const prior = readTaskLock(path);
+      const reason = prior
+        ? `repo lock for ${projectSlug} held by ${prior.agentId} (pid ${prior.pid})`
+        : `repo lock file exists: ${path}`;
+      return { acquired: false, reason, prior: prior ?? undefined };
+    }
+    throw e;
+  }
+  try {
+    writeFileSync(fd, body);
+  } finally {
+    closeSync(fd);
+  }
+  return { acquired: true };
+}
+
+export function releaseRepo(root: string, projectSlug: string, agentId: string, force = false): ReleaseResult {
+  const path = repoLockPath(root, projectSlug);
+  if (!existsSync(path)) return { released: false, message: "no repo lock file" };
+  if (!force) {
+    if (!agentId || !agentId.trim()) {
+      throw new Error("tpm lock release-repo: --as <agent-id> is required (or use --force)");
+    }
+    const existing = readTaskLock(path);
+    if (existing && existing.agentId !== agentId.trim()) {
+      return {
+        released: false,
+        message: `repo lock for ${projectSlug} held by ${existing.agentId}, not ${agentId.trim()}`,
+      };
+    }
+  }
+  unlinkSync(path);
+  return { released: true, message: "released" };
+}
+
 // Atomic acquire via O_CREAT | O_EXCL. The first writer wins; subsequent
 // callers see EEXIST and report the existing holder.
 export function acquireTask(root: string, qualifiedSlug: string, agentId: string): TaskAcquireResult {
@@ -231,7 +292,10 @@ export function listTaskLocks(root: string): TaskLockEntry[] {
     if (!statSync(path).isFile()) continue;
     const data = readTaskLock(path);
     if (!data) continue;
-    const slug = entry.replace(/\.lock$/, "").replace(/--/g, "/");
+    const stem = entry.replace(/\.lock$/, "");
+    // Keep `repo--<project>` literal so it reads distinctly from task slugs;
+    // task slug filenames (`<project>--<task>` etc.) un-flatten back to slashes.
+    const slug = stem.startsWith("repo--") ? stem : stem.replace(/--/g, "/");
     out.push({
       qualifiedSlug: slug,
       path,

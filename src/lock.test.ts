@@ -8,6 +8,7 @@ import {
   acquire, release, status, lockPath,
   acquireTask, releaseTask, heartbeatTask, statusTask,
   listTaskLocks, releaseStaleTaskLocks, taskLockPath, locksDir,
+  acquireRepo, releaseRepo, repoLockPath,
 } from "./lock.ts";
 
 // PIDs that won't exist on any sane machine. Picked high to avoid collision
@@ -418,6 +419,84 @@ test("locksDir: under <root>/.tpm/locks", () => {
   const root = setupRoot();
   try {
     assert.equal(locksDir(root), join(root, ".tpm", "locks"));
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+// ---- repo lock (serialize strategy) ----------------------------------------
+
+test("acquireRepo: creates <root>/.tpm/locks/repo--<project>.lock", () => {
+  const root = setupRoot();
+  try {
+    const r = acquireRepo(root, "alpha", "agent-a");
+    assert.equal(r.acquired, true);
+    const path = repoLockPath(root, "alpha");
+    assert.match(path, /\.tpm\/locks\/repo--alpha\.lock$/);
+    assert.ok(existsSync(path));
+    const contents = readFileSync(path, "utf8");
+    assert.match(contents, /^agent-id: agent-a$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("acquireRepo: second concurrent acquire fails atomically", () => {
+  const root = setupRoot();
+  try {
+    const first = acquireRepo(root, "alpha", "agent-a");
+    assert.equal(first.acquired, true);
+    const second = acquireRepo(root, "alpha", "agent-b");
+    assert.equal(second.acquired, false);
+    assert.match(second.reason!, /repo lock for alpha held by agent-a/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("acquireRepo: different projects don't collide", () => {
+  const root = setupRoot();
+  try {
+    assert.equal(acquireRepo(root, "alpha", "agent-a").acquired, true);
+    assert.equal(acquireRepo(root, "beta",  "agent-a").acquired, true);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("releaseRepo: refuses cross-agent without --force", () => {
+  const root = setupRoot();
+  try {
+    acquireRepo(root, "alpha", "agent-a");
+    const r = releaseRepo(root, "alpha", "agent-b");
+    assert.equal(r.released, false);
+    assert.match(r.message, /held by agent-a, not agent-b/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("releaseRepo --force: clears any holder", () => {
+  const root = setupRoot();
+  try {
+    acquireRepo(root, "alpha", "agent-a");
+    const r = releaseRepo(root, "alpha", "agent-b", true);
+    assert.equal(r.released, true);
+    assert.equal(existsSync(repoLockPath(root, "alpha")), false);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("listTaskLocks: surfaces repo locks alongside per-task locks", () => {
+  const root = setupRoot();
+  try {
+    acquireTask(root, "alpha/001", "agent-a");
+    acquireRepo(root, "alpha", "agent-a");
+    const list = listTaskLocks(root);
+    assert.equal(list.length, 2);
+    const slugs = list.map(e => e.qualifiedSlug).sort();
+    assert.deepEqual(slugs, ["alpha/001", "repo--alpha"]);
   } finally {
     rmTempDir(root);
   }
