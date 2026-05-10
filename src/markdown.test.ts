@@ -1,0 +1,90 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { renderMarkdown } from "./markdown.ts";
+
+test("markdown: paragraph", () => {
+  assert.equal(renderMarkdown("hello world"), "<p>hello world</p>");
+});
+
+test("markdown: multi-line paragraph joins with space", () => {
+  assert.equal(renderMarkdown("hello\nworld"), "<p>hello world</p>");
+});
+
+test("markdown: ATX headings 1-6", () => {
+  assert.equal(renderMarkdown("# h1"),       "<h1>h1</h1>");
+  assert.equal(renderMarkdown("## h2"),      "<h2>h2</h2>");
+  assert.equal(renderMarkdown("###### h6"),  "<h6>h6</h6>");
+});
+
+test("markdown: unordered list with mixed bullets", () => {
+  const out = renderMarkdown("- one\n- two\n* three\n+ four");
+  assert.equal(out, "<ul><li>one</li><li>two</li><li>three</li><li>four</li></ul>");
+});
+
+test("markdown: ordered list", () => {
+  const out = renderMarkdown("1. one\n2. two\n3. three");
+  assert.equal(out, "<ol><li>one</li><li>two</li><li>three</li></ol>");
+});
+
+test("markdown: fenced code block (no language)", () => {
+  const out = renderMarkdown("```\nlet x = 1;\n```");
+  assert.equal(out, "<pre><code>let x = 1;</code></pre>");
+});
+
+test("markdown: fenced code block with language", () => {
+  const out = renderMarkdown("```ts\nlet x: number = 1;\n```");
+  assert.match(out, /<pre><code class="language-ts">let x: number = 1;<\/code><\/pre>/);
+});
+
+test("markdown: fenced code escapes HTML inside", () => {
+  const out = renderMarkdown("```\n<script>alert(1)</script>\n```");
+  assert.match(out, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+});
+
+test("markdown: inline code spans", () => {
+  const out = renderMarkdown("use `tpm next` here");
+  assert.equal(out, "<p>use <code>tpm next</code> here</p>");
+});
+
+test("markdown: links", () => {
+  const out = renderMarkdown("see [docs](https://example.com)");
+  assert.equal(out, '<p>see <a href="https://example.com">docs</a></p>');
+});
+
+test("markdown: bold and italic", () => {
+  const out = renderMarkdown("a **strong** and *em* word");
+  assert.equal(out, "<p>a <strong>strong</strong> and <em>em</em> word</p>");
+});
+
+test("markdown: escapes raw HTML in paragraphs", () => {
+  const out = renderMarkdown("<script>alert(1)</script>");
+  assert.equal(out, "<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>");
+});
+
+test("markdown: inline code preserves angle brackets without escaping inline code's contents twice", () => {
+  const out = renderMarkdown("see `<task>` placeholder");
+  assert.equal(out, "<p>see <code>&lt;task&gt;</code> placeholder</p>");
+});
+
+test("markdown: link URL is escaped (defense in depth)", () => {
+  // Quote in the URL must be attribute-escaped — never raw in href.
+  const out = renderMarkdown('[x](https://example.com/a"b)');
+  assert.match(out, /href="https:\/\/example\.com\/a&quot;b"/);
+  assert.doesNotMatch(out, /href="https:\/\/example\.com\/a"b"/);
+});
+
+test("markdown: blank lines separate paragraphs", () => {
+  const out = renderMarkdown("first\n\nsecond");
+  assert.equal(out, "<p>first</p>\n<p>second</p>");
+});
+
+test("markdown: heading then list (no merge)", () => {
+  const out = renderMarkdown("## Plan\n- one\n- two");
+  assert.equal(out, "<h2>Plan</h2>\n<ul><li>one</li><li>two</li></ul>");
+});
+
+test("markdown: nested list (single level)", () => {
+  const out = renderMarkdown("- top\n  - nested\n- next");
+  // Matters that nested becomes a child <ul>, not a sibling top-level item.
+  assert.match(out, /<li>top<ul><li>nested<\/li><\/ul><\/li><li>next<\/li>/);
+});
