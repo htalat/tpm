@@ -20,9 +20,13 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
   - **File form** (default): `tasks/NNN-slug.md`. Single file.
   - **Folder form**: `tasks/NNN-slug/task.md` plus optional `NNN-<sub>.md` siblings (each with `parent: NNN-slug` in frontmatter) and any other files (scratch notes, screenshots, design docs). The directory name is the parent's slug.
 - A task with any children is a **container**: not actionable, never returned by `tpm next`, can't be discussed/started directly.
-- **Statuses**: `open | ready | in-progress | blocked | done | dropped`
+- **Statuses**: `open | ready | in-progress | needs-feedback | needs-review | blocked | done | dropped`
   - `open` = author's queue (not yet shaped for an agent).
   - `ready` = agent's queue (Plan is well-specified, an agent can pick it up). Promoted via the **shape an open task** action.
+  - `in-progress` = work in flight; for `type: pr` tasks this includes the period after the PR is opened, awaiting merge.
+  - `needs-feedback` = agent's queue for in-flight PRs — CI red, branch behind main, or open review threads with a fixable suggestion. Routed to the **handle PR feedback** action. Set by the PR-signal poller (`scripts/recurring/check-pr-signal.sh`) or by the agent during a feedback round.
+  - `needs-review` = human's queue — agent escalated (e.g. design pushback on a thread, merge conflict requiring judgment, `CHANGES_REQUESTED`). Surfaced via `tpm inbox`.
+  - `blocked` = human's queue, external dep. Surfaced via `tpm inbox`.
   - Parent containers display a roll-up status (all children done → done; any in-progress → in-progress; else parent's declared status). The roll-up is display only — never written to frontmatter.
 - **Types**: `pr | investigation | spike | chore`
 - **Project body**: `## Goal`, `## Context`, `## Notes`, `## Log`. The project Log is a timeline for events that don't belong to any single task — pivots, milestones, status flips, decisions that span multiple tasks. Use the same `- YYYY-MM-DD HH:MM ZZZ: <event>` format as task Logs. Keep per-task events in the task's own Log (don't double-write).
@@ -35,6 +39,52 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
 - A bare slug works when it's globally unambiguous (e.g., `017-hierarchical-tasks` or `hierarchical-tasks`).
 - If a bare slug matches multiple tasks (e.g., two children named `discuss` under different parents), the CLI errors and asks you to qualify it.
 - Qualified forms: `<project>/<task>`, `<parent>/<child>`, `<project>/<parent>/<child>`. Use whichever disambiguates.
+
+## Lifecycle
+
+Statuses split into two queues. The agent works `ready` and `needs-feedback`; the human works `open`, `needs-review`, and `blocked`.
+
+| Status            | Queue       | Picked up by                      |
+|-------------------|-------------|-----------------------------------|
+| `open`            | human       | `tpm inbox` / manual triage       |
+| `ready`           | agent       | `tpm next` → start a task         |
+| `needs-feedback`  | agent       | `tpm next` → handle PR feedback   |
+| `in-progress`     | passive     | (work happening or waiting on review) |
+| `needs-review`    | human       | `tpm inbox` (agent escalated)     |
+| `blocked`         | human       | `tpm inbox` (external dep)        |
+| `done` / `dropped`| —           | (terminal)                        |
+
+`tpm next` returns `needs-feedback` ahead of `ready`. The PR-signal poller (`scripts/recurring/check-pr-signal.sh`) flips `in-progress` tasks into `needs-feedback` (CI red, behind main, open threads) or `needs-review` (CHANGES_REQUESTED, merge conflict). The agent's escalation path during the **handle PR feedback** action also flips `needs-feedback` → `needs-review` when the signal isn't agent-addressable.
+
+```mermaid
+stateDiagram-v2
+    [*] --> open: tpm new task
+
+    open --> ready: discuss (confirmed)
+    open --> dropped: discuss (rejected)
+
+    ready --> in_progress: tpm next or start a task
+    ready --> blocked: external dep noted
+
+    in_progress --> done: close out (PR merged)
+    in_progress --> needs_feedback: poller — CI red / rebase / threads
+    in_progress --> needs_review: poller — changes requested / conflict
+    in_progress --> blocked: external dep
+    in_progress --> dropped
+
+    needs_feedback --> in_progress: handle PR feedback (round done)
+    needs_feedback --> needs_review: agent escalates
+
+    needs_review --> in_progress: human pushed update
+    needs_review --> dropped
+
+    blocked --> ready: unblocked, no PR
+    blocked --> in_progress: unblocked, PR exists
+    blocked --> dropped
+
+    done --> [*]
+    dropped --> [*]
+```
 
 ## Script-authored tasks
 
@@ -78,10 +128,13 @@ Shape a task's Plan before any execution. Pure conversation that lands in the ta
 This is the canonical way to move a task from `open` to `ready`. A human can also flip the status manually, but the shaping action encodes the discipline (Context/Plan populated, Log timestamped, explicit confirmation).
 
 ### Pick the next ready task and run it
-Auto-select mode. Resolves the next eligible leaf task (parents are skipped) and dispatches the **start a task** action on it.
-1. Run `tpm next` (optionally with `--project <slug>`). It prints a qualified slug (`<project>/<slug>` or `<project>/<parent>/<child>`) on success or exits non-zero if nothing is ready.
-2. If non-zero, surface the message ("No ready tasks…") and stop. Don't fall back to `open` tasks — the human needs to promote one via the shaping action first.
-3. On success, dispatch the **start a task** action on the returned slug.
+Auto-select mode. Resolves the next eligible leaf task (parents are skipped) and dispatches the right action based on status.
+1. Run `tpm next` (optionally with `--project <slug>`). It prints a qualified slug on success or exits non-zero if nothing is eligible. Selection prefers `needs-feedback` over `ready`.
+2. If non-zero, surface the message and stop. Don't fall back to `open` tasks — the human needs to promote one via the shaping action first.
+3. On success, look up the task's status (`tpm context <slug>` shows it). Dispatch:
+   - `ready` → **start a task** action
+   - `needs-feedback` → **handle PR feedback** action
+4. After the action returns, the next `tpm next` invocation may pick a different task — don't loop here; the wrapper (cron, slash command) controls cadence.
 
 `tpm next --autonomous` is for scheduled/unattended runs only — it filters to tasks with `allow_orchestrator: true`. Manual invocations don't pass `--autonomous`.
 
