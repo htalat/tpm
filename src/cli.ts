@@ -10,11 +10,13 @@ import type { Task } from "./tree.ts";
 import { selectNext, inboxItems } from "./queue.ts";
 import { findTask, findRepoTarget } from "./resolve.ts";
 import { init } from "./init.ts";
-import { CONFIG_PATH } from "./config.ts";
+import { CONFIG_PATH, readConfig } from "./config.ts";
 import { now } from "./time.ts";
 import * as mutate from "./mutate.ts";
 import * as lock from "./lock.ts";
 import { runOrchestrate } from "./orchestrate.ts";
+import { shouldNotify, fireNotification, NOTIFY_EVENTS } from "./notify.ts";
+import type { NotifyEvent } from "./notify.ts";
 import { resolveRepo } from "./context.ts";
 import { checkDrift } from "./drift.ts";
 
@@ -286,6 +288,28 @@ try {
       console.log(qualifySlug(pick.project.slug, pick.task));
       break;
     }
+    case "notify": {
+      const event = args[1] as NotifyEvent | undefined;
+      const query = args[2];
+      if (!event || !query) usage(`tpm notify <${NOTIFY_EVENTS.join("|")}> <task>`);
+      if (!NOTIFY_EVENTS.includes(event as NotifyEvent)) {
+        usage(`tpm notify <${NOTIFY_EVENTS.join("|")}> <task>`);
+      }
+      const root = findRoot();
+      const projects = loadProjects(root);
+      const match = findTask(projects, query);
+      if (!match) throw new Error(`No task matched "${query}". Try \`tpm ls\`.`);
+      const cfg = readConfig();
+      if (shouldNotify(event as NotifyEvent, {
+        task: match.task,
+        project: match.project,
+        globalConfig: cfg.notifications,
+      })) {
+        fireNotification("tpm", `${match.task.slug}: ${event}`);
+      }
+      // Best-effort — never propagate failure.
+      break;
+    }
     case "orchestrate": {
       const minutesArg = parseFlag(args, "--minutes");
       const claudeArg = parseFlag(args, "--claude");
@@ -429,6 +453,7 @@ Usage:
   tpm inbox                                  list human-queue tasks (needs-review, blocked, open) cross-project
   tpm orchestrate [--minutes <N>] [--claude <path>]
                                              pick next --autonomous task and run claude with a hard time bound
+  tpm notify <start|finish|fail> <task>      best-effort osascript notification (cascade: task > project > global)
   tpm report [--md]
   tpm root                                   print the tree root
   tpm path <project | task | project/task>   print the local repo path

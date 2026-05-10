@@ -138,6 +138,7 @@ tpm fold <task | project/task>            # promote a file-form task to folder-f
 tpm next [--project <slug>] [--autonomous]  # print next leaf task (needs-feedback > ready, oldest first); exits non-zero if none
 tpm inbox                                 # list human-queue tasks (needs-review, blocked, open) cross-project
 tpm orchestrate [--minutes <N>] [--claude <path>]  # pick next --autonomous task and run claude with a hard time bound
+tpm notify <start|finish|fail> <task>     # best-effort osascript notification (cascade: task > project > global)
 tpm report [--md]
 tpm root                                  # print the tree root
 tpm path <project | task | project/task>  # print the local checkout path
@@ -174,13 +175,15 @@ cat ~/.tpm/config.json
 {
   "root": "/Users/you/Documents/projects",
   "timezone": "America/Los_Angeles",
-  "time_bound_minutes": 30
+  "time_bound_minutes": 30,
+  "notifications": { "start": false, "finish": true, "fail": true }
 }
 ```
 
 - `root` — tree root, set by `tpm init <dir>`.
 - `timezone` — IANA name (e.g. `America/Los_Angeles`, `Europe/Berlin`, `UTC`); used for `created`, `closed`, log entries, and report timestamps. Handles DST automatically (PST/PDT). Defaults to `America/Los_Angeles` if absent. Run `tpm now` to see the current timestamp in the configured zone.
 - `time_bound_minutes` — global default for `tpm orchestrate`'s hard time bound. Positive integer. Defaults to 30 if absent. Project and task frontmatter can override per-scope (see [Scheduling unattended runs](#scheduling-unattended-runs-cron)).
+- `notifications` — global default for `tpm orchestrate`'s system-notification calls. Three independent boolean keys: `start` / `finish` / `fail`. Default `{ start: false, finish: true, fail: true }` — quiet on every cron tick, visible on completion + failure. Project and task frontmatter can override per-scope (cascade: task > project > global). v0 channel is mac `osascript` only; non-darwin runs log to stderr and skip.
 
 ## Frontmatter schema
 
@@ -197,6 +200,8 @@ host: github          # github | ado — selects the CLI agents use for PR ops (
 tags: []
 workflow: AGENTS.md   # optional: path (relative to repo root) to the doc agents follow when shipping work
 time_bound_minutes: 45  # optional: per-project override for `tpm orchestrate` hard time bound (positive int)
+notifications:        # optional: per-project override for orchestrator notifications (any subset of keys)
+  fail: false         #   silence the fail ping for this project; inherit start/finish from global
 ```
 
 **`<root>/<slug>/tasks/NNN-<slug>.md`**
@@ -213,6 +218,8 @@ tags: []
 parent: NNN-foo       # optional: marks this as a child within a folder-form parent
 workflow: AGENTS.md   # optional: per-task workflow override; falls back to project.workflow if unset
 time_bound_minutes: 15  # optional: per-task override for `tpm orchestrate` hard time bound; tightest cascade win
+notifications:        # optional: per-task override for orchestrator notifications (tightest cascade win)
+  start: true         #   ping when this task starts (e.g. for a long-running task you want to know kicked off)
 ```
 
 Timestamps are written in the timezone from `~/.tpm/config.json` (default `America/Los_Angeles`). Old date-only values (`2026-04-25`) keep parsing — values are display strings only.
@@ -453,12 +460,11 @@ Substitute the absolute paths from `which`. cron has a minimal `PATH`, so absolu
 
 The time bound resolves in this cascade: `--minutes <N>` flag → task frontmatter `time_bound_minutes` → project frontmatter `time_bound_minutes` → global config (`~/.tpm/config.json` `time_bound_minutes`) → built-in default of 30 minutes. So you can declare `time_bound_minutes: 60` on a single long task without changing the global, or set a 45-minute global default and let individual tasks shorten as needed.
 
+`tpm orchestrate` also fires system notifications at three points: `start` (before the agent dispatch), `finish` (clean exit), and `fail` (timeout or non-zero exit). Each event is independently toggleable via the `notifications` block — task frontmatter wins over project, project wins over global config, global wins over the built-in default `{ start: false, finish: true, fail: true }`. v0 channel is mac `osascript`; on non-darwin the call logs to stderr and skips. `tpm notify <event> <task>` is the same hook exposed as a CLI verb so cron lines (or scripts) can fire individual events without going through the orchestrator.
+
 To opt a task in for unattended runs, set `allow_orchestrator: true` in its frontmatter. Without that flag, `tpm next --autonomous` skips the task even if its status is `ready` — that's the safety boundary between "an agent can run this when I ask" and "an agent can run this while I'm asleep".
 
 The machine must be awake and logged in for cron to fire.
-
-**Remaining safety rails.** Failure notifications still ship in a follow-up task. Until they land:
-- Failures are silent — check status via `tpm ls`, `tpm lock status`, and `/tmp/tpm-cron.log`.
 
 ## Reports
 

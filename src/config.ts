@@ -9,10 +9,23 @@ export interface Config {
   root?: string;
   timezone?: string;
   time_bound_minutes?: number;
+  notifications?: NotificationsConfig;
+}
+
+export interface NotificationsConfig {
+  start?: boolean;
+  finish?: boolean;
+  fail?: boolean;
 }
 
 export const DEFAULT_TIMEZONE = "America/Los_Angeles";
 export const DEFAULT_TIME_BOUND_MINUTES = 30;
+// Quiet on start (every cron tick), visible on completion + failure.
+export const DEFAULT_NOTIFICATIONS: Required<NotificationsConfig> = {
+  start: false,
+  finish: true,
+  fail: true,
+};
 
 export function readConfig(): Config {
   if (!existsSync(CONFIG_PATH)) return {};
@@ -41,7 +54,28 @@ export function readConfig(): Config {
   if (record.time_bound_minutes !== undefined) {
     cfg.time_bound_minutes = expectPositiveInt(record.time_bound_minutes, "time_bound_minutes");
   }
+  if (record.notifications !== undefined) {
+    cfg.notifications = expectNotifications(record.notifications);
+  }
   return cfg;
+}
+
+function expectNotifications(value: unknown): NotificationsConfig {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    const got = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+    throw new Error(`${CONFIG_PATH}: "notifications" must be an object, got ${got}`);
+  }
+  const record = value as Record<string, unknown>;
+  const out: NotificationsConfig = {};
+  for (const key of ["start", "finish", "fail"] as const) {
+    if (record[key] !== undefined) {
+      if (typeof record[key] !== "boolean") {
+        throw new Error(`${CONFIG_PATH}: "notifications.${key}" must be a boolean, got ${typeof record[key]}`);
+      }
+      out[key] = record[key] as boolean;
+    }
+  }
+  return out;
 }
 
 function expectString(value: unknown, field: string): string {

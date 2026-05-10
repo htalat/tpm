@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { readConfig, writeConfig, CONFIG_PATH, DEFAULT_TIMEZONE } from "./config.ts";
+import { readConfig, writeConfig, CONFIG_PATH, DEFAULT_TIMEZONE, DEFAULT_NOTIFICATIONS } from "./config.ts";
 import { PROJECT_TEMPLATE, TASK_TEMPLATE } from "./defaults.ts";
 
 export interface InitResult {
@@ -30,6 +30,7 @@ export function init(dir?: string): InitResult {
   const cfg = readConfig();
   cfg.root = root;
   if (!cfg.timezone) cfg.timezone = DEFAULT_TIMEZONE;
+  if (!cfg.notifications) cfg.notifications = { ...DEFAULT_NOTIFICATIONS };
   writeConfig(cfg);
 
   return { root, configPath: CONFIG_PATH, created };
