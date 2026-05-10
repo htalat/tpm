@@ -55,6 +55,21 @@ export function reopen(task: Task): MutateResult {
   });
 }
 
+// Revert an in-progress task back to ready — used when the orchestrator
+// times out a run. No-op (idempotent) if status isn't `in-progress`, so the
+// orchestrator wrapper can call it unconditionally on the timeout path.
+export function revert(task: Task, reason?: string): MutateResult {
+  guardArchived(task);
+  const { data } = readParsed(task);
+  const current = String(data.status ?? "");
+  if (current !== "in-progress") {
+    return { message: `${task.slug} not in-progress (status=${current || "?"}); revert is a no-op` };
+  }
+  const trimmed = reason?.trim();
+  const verb = trimmed ? `timed out — reverted to ready (${trimmed})` : "timed out — reverted to ready";
+  return transition(task, "ready", verb, { refusal: ["done", "dropped"] });
+}
+
 export function setStatus(task: Task, newStatus: string): MutateResult {
   if (!isStatus(newStatus)) {
     throw new Error(`Unknown status: ${newStatus}. Valid: ${VALID_STATUSES.join(", ")}.`);

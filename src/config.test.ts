@@ -90,10 +90,24 @@ test("readConfig: throws when timezone is not a string", () => {
   assert.throws(() => readConfig(), /"timezone" must be a string, got array/);
 });
 
-test("readConfig: drops unknown keys (only validates root + timezone)", () => {
+test("readConfig: drops unknown keys (only validates known fields)", () => {
   writeConfig({ root: "/x" });
   writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x", garbage: { nested: true } }));
   assert.deepEqual(readConfig(), { root: "/x" });
+});
+
+test("readConfig: accepts time_bound_minutes when a positive integer", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x", time_bound_minutes: 45 }));
+  assert.deepEqual(readConfig(), { root: "/x", time_bound_minutes: 45 });
+});
+
+test("readConfig: rejects non-positive or non-integer time_bound_minutes", () => {
+  writeConfig({ root: "/x" });
+  for (const bad of [0, -1, 1.5, "30", null, []]) {
+    writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x", time_bound_minutes: bad }));
+    assert.throws(() => readConfig(), /"time_bound_minutes" must be a positive integer/);
+  }
 });
 
 test("readConfig: missing optional fields produce undefined, not present in object", () => {

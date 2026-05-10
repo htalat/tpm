@@ -203,7 +203,7 @@ Use when a task needs supporting files (subtasks, scratch notes, screenshots) al
 
 ## Conventions
 
-- **Prefer CLI verbs over manual file edits for state changes.** Use `tpm start | ready | complete | block | reopen | log | pr | status | archive | fold | new` for frontmatter and Log mutations. Manual file edits are only for body-text authoring (`## Context`, `## Plan`, `## Outcome`).
+- **Prefer CLI verbs over manual file edits for state changes.** Use `tpm start | ready | complete | block | reopen | revert | log | pr | status | archive | fold | new` for frontmatter and Log mutations. Manual file edits are only for body-text authoring (`## Context`, `## Plan`, `## Outcome`).
 - When you do edit a task file directly, only touch the four canonical body sections. Preserve key order in frontmatter.
 - Don't reformat unrelated frontmatter or rename slugs.
 - Don't delete the `## Outcome` section even if empty — it's a closing prompt.
