@@ -1,9 +1,20 @@
 // Classifier for the PR-signal poller (scripts/recurring/check-pr-signal.sh).
 //
-// Pure function `classifyPrs` decides whether a task's in-flight PRs warrant
-// a status flip (`needs-feedback` for the agent, `needs-review` for the
-// human). The shell script gathers `gh pr view --json` payloads per PR, pipes
-// them in as JSON on stdin, and acts on this module's stdout.
+// Decides whether a task's in-flight PRs warrant a status flip
+// (`needs-close` once any PR has merged, `needs-feedback` for the agent,
+// `needs-review` for the human). The shell script gathers `gh pr view --json`
+// payloads per PR, pipes them in as JSON on stdin, and reads structured
+// decision lines from stdout.
+//
+// Output protocol — one DECIDE line per PR, then optionally one FLIP line:
+//
+//   DECIDE pr=<url> state=OPEN review=APPROVED ci=PASS mergeable=CLEAN action=no-signal
+//   DECIDE pr=<url> state=OPEN review=COMMENTED ci=FAIL mergeable=BLOCKED action=flip-to-needs-feedback
+//   FLIP needs-feedback CI failed on <url>
+//
+// DECIDE lines let the poller log a per-PR verdict (no more silent
+// no-signal skips). The FLIP line, when present, tells the bash which
+// `tpm status` mutation to dispatch.
 //
 // Why a TS module instead of jq+bash: the `gh pr view --json` field set is a
 // drift hazard (we shipped a poller asking for `reviewThreads`, which doesn't
@@ -39,12 +50,96 @@ export type Classification = {
   reasons: string[];
 };
 
+export type PrAction =
+  | "no-signal"
+  | "flip-to-needs-feedback"
+  | "flip-to-needs-review"
+  | "flip-to-needs-close";
+
+export type PrDecision = {
+  url: string;
+  state: string;
+  review: string;
+  ci: "PASS" | "FAIL" | "PENDING" | "NONE";
+  mergeable: string;
+  action: PrAction;
+};
+
 const CI_FAILED_CONCLUSIONS = new Set([
   "FAILURE",
   "TIMED_OUT",
   "ACTION_REQUIRED",
   "CANCELLED",
 ]);
+
+const CI_PENDING_CONCLUSIONS = new Set([
+  "",
+  "PENDING",
+  "IN_PROGRESS",
+  "QUEUED",
+  "WAITING",
+  "REQUESTED",
+]);
+
+// Per-PR analysis: independent verdict for one PR. Exposed so the poller can
+// log a `decide` line per PR (no more invisible no-signal skips). The
+// aggregation precedence (needs-close > needs-review > needs-feedback) lives
+// in classifyPrs.
+export function analyzePr(pr: RawPrJson): PrDecision {
+  const url = pr.url ?? "<unknown>";
+  const state = (pr.state ?? "UNKNOWN").toUpperCase();
+  const mergeable = (pr.mergeStateStatus ?? "UNKNOWN").toUpperCase();
+  const review = pickReview(pr);
+  const ci = pickCi(pr);
+
+  // Merged PR — the work shipped, task should close out.
+  if (state === "MERGED") {
+    return { url, state, review, ci, mergeable, action: "flip-to-needs-close" };
+  }
+
+  // Drafts and closed-not-merged PRs cast no vote.
+  if (pr.isDraft === true || state !== "OPEN") {
+    return { url, state, review, ci, mergeable, action: "no-signal" };
+  }
+
+  const conflicting = mergeable === "DIRTY";
+  const changesRequested = pr.reviewDecision === "CHANGES_REQUESTED";
+  const ciFailed = ci === "FAIL";
+  const behind = mergeable === "BEHIND";
+  const commented = (pr.latestReviews ?? []).some((r) => r.state === "COMMENTED");
+
+  let action: PrAction = "no-signal";
+  if (conflicting || changesRequested) {
+    action = "flip-to-needs-review";
+  } else if (ciFailed || behind || commented) {
+    action = "flip-to-needs-feedback";
+  }
+
+  return { url, state, review, ci, mergeable, action };
+}
+
+function pickReview(pr: RawPrJson): string {
+  const decision = (pr.reviewDecision ?? "").toUpperCase();
+  if (decision) return decision;
+  // Fall back to surfacing a COMMENTED review (reviewDecision stays
+  // REVIEW_REQUIRED in that case, which hides the comment from the operator).
+  if ((pr.latestReviews ?? []).some((r) => r.state === "COMMENTED")) {
+    return "COMMENTED";
+  }
+  return "NONE";
+}
+
+function pickCi(pr: RawPrJson): PrDecision["ci"] {
+  const checks = pr.statusCheckRollup ?? [];
+  if (checks.length === 0) return "NONE";
+  let sawPending = false;
+  for (const c of checks) {
+    const v = (c.conclusion ?? "").toUpperCase();
+    if (CI_FAILED_CONCLUSIONS.has(v)) return "FAIL";
+    if (CI_PENDING_CONCLUSIONS.has(v)) sawPending = true;
+  }
+  return sawPending ? "PENDING" : "PASS";
+}
 
 // Returns null when no signal warrants a flip.
 //
@@ -55,13 +150,11 @@ const CI_FAILED_CONCLUSIONS = new Set([
 // Once any PR triggers needs-review, subsequent needs-feedback signals are
 // suppressed; needs-review reasons accumulate across PRs. needs-close
 // supersedes everything — if the work shipped on any linked PR, that's the
-// signal that matters and the task should close.
+// signal that matters and the task should close. Follow-up work for a
+// secondary PR belongs in a separate task.
 //
 // Closed-not-merged PRs and draft PRs are ignored.
 export function classifyPrs(prs: RawPrJson[]): Classification | null {
-  // Merge wins: if any linked PR is MERGED, the task has shipped — flag
-  // needs-close and ignore other in-flight signal. Follow-up work for a
-  // secondary PR belongs in a separate task.
   const merged = prs.filter((pr) => pr.state === "MERGED");
   if (merged.length > 0) {
     return {
@@ -110,18 +203,26 @@ export function classifyPrs(prs: RawPrJson[]): Classification | null {
 }
 
 // CLI entry: reads a JSON array of `gh pr view --json <PR_JSON_FIELDS>`
-// objects from stdin and prints:
-//   - nothing (exit 0) when no flip is warranted
-//   - "<status>\n<reason1>; <reason2>; ...\n" (exit 0) when flipping
+// objects from stdin and writes:
 //
-// The shell script consumes that output to decide whether to call
-// `tpm status` + `tpm log`.
+//   DECIDE pr=<url> state=<S> review=<R> ci=<C> mergeable=<M> action=<A>
+//   ...one per PR...
+//   FLIP <new-status> <reason1>; <reason2>; ...
+//
+// The FLIP line is omitted when no flip is warranted. The shell script logs
+// each DECIDE as an INFO line and uses FLIP to dispatch `tpm status` + `tpm log`.
 function main(): void {
   const raw = readFileSync(0, "utf8");
   const parsed = JSON.parse(raw) as RawPrJson[];
+  for (const pr of parsed) {
+    const d = analyzePr(pr);
+    process.stdout.write(
+      `DECIDE pr=${d.url} state=${d.state} review=${d.review} ci=${d.ci} mergeable=${d.mergeable} action=${d.action}\n`,
+    );
+  }
   const decision = classifyPrs(parsed);
   if (!decision) return;
-  process.stdout.write(`${decision.status}\n${decision.reasons.join("; ")}\n`);
+  process.stdout.write(`FLIP ${decision.status} ${decision.reasons.join("; ")}\n`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

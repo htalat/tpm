@@ -8,11 +8,16 @@
 #   - Optional --dry-run as $2 to preview without writing.
 #   - Idempotent on re-run: skip tasks whose slug already exists (live or archived).
 #   - Use the tpm CLI for all state changes (no frontmatter editing by hand).
-#   - Print one summary line on exit.
+#   - Source _log.sh for the shared structured log format (timestamp + level
+#     + script + message). Don't roll your own `printf` prefix.
 #
 # Usage: <this-script> <project-slug> [--dry-run]
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_log.sh
+. "$SCRIPT_DIR/_log.sh"
 
 PROJECT="${1:-}"
 DRY_RUN=0
@@ -23,11 +28,11 @@ if [ -z "$PROJECT" ]; then
   exit 1
 fi
 
-command -v tpm >/dev/null || { printf 'recurring: tpm CLI not found\n' >&2; exit 1; }
+command -v tpm >/dev/null || { log_error "tpm CLI not found"; exit 1; }
 # TODO: add `command -v <other-tool>` checks if your script needs gh, jq, curl, etc.
 
 tpm path "$PROJECT" >/dev/null 2>&1 || {
-  printf 'recurring: unknown tpm project: %s\n' "$PROJECT" >&2
+  log_error "unknown tpm project: $PROJECT"
   exit 1
 }
 
@@ -53,7 +58,7 @@ while IFS=$'\t' read -r unique_id title; do
   fi
 
   if [ "$DRY_RUN" = "1" ]; then
-    printf 'would create: %s/%s — %s\n' "$PROJECT" "$slug" "$title"
+    log_info "would create $PROJECT/$slug — $title"
     created=$((created + 1))
     continue
   fi
@@ -96,5 +101,4 @@ done < <(
   printf ''   # no-op default — produces zero iterations
 )
 
-# Replace "recurring" with your script's name in the summary.
-printf 'recurring: created %d task(s), skipped %d existing\n' "$created" "$skipped"
+log_info "summary created=$created skipped=$skipped"

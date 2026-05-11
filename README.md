@@ -280,6 +280,30 @@ By default, tasks created by a recurring script are `ready` but **not** `allow_o
 
 **Don't silence stderr from external commands.** A cron-fired script that does `gh ... 2>/dev/null` and skips on failure leaves you guessing at 8am why nothing got flipped — was it auth, rate limit, a bad URL, network? Capture stderr to a temp file and surface a one-line excerpt (with the exit code) when the command fails. Reserve `2>/dev/null` for deliberate existence checks where a missing target is the expected case (e.g. `tpm context "$slug" >/dev/null 2>&1` to test if a slug already exists).
 
+**Use the structured log helper.** All recurring scripts (and `tpm orchestrate`) emit one line per event in the same format so a single log file greps + sorts cleanly:
+
+```
+2026-05-10T17:24:33Z  INFO   check-pr-signal  start
+2026-05-10T17:24:34Z  WARN   check-pr-signal  skip tpm/036 (gh exit=4) — failed to query PR
+2026-05-10T17:24:35Z  INFO   check-pr-signal  decide tpm/040-serve-mutations pr=https://… state=OPEN review=APPROVED ci=PASS mergeable=CLEAN action=no-signal
+2026-05-10T17:24:36Z  ERROR  check-pr-signal  classifier exit=1 for tpm/039
+2026-05-10T17:24:37Z  INFO   check-pr-signal  summary checked=6 flipped=0 no-signal=1 gh-failed=5
+```
+
+UTC ISO-8601 second precision; level padded to 5 chars; script padded to 16 chars; free-form single-line message. INFO/WARN write to stdout, ERROR to stderr (cron's `>> log 2>&1` collapses both — the split is for interactive runs that want `2>/dev/null` for warn-free output).
+
+Source `scripts/recurring/_log.sh` from any new recurring script:
+
+```sh
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/_log.sh"
+log_info  "started"
+log_warn  "skip foo (gh exit=4)"
+log_error "classifier exited 1 for tpm/041"
+```
+
+`grep -E '^\d{4}.*ERROR' ~/.tpm/*.log` returns only the actual errors. `grep 'action=no-signal'` shows everything the PR-signal classifier passed on (was previously invisible — silent no-signal skips were lumped into the same `skipped=N` bucket as gh-failures). The poller's summary line splits that bucket into honest counters: `checked=N flipped=N no-signal=N gh-failed=N` add up to `checked`.
+
 Cron pattern combining intake, signal poller, and drain:
 
 ```cron

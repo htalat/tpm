@@ -16,6 +16,10 @@
 # v0 limitation: only `host: github` is implemented. ADO projects are skipped
 # with a warning. Filling that in is the obvious follow-up.
 #
+# Logs use the structured format from scripts/recurring/_log.sh — one line per
+# decision so a `grep 'action=no-signal'` shows everything the classifier
+# passed on, not just the gh-failed skips.
+#
 # Usage: check-pr-signal.sh [--dry-run]
 
 set -euo pipefail
@@ -26,10 +30,13 @@ DRY_RUN=0
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLASSIFIER="$SCRIPT_DIR/../../src/pr_signal.ts"
 
-command -v tpm  >/dev/null || { printf 'check-pr-signal: tpm CLI not found\n' >&2; exit 1; }
-command -v gh   >/dev/null || { printf 'check-pr-signal: gh CLI not found\n' >&2; exit 1; }
-command -v node >/dev/null || { printf 'check-pr-signal: node not found\n' >&2; exit 1; }
-[ -f "$CLASSIFIER" ] || { printf 'check-pr-signal: classifier missing at %s\n' "$CLASSIFIER" >&2; exit 1; }
+# shellcheck source=_log.sh
+. "$SCRIPT_DIR/_log.sh"
+
+command -v tpm  >/dev/null || { log_error "tpm CLI not found"; exit 1; }
+command -v gh   >/dev/null || { log_error "gh CLI not found";  exit 1; }
+command -v node >/dev/null || { log_error "node not found";    exit 1; }
+[ -f "$CLASSIFIER" ] || { log_error "classifier missing at $CLASSIFIER"; exit 1; }
 
 # `gh pr view --json` fields requested per PR — sourced from the classifier
 # so the request always matches what `classifyPrs` consumes.
@@ -52,11 +59,12 @@ slugs=$(tpm ls --status in-progress --flat | awk '
 ')
 
 flipped=0
-skipped=0
+no_signal=0
+gh_failed=0
 checked=0
 
 if [ -z "${slugs:-}" ]; then
-  printf 'check-pr-signal: no in-progress tasks\n'
+  log_info "no in-progress tasks"
   exit 0
 fi
 
@@ -67,10 +75,9 @@ while IFS= read -r slug; do
   err_tmp=$(mktemp)
   briefing=$(tpm context "$slug" 2>"$err_tmp") || {
     rc=$?
-    printf 'check-pr-signal: skip %s (tpm context exit=%d) — %s\n' \
-      "$slug" "$rc" "$(head -2 "$err_tmp" | tr '\n' ' ')" >&2
+    log_warn "skip $slug (tpm context exit=$rc) — $(head -2 "$err_tmp" | tr '\n' ' ')"
     rm -f "$err_tmp"
-    skipped=$((skipped + 1))
+    gh_failed=$((gh_failed + 1))
     continue
   }
   rm -f "$err_tmp"
@@ -79,14 +86,14 @@ while IFS= read -r slug; do
   host=${host:-github}
 
   if [ "$host" != "github" ]; then
-    printf 'check-pr-signal: skip %s (host=%s, not yet implemented)\n' "$slug" "$host"
-    skipped=$((skipped + 1))
+    log_warn "skip $slug (host=$host, not yet implemented)"
+    gh_failed=$((gh_failed + 1))
     continue
   fi
 
   prs_line=$(printf '%s\n' "$briefing" | awk '/^- PRs: / { sub(/^- PRs: /, ""); print; exit }')
   if [ -z "$prs_line" ]; then
-    skipped=$((skipped + 1))
+    no_signal=$((no_signal + 1))
     continue
   fi
 
@@ -107,8 +114,7 @@ while IFS= read -r slug; do
     err_tmp=$(mktemp)
     pr_json=$(gh pr view "$url" --json "$GH_FIELDS" 2>"$err_tmp") || {
       rc=$?
-      printf 'check-pr-signal: skip %s (gh exit=%d for %s) — %s\n' \
-        "$slug" "$rc" "$url" "$(head -2 "$err_tmp" | tr '\n' ' ')" >&2
+      log_warn "skip $slug (gh exit=$rc for $url) — $(head -2 "$err_tmp" | tr '\n' ' ')"
       rm -f "$err_tmp"
       gh_error=1
       break
@@ -121,35 +127,53 @@ while IFS= read -r slug; do
   payload+="]"
 
   if [ "$gh_error" -eq 1 ]; then
-    skipped=$((skipped + 1))
+    gh_failed=$((gh_failed + 1))
     continue
   fi
 
-  decision=$(printf '%s' "$payload" | node "$CLASSIFIER") || {
+  classifier_out=$(printf '%s' "$payload" | node "$CLASSIFIER") || {
     rc=$?
-    printf 'check-pr-signal: skip %s (classifier exit=%d)\n' "$slug" "$rc" >&2
-    skipped=$((skipped + 1))
+    log_error "classifier exit=$rc for $slug"
+    gh_failed=$((gh_failed + 1))
     continue
   }
 
-  if [ -z "$decision" ]; then
+  # Parse classifier output: zero or more DECIDE lines, then optionally one
+  # FLIP line. Log every DECIDE as a structured INFO line; capture FLIP for
+  # the mutation step.
+  flip_status=""
+  flip_reasons=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      "DECIDE "*)
+        log_info "decide $slug ${line#DECIDE }"
+        ;;
+      "FLIP "*)
+        rest=${line#FLIP }
+        flip_status=${rest%% *}
+        flip_reasons=${rest#"$flip_status" }
+        ;;
+    esac
+  done <<< "$classifier_out"
+
+  if [ -z "$flip_status" ]; then
+    no_signal=$((no_signal + 1))
     continue
   fi
 
-  new_status=$(printf '%s\n' "$decision" | sed -n '1p')
-  reason_str=$(printf '%s\n' "$decision" | sed -n '2p')
-
   if [ "$DRY_RUN" = "1" ]; then
-    printf 'would flip %s -> %s (%s)\n' "$slug" "$new_status" "$reason_str"
+    log_info "would flip $slug -> $flip_status ($flip_reasons)"
     flipped=$((flipped + 1))
     continue
   fi
 
-  tpm status "$slug" "$new_status" >/dev/null
-  tpm log    "$slug" "poller — $reason_str" >/dev/null
-  printf 'flipped %s -> %s (%s)\n' "$slug" "$new_status" "$reason_str"
+  tpm status "$slug" "$flip_status" >/dev/null
+  tpm log    "$slug" "poller — $flip_reasons" >/dev/null
+  log_info "flipped $slug -> $flip_status ($flip_reasons)"
   flipped=$((flipped + 1))
 done <<< "$slugs"
 
-printf 'check-pr-signal: checked=%d flipped=%d skipped=%d%s\n' \
-  "$checked" "$flipped" "$skipped" "$([ "$DRY_RUN" = "1" ] && printf ' (dry-run)' || true)"
+dry_suffix=""
+[ "$DRY_RUN" = "1" ] && dry_suffix=" (dry-run)"
+log_info "summary checked=$checked flipped=$flipped no-signal=$no_signal gh-failed=$gh_failed$dry_suffix"

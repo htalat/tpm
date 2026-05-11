@@ -38,6 +38,22 @@ function posInt(v: unknown): number | null {
   return null;
 }
 
+// Structured log line — matches scripts/recurring/_log.sh format so a tail of
+// any tpm log file (recurring scripts, orchestrator runs) sorts/greps cleanly.
+//
+//   2026-05-10T17:24:33Z  INFO   orchestrate      <message>
+//
+// INFO/WARN go to stdout, ERROR to stderr — same split as the bash helper.
+// Cron entries redirect both to the same log file in practice; the split lets
+// an interactive run filter warnings without losing errors.
+function logLine(level: "INFO" | "WARN" | "ERROR", message: string): void {
+  const ts = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const padded = level.padEnd(5);
+  const line = `${ts}  ${padded}  ${"orchestrate".padEnd(16)} ${message}`;
+  if (level === "ERROR") console.error(line);
+  else console.log(line);
+}
+
 export interface OrchestrateOpts {
   claudeBin?: string;
   minutesOverride?: number;
@@ -142,7 +158,7 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   const grace = (opts.graceSeconds ?? 10) * 1000;
   const claudeBin = opts.claudeBin ?? process.env.CLAUDE_BIN ?? "claude";
 
-  console.error(`tpm orchestrate: ${slug} as ${agentId} (time bound: ${minutes}m, claude: ${claudeBin})`);
+  logLine("INFO", `start ${slug} as ${agentId} time-bound=${minutes}m claude=${claudeBin}`);
 
   // Heartbeat the lock every 60s so a long-running agent doesn't get
   // reclaimed by a sibling's stale-lock sweep.
@@ -160,14 +176,14 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
       const projectsAfter = loadProjects(root);
       const match = findTask(projectsAfter, slug);
       if (!match) {
-        console.error(`tpm orchestrate: task ${slug} not found after timeout (was it archived mid-run?)`);
+        logLine("WARN", `task ${slug} not found after timeout (was it archived mid-run?)`);
         return;
       }
       try {
         const r = mutate.revert(match.task, `time bound ${minutes}m exceeded`);
-        console.error(`tpm orchestrate: ${r.message}`);
+        logLine("INFO", `revert ${slug}: ${r.message}`);
       } catch (e) {
-        console.error(`tpm orchestrate: revert failed: ${(e as Error).message}`);
+        logLine("ERROR", `revert ${slug} failed: ${(e as Error).message}`);
       }
     });
   } finally {
@@ -176,13 +192,13 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     try {
       lock.releaseTask(root, slug, agentId);
     } catch (e) {
-      console.error(`tpm orchestrate: lock release failed: ${(e as Error).message}`);
+      logLine("ERROR", `lock release failed for ${slug}: ${(e as Error).message}`);
     }
     if (resolveSameRepoStrategy(pick.project) === "serialize") {
       try {
         lock.releaseRepo(root, pick.project.slug, agentId);
       } catch (e) {
-        console.error(`tpm orchestrate: repo lock release failed: ${(e as Error).message}`);
+        logLine("ERROR", `repo lock release failed for ${pick.project.slug}: ${(e as Error).message}`);
       }
     }
   }
@@ -217,11 +233,11 @@ function runWithTimeout(
     const termTimer = setTimeout(() => {
       if (exited) return;
       timedOut = true;
-      console.error(`tpm orchestrate: time bound ${minutes}m reached, sending SIGTERM`);
+      logLine("WARN", `time bound ${minutes}m reached, sending SIGTERM`);
       try { child.kill("SIGTERM"); } catch { /* already gone */ }
       setTimeout(() => {
         if (!exited) {
-          console.error(`tpm orchestrate: grace expired, sending SIGKILL`);
+          logLine("WARN", `grace expired, sending SIGKILL`);
           try { child.kill("SIGKILL"); } catch { /* already gone */ }
         }
       }, graceMs);
