@@ -274,6 +274,8 @@ By default, tasks created by a recurring script are `ready` but **not** `allow_o
 
 **Portability.** Recurring scripts must run on stock macOS — BSD `awk`, BSD `sed`, no `gawk` / `gnu-sed` / `grep -P`. tpm is zero-deps; a cron-fired script that requires `brew install gawk` violates that. In practice: stick to 2-arg `match()` + `substr` (not gawk's 3-arg capture-array form), `sed -E` (portable on both sides), and `grep -E` instead of `grep -P`.
 
+**Don't silence stderr from external commands.** A cron-fired script that does `gh ... 2>/dev/null` and skips on failure leaves you guessing at 8am why nothing got flipped — was it auth, rate limit, a bad URL, network? Capture stderr to a temp file and surface a one-line excerpt (with the exit code) when the command fails. Reserve `2>/dev/null` for deliberate existence checks where a missing target is the expected case (e.g. `tpm context "$slug" >/dev/null 2>&1` to test if a slug already exists).
+
 Cron pattern combining intake, signal poller, and drain:
 
 ```cron

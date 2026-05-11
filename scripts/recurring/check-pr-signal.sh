@@ -54,11 +54,16 @@ while IFS= read -r slug; do
   [ -n "$slug" ] || continue
   checked=$((checked + 1))
 
-  briefing=$(tpm context "$slug" 2>/dev/null) || {
-    printf 'check-pr-signal: skip %s (context lookup failed)\n' "$slug" >&2
+  err_tmp=$(mktemp)
+  briefing=$(tpm context "$slug" 2>"$err_tmp") || {
+    rc=$?
+    printf 'check-pr-signal: skip %s (tpm context exit=%d) — %s\n' \
+      "$slug" "$rc" "$(head -2 "$err_tmp" | tr '\n' ' ')" >&2
+    rm -f "$err_tmp"
     skipped=$((skipped + 1))
     continue
   }
+  rm -f "$err_tmp"
 
   host=$(printf '%s\n' "$briefing" | awk '/^- Host: / { print $3; exit }')
   host=${host:-github}
@@ -85,6 +90,7 @@ while IFS= read -r slug; do
     url=$(printf '%s' "$raw" | awk '{$1=$1; print}')
     [ -n "$url" ] || continue
 
+    err_tmp=$(mktemp)
     signal=$(gh pr view "$url" \
       --json state,reviewDecision,statusCheckRollup,mergeStateStatus,reviewThreads \
       --jq '{
@@ -94,10 +100,14 @@ while IFS= read -r slug; do
         behind: (.mergeStateStatus == "BEHIND"),
         conflicting: (.mergeStateStatus == "DIRTY"),
         openThreads: ([.reviewThreads[]? | select(.isResolved == false)] | length > 0)
-      }' 2>/dev/null) || {
-      printf 'check-pr-signal: skip %s (gh query failed for %s)\n' "$slug" "$url" >&2
+      }' 2>"$err_tmp") || {
+      rc=$?
+      printf 'check-pr-signal: skip %s (gh exit=%d for %s) — %s\n' \
+        "$slug" "$rc" "$url" "$(head -2 "$err_tmp" | tr '\n' ' ')" >&2
+      rm -f "$err_tmp"
       continue
     }
+    rm -f "$err_tmp"
 
     state=$(printf '%s' "$signal"        | jq -r '.state // "UNKNOWN"')
     review=$(printf '%s' "$signal"       | jq -r '.reviewDecision // ""')
