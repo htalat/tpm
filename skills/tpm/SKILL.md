@@ -106,7 +106,7 @@ For the in-flight phase of a `type: pr` task — the PR is open, the task is `in
 
 1. Run `tpm context <arg>`. Read the briefing. **Refuse if `prs:` is empty** — there's no PR to give feedback on. If the task is `done`/`dropped`/`blocked`, also refuse.
 2. **Gather signal** for each linked PR using the host CLI per `Host:` in the briefing (`gh` for github, `az repos pr` for ado):
-   - `gh pr view <url> --json state,reviewDecision,mergeStateStatus,statusCheckRollup,reviewThreads`
+   - `gh pr view <url> --json state,isDraft,reviewDecision,mergeStateStatus,statusCheckRollup,latestReviews`. `reviewThreads` isn't a `gh pr view --json` field — use `gh api graphql` (query `repository.pullRequest.reviewThreads`) or the PR page if you need resolution state.
    - Surface review state (APPROVED / CHANGES_REQUESTED / COMMENTED / REVIEW_REQUIRED), open review threads (line + body), CI status, mergeability (CLEAN / BEHIND / DIRTY / BLOCKED / UNSTABLE).
 3. **Pick what to address** in priority order (rebase first, CI next, threads last) — rebases resolve a class of issues; CI tells you whether the current code even works:
    1. `BEHIND` (stale) or `DIRTY` (conflict)

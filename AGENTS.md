@@ -144,7 +144,7 @@ For the in-flight phase of a `type: pr` task — the PR is open, the task is `in
 1. Run `tpm context <slug>`. Read the briefing in full. **Refuse if `prs:` is empty** — there's no PR to give feedback on; the user probably wants **start a task** or **close out** instead.
 2. If the task is `done`, `dropped`, or `blocked`, refuse — feedback only applies to in-flight work.
 3. **Gather signal** for each linked PR using the host CLI per `Host:` in the briefing (`gh` for `github`, `az repos pr` for `ado`):
-   - GitHub: `gh pr view <url> --json state,reviewDecision,mergeStateStatus,statusCheckRollup,reviewThreads`
+   - GitHub: `gh pr view <url> --json state,isDraft,reviewDecision,mergeStateStatus,statusCheckRollup,latestReviews`. Unresolved review threads are not a `gh pr view --json` field — fetch them with `gh api graphql` (query `repository.pullRequest.reviewThreads`) or just read the PR page if you need the resolution state.
    - ADO: `az repos pr show --id <id> --query '...' -o json`
    - Surface to the user (and yourself): review state (`APPROVED` / `CHANGES_REQUESTED` / `COMMENTED` / `REVIEW_REQUIRED`), open review threads with line + body, CI status, mergeability (`CLEAN` / `BEHIND` / `DIRTY` / `BLOCKED` / `UNSTABLE`).
 4. **Pick what to address** in priority order — rebase resolves a class of issues before you spend cycles on threads, CI tells you whether the current code even works:
