@@ -81,7 +81,7 @@ This is the primary mode.
    - Else ask the user before each shipping step (commit, push, PR, close).
 6. Read the task body and execute the Plan. If the type is `investigation`, your output is findings — write them into the body, not just chat.
 7. As you make meaningful progress, run `tpm log <slug> "<what changed>"` to append a timestamped Log entry. Don't load the task file just to write a Log line.
-8. **To ship**, follow the workflow doc verbatim: validate (run any checks/tests it names), commit, push, open PR if directed, close the task if directed. If you open a PR, run `tpm pr <slug> <url>` — that adds the URL to `prs:` and logs the open in one call. If the workflow says "close after merge" (the default for `type: pr`), leave the task `in-progress` and stop after pushing the PR — the user (or a follow-up `/tpm done <task>`) closes it once merged.
+8. **To ship**, follow the workflow doc verbatim: validate (run any checks/tests it names), commit, push, open PR if directed, close the task if directed. If you open a PR, run `tpm pr <slug> <url>` — that adds the URL to `prs:`, logs the open, and auto-flips `in-progress → needs-review` (the handoff to the human). If the workflow says "close after merge" (the default for `type: pr`), stop after `tpm pr` — the poller closes the task inline when the PR merges; manual `/tpm done <task>` is the escape hatch.
 9. If you hit a blocker you can't resolve: run `tpm block <slug> "<reason>"` to set `status: blocked` and log the reason. Then surface to the user instead of guessing.
 
 ### Shape an open task (`/tpm discuss <slug>`)
