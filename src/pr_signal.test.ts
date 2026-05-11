@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyPrs, PR_JSON_FIELDS, type RawPrJson } from "./pr_signal.ts";
+import { analyzePr, classifyPrs, PR_JSON_FIELDS, type RawPrJson } from "./pr_signal.ts";
 
 function pr(url: string, extra: Omit<RawPrJson, "url">): RawPrJson {
   return { url, state: "OPEN", isDraft: false, ...extra };
@@ -170,6 +170,134 @@ test("classifyPrs: subsequent feedback signals suppressed once needs-review is s
     status: "needs-review",
     reasons: ["merge conflict on https://x/1"],
   });
+});
+
+test("analyzePr: clean open PR -> no-signal", () => {
+  const d = analyzePr(pr("https://x/1", {
+    reviewDecision: "APPROVED",
+    mergeStateStatus: "CLEAN",
+    statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    latestReviews: [{ state: "APPROVED" }],
+  }));
+  assert.deepEqual(d, {
+    url: "https://x/1",
+    state: "OPEN",
+    review: "APPROVED",
+    ci: "PASS",
+    mergeable: "CLEAN",
+    action: "no-signal",
+  });
+});
+
+test("analyzePr: CI failed -> flip-to-needs-feedback (CI=FAIL)", () => {
+  const d = analyzePr(pr("https://x/1", {
+    mergeStateStatus: "UNSTABLE",
+    statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "FAILURE" }],
+  }));
+  assert.equal(d.action, "flip-to-needs-feedback");
+  assert.equal(d.ci, "FAIL");
+});
+
+test("analyzePr: behind main -> flip-to-needs-feedback (mergeable=BEHIND)", () => {
+  const d = analyzePr(pr("https://x/1", {
+    mergeStateStatus: "BEHIND",
+    statusCheckRollup: [{ conclusion: "SUCCESS" }],
+  }));
+  assert.equal(d.action, "flip-to-needs-feedback");
+  assert.equal(d.mergeable, "BEHIND");
+});
+
+test("analyzePr: merge conflict -> flip-to-needs-review", () => {
+  const d = analyzePr(pr("https://x/1", {
+    mergeStateStatus: "DIRTY",
+    statusCheckRollup: [{ conclusion: "SUCCESS" }],
+  }));
+  assert.equal(d.action, "flip-to-needs-review");
+  assert.equal(d.mergeable, "DIRTY");
+});
+
+test("analyzePr: CHANGES_REQUESTED -> flip-to-needs-review", () => {
+  const d = analyzePr(pr("https://x/1", {
+    reviewDecision: "CHANGES_REQUESTED",
+    mergeStateStatus: "BLOCKED",
+    statusCheckRollup: [{ conclusion: "SUCCESS" }],
+  }));
+  assert.equal(d.action, "flip-to-needs-review");
+  assert.equal(d.review, "CHANGES_REQUESTED");
+});
+
+test("analyzePr: COMMENTED reviewer surfaces in review= field", () => {
+  // reviewDecision stays REVIEW_REQUIRED; latestReviews has the COMMENTED.
+  const d = analyzePr(pr("https://x/1", {
+    reviewDecision: "REVIEW_REQUIRED",
+    mergeStateStatus: "BLOCKED",
+    statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    latestReviews: [{ state: "COMMENTED" }],
+  }));
+  assert.equal(d.action, "flip-to-needs-feedback");
+  assert.equal(d.review, "REVIEW_REQUIRED");
+});
+
+test("analyzePr: no reviewDecision but COMMENTED in latestReviews -> review=COMMENTED", () => {
+  const d = analyzePr(pr("https://x/1", {
+    mergeStateStatus: "BLOCKED",
+    statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    latestReviews: [{ state: "COMMENTED" }],
+  }));
+  assert.equal(d.review, "COMMENTED");
+  assert.equal(d.action, "flip-to-needs-feedback");
+});
+
+test("analyzePr: pending CI -> ci=PENDING, no flip", () => {
+  const d = analyzePr(pr("https://x/1", {
+    reviewDecision: "REVIEW_REQUIRED",
+    mergeStateStatus: "BLOCKED",
+    statusCheckRollup: [{ conclusion: null }, { conclusion: "SUCCESS" }],
+  }));
+  assert.equal(d.ci, "PENDING");
+  assert.equal(d.action, "no-signal");
+});
+
+test("analyzePr: no CI checks -> ci=NONE", () => {
+  const d = analyzePr(pr("https://x/1", {
+    reviewDecision: "REVIEW_REQUIRED",
+    mergeStateStatus: "BLOCKED",
+    statusCheckRollup: [],
+  }));
+  assert.equal(d.ci, "NONE");
+});
+
+test("analyzePr: draft PR -> no-signal even with red CI / dirty mergeable", () => {
+  const d = analyzePr({
+    url: "https://x/1",
+    state: "OPEN",
+    isDraft: true,
+    mergeStateStatus: "DIRTY",
+    statusCheckRollup: [{ conclusion: "FAILURE" }],
+  });
+  assert.equal(d.action, "no-signal");
+  // We still surface the underlying state so the operator can see why.
+  assert.equal(d.mergeable, "DIRTY");
+  assert.equal(d.ci, "FAIL");
+});
+
+test("analyzePr: closed / merged -> no-signal regardless of signals", () => {
+  for (const state of ["MERGED", "CLOSED"]) {
+    const d = analyzePr({
+      url: "https://x/1",
+      state,
+      isDraft: false,
+      mergeStateStatus: "DIRTY",
+      statusCheckRollup: [{ conclusion: "FAILURE" }],
+    });
+    assert.equal(d.action, "no-signal", `state=${state}`);
+    assert.equal(d.state, state);
+  }
+});
+
+test("analyzePr: missing url -> '<unknown>' placeholder", () => {
+  const d = analyzePr({ state: "OPEN", isDraft: false });
+  assert.equal(d.url, "<unknown>");
 });
 
 test("PR_JSON_FIELDS: includes only real `gh pr view --json` fields", () => {
