@@ -21,11 +21,12 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
   - **File form** (default): `tasks/NNN-slug.md`. Single file.
   - **Folder form**: `tasks/NNN-slug/task.md` plus optional `NNN-<sub>.md` siblings (each with `parent: NNN-slug` in frontmatter) and any other files (scratch notes, screenshots, design docs). The directory name is the parent's slug.
 - A task with any children is a **container**: not actionable, never returned by `tpm next`, can't be discussed/started directly.
-- **Statuses**: `open | ready | in-progress | needs-feedback | needs-review | blocked | done | dropped`
+- **Statuses**: `open | ready | in-progress | needs-feedback | needs-close | needs-review | blocked | done | dropped`
   - `open` = user's queue (not yet shaped for an agent).
   - `ready` = agent's queue. Promoted via `/tpm discuss`.
   - `in-progress` = work in flight (for `type: pr` tasks, this includes the PR-open / awaiting-merge phase).
   - `needs-feedback` = agent's queue for in-flight PRs. Routes to `/tpm feedback`. Set by the PR-signal poller (CI red, behind main, open threads) or by the agent during a feedback round.
+  - `needs-close` = agent's queue for merged PRs awaiting close-out. Routes to `/tpm done`. Set by the PR-signal poller when a linked PR transitions to `MERGED`.
   - `needs-review` = human's queue. Agent escalated (design pushback, merge conflict requiring judgment, `CHANGES_REQUESTED`). Surfaced via `tpm inbox`.
   - `blocked` = human's queue, external dep. Surfaced via `tpm inbox`.
   - Parent containers display a roll-up status (all children done → done; any in-progress → in-progress; else parent's declared status). The roll-up is display only — not written to frontmatter.
@@ -67,7 +68,11 @@ Read `$ARGUMENTS` and pick the matching action. If empty, default to "situationa
 This is the primary mode.
 1. Run `tpm context <arg>`. Read the briefing in full.
 2. If `tpm context` reports the task is a parent container (has children), don't try to work it directly. Print the children (`tpm ls --project <p>`) and ask the user which child to pick up.
-3. If the task's status is `open` or `ready`, run `tpm start <arg>` to flip it to `in-progress` and stamp a `started` Log entry in one call. (Idempotent: re-running on an already-`in-progress` task is a no-op.)
+3. **Dispatch by current status** (so an autonomous `/tpm <slug>` invocation does the right thing whatever state the poller has left the task in):
+   - `needs-feedback` → switch to **Handle PR feedback** mode below. Stop the start flow.
+   - `needs-close` → switch to **Close out** mode below. Stop the start flow.
+   - `open` or `ready` → run `tpm start <arg>` to flip to `in-progress` and stamp a `started` Log entry. (Idempotent: already-`in-progress` is a no-op.)
+   - anything else (`in-progress`, `needs-review`, `blocked`, terminal) → leave status alone and proceed.
 4. `cd "$(tpm path <arg>)"` — that's where the work happens. If `tpm path` errors because no local path is set, ask the user for the path and offer to populate `repo.local` in the project (or task) file.
 5. **Resolve the workflow doc.** This tells you how to validate, how to ship, and when to close.
    - If the briefing has a `Workflow:` line, read that file (path is relative to the repo root).
@@ -92,12 +97,13 @@ Shape a task's Plan before any execution. Pure conversation that lands in the ta
 Discuss mode is the canonical way to move a task from `open` to `ready`. A human can also flip the status manually, but `/tpm discuss` encodes the discipline (Context/Plan populated, Log timestamped, explicit confirmation).
 
 ### Pick the next ready task and run it (`/tpm next`)
-Auto-select mode. Resolves the next eligible leaf task (parents are skipped) and dispatches the right mode based on its status. Selection prefers `needs-feedback` over `ready`.
+Auto-select mode. Resolves the next eligible leaf task (parents are skipped) and dispatches the right mode based on its status. Selection priority: `needs-feedback` > `needs-close` > `ready`.
 1. Run `tpm next` (optionally with `--project <slug>`). It prints a qualified slug on success or exits non-zero if nothing is eligible.
 2. If non-zero, surface the message and stop. Don't fall back to `open` tasks — the human needs to promote one via `/tpm discuss` first.
 3. On success, look at the task's status (`tpm context <slug>` shows it). Dispatch by status:
    - `ready` → **start a task** mode (same flow as `/tpm <slug>`).
    - `needs-feedback` → **handle PR feedback** mode (same flow as `/tpm feedback <slug>`).
+   - `needs-close` → **close out** mode (same flow as `/tpm done <slug>`).
 
 `/tpm next` is the manual path. Use `tpm next --autonomous` only from scheduled/unattended runs (filters to tasks with `allow_orchestrator: true`); the manual `/tpm next` skill mode does not pass `--autonomous`.
 
@@ -137,7 +143,9 @@ Don't auto-merge, don't reply conversationally without a fix, don't long-poll fo
    - All `OPEN` or `CLOSED` (none merged) → ask once: "PR not merged; close anyway?" Respect the answer. This is the only legitimate ask in close-out.
    - `gh` not installed or not auth'd → fall back to the same ask. Don't fail hard.
    - `prs:` empty (direct-push task) → skip merge detection.
+   - **Shortcut:** if the task's current status is `needs-close`, the poller has already verified a linked PR merged — you can skip the `gh pr view ... --jq '.state'` round trip and proceed directly.
 3. Fill `## Outcome` with what shipped, what changed, what was learned. Reference PRs. (Free-form prose: edit the file directly. The CLI will refuse to overwrite an Outcome that already has content, so author it before the next step.)
+   - **Autonomous fill (status `needs-close`):** when invoked from `/tpm next` on a `needs-close` task, you may fill `## Outcome` from PR signal (title + body + recent commits via `gh pr view <url> --json title,body,commits`) without prompting the user. The merge already shipped; a faithful summary of the PR description is an acceptable Outcome. Reference each merged PR.
 4. Run `tpm complete <arg>`. This flips status to `done`, stamps `closed`, appends a `closed` Log line, and **archives by type**: `pr`/`chore` move under `tasks/archive/`; `investigation`/`spike` stay at the canonical path so `tpm ls --status done` and `tpm context <slug>` continue to find them. Override the default with `--archive` or `--no-archive` when needed.
 5. **Cleanup local branch** (when at least one linked PR was merged). For each merged PR:
    - `BRANCH=$(gh pr view <url> --json headRefName --jq '.headRefName')`. Skip if `BRANCH` equals the project's default branch (typically `main`).

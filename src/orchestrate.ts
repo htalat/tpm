@@ -129,7 +129,7 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
       return {
         exitCode: 1,
         message: candidates.length === 0
-          ? "No ready or needs-feedback tasks with allow_orchestrator: true."
+          ? "No ready, needs-feedback, or needs-close tasks with allow_orchestrator: true."
           : "All eligible tasks are claimable but their repos are busy or already locked.",
       };
     }

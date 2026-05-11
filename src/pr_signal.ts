@@ -35,7 +35,7 @@ export type RawPrJson = {
 };
 
 export type Classification = {
-  status: "needs-review" | "needs-feedback";
+  status: "needs-review" | "needs-feedback" | "needs-close";
   reasons: string[];
 };
 
@@ -48,14 +48,28 @@ const CI_FAILED_CONCLUSIONS = new Set([
 
 // Returns null when no signal warrants a flip.
 //
-// Precedence (matches the pre-refactor bash):
-//   needs-review (conflict, CHANGES_REQUESTED) > needs-feedback (CI red,
-//   behind main, reviewer comments). Once any PR triggers needs-review,
-//   subsequent needs-feedback signals are suppressed; needs-review reasons
-//   accumulate across PRs.
+// Precedence:
+//   needs-close (any PR merged — work shipped, close the task) >
+//   needs-review (conflict, CHANGES_REQUESTED) >
+//   needs-feedback (CI red, behind main, reviewer comments).
+// Once any PR triggers needs-review, subsequent needs-feedback signals are
+// suppressed; needs-review reasons accumulate across PRs. needs-close
+// supersedes everything — if the work shipped on any linked PR, that's the
+// signal that matters and the task should close.
 //
-// Closed/merged PRs and draft PRs are ignored.
+// Closed-not-merged PRs and draft PRs are ignored.
 export function classifyPrs(prs: RawPrJson[]): Classification | null {
+  // Merge wins: if any linked PR is MERGED, the task has shipped — flag
+  // needs-close and ignore other in-flight signal. Follow-up work for a
+  // secondary PR belongs in a separate task.
+  const merged = prs.filter((pr) => pr.state === "MERGED");
+  if (merged.length > 0) {
+    return {
+      status: "needs-close",
+      reasons: merged.map((pr) => `merged ${pr.url ?? "<unknown>"}`),
+    };
+  }
+
   const reasons: string[] = [];
   let status: Classification["status"] | null = null;
 

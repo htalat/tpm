@@ -11,9 +11,12 @@ export interface QueueItem {
   task: Task;
 }
 
-const NEXT_STATUSES = ["needs-feedback", "ready"] as const;
+const NEXT_STATUSES = ["needs-feedback", "needs-close", "ready"] as const;
 
-// All eligible leaf candidates in selection order: needs-feedback > ready,
+// All eligible leaf candidates in selection order:
+//   needs-feedback (in-flight signal, time-sensitive) >
+//   needs-close   (PR merged, sweep before piling on new work) >
+//   ready         (new work),
 // then oldest by created within each bucket. Parents and archived excluded.
 // Used by both `selectNext` (head) and `tpm next --claim` (walk until one
 // can be locked).
@@ -30,7 +33,10 @@ export function selectCandidates(projects: Project[], opts: SelectNextOpts = {})
       candidates.push({ project: p, task: t });
     }
   }
-  const priority = (s: unknown): number => (s === "needs-feedback" ? 0 : 1);
+  const priority = (s: unknown): number => {
+    const i = (NEXT_STATUSES as readonly string[]).indexOf(String(s));
+    return i < 0 ? NEXT_STATUSES.length : i;
+  };
   candidates.sort((a, b) => {
     const dp = priority(a.task.data.status) - priority(b.task.data.status);
     if (dp !== 0) return dp;
