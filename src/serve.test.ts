@@ -248,13 +248,36 @@ test("renderTask: open task offers Promote + Block + Drop, not Complete", () => 
   assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/pr"/);
 });
 
-test("renderTask: done/dropped tasks render no action forms", () => {
+test("renderTask: done/dropped tasks render no action or settings forms", () => {
   for (const status of ["done", "dropped"]) {
     const t = task(`001-${status}`, status);
     const p = project("alpha", [t]);
     const r = route(`/t/alpha/001-${status}`, new URLSearchParams(), [p], { mutationsEnabled: true });
     assert.doesNotMatch(r.body, /class="task-actions"/, `expected no action forms for status=${status}`);
+    assert.doesNotMatch(r.body, /class="task-settings"/, `expected no settings forms for status=${status}`);
+    assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-[^/]+\/allow-orchestrator"/, `expected no allow toggle for status=${status}`);
   }
+});
+
+test("renderTask: allow_orchestrator toggle renders for every non-terminal status", () => {
+  // Settings live outside the action-verb switch — every non-terminal,
+  // non-parent, non-archived task should expose the toggle.
+  for (const status of ["open", "ready", "in-progress", "needs-feedback", "needs-close", "needs-review", "blocked"]) {
+    const t = task("001-a", status);
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+    assert.match(r.body, /class="task-settings"/, `expected settings section for status=${status}`);
+    assert.match(r.body, /action="\/t\/alpha\/001-a\/allow-orchestrator"/, `expected allow toggle for status=${status}`);
+  }
+});
+
+test("renderTask: archived task renders no settings forms", () => {
+  const t = task("099-old", "done");
+  t.archived = true;
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/099-old", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.doesNotMatch(r.body, /class="task-settings"/);
+  assert.doesNotMatch(r.body, /action="\/t\/alpha\/099-old\/allow-orchestrator"/);
 });
 
 test("renderTask: needs-close offers Complete prominently + Log + Block", () => {

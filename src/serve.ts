@@ -446,6 +446,7 @@ function renderTask(project: Project, task: Task, opts: RouteOpts = {}): string 
     : "";
 
   const actionsSection = renderActions(project, task, status, opts);
+  const settingsSection = renderSettings(project, task, status, opts);
 
   const body = `
 <nav class="crumbs"><a href="/">tpm</a>${crumbsTrail}</nav>
@@ -472,6 +473,7 @@ ${flashBanner}
   <main class="body">${renderMarkdown(task.body)}</main>
 </div>
 ${actionsSection}
+${settingsSection}
 `;
   return layout(`tpm · ${title}`, body);
 }
@@ -499,7 +501,6 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
   if (status === "done" || status === "dropped") return ""; // terminal: view-only
 
   const href = taskHref(project, task);
-  const allowOn = task.data.allow_orchestrator === true;
   const forms: string[] = [];
 
   // Status -> set of action keys.
@@ -513,14 +514,12 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       forms.push(blockForm(href));
       forms.push(simpleForm(href, "reopen", "Move back to open"));
       forms.push(dropForm(href));
-      forms.push(allowForm(href, allowOn));
       break;
     case "in-progress":
       forms.push(blockForm(href));
       forms.push(completeForm(href));
       forms.push(logForm(href));
       forms.push(prForm(href));
-      forms.push(allowForm(href, allowOn));
       break;
     case "needs-feedback":
       forms.push(logForm(href));
@@ -548,6 +547,20 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
   }
 
   return `<section class="task-actions"><h2>Actions</h2>${forms.join("")}</section>`;
+}
+
+// Per-task config toggles. Lives outside renderActions because settings are
+// not transitions: they apply regardless of which queue the task is in, so
+// they shouldn't be gated by status the way action verbs are.
+function renderSettings(project: Project, task: Task, status: string, opts: RouteOpts): string {
+  if (opts.mutationsEnabled === false) return ""; // covered by the disabled-actions notice
+  if (task.archived) return "";
+  if (isParent(task)) return "";
+  if (status === "done" || status === "dropped") return ""; // terminal: toggle has no effect
+
+  const href = taskHref(project, task);
+  const allowOn = task.data.allow_orchestrator === true;
+  return `<section class="task-settings"><h2>Settings</h2>${allowForm(href, allowOn)}</section>`;
 }
 
 function taskHref(project: Project, task: Task): string {
