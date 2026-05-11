@@ -123,6 +123,14 @@ This is the primary action.
 8. **To ship**, follow the workflow doc verbatim: validate (run any checks/tests it names), commit, push, open PR if directed, close the task if directed. If you open a PR, run `tpm pr <slug> <url>` — that adds the URL to `prs:`, logs the open, and auto-flips `in-progress → needs-review` (the handoff to the human). If the workflow says "close after merge" (the default for `type: pr`), stop after `tpm pr` — the poller closes the task inline when the PR merges; manual **close out** is the escape hatch.
 9. If you hit a blocker you can't resolve: run `tpm block <slug> "<reason>"` to set `status: blocked` and log the reason. Then surface to the user instead of guessing.
 
+**Default for unanticipated decisions.** When a fork comes up during implementation that the task body didn't pre-answer, pick the smaller / more local change, ship it, and note the deferred consideration in the Outcome (or file a follow-up task). Don't stop to ask — the user reviews the PR; redirection happens there. The canonical anti-pattern: task 046 (2026-05-10) — the agent finished correct in-scope work, then halted to ask about a related-but-out-of-scope extension; the work sat uncommitted until the user picked it up manually.
+
+Exceptions — halt and surface instead of shipping:
+- **Irreversible / destructive actions**: force-push to `main`, `rm -rf` outside the worktree, dropping migrations, deleting non-recoverable state, mass-rewriting user files outside the task scope.
+- **Genuinely ambiguous task intent**: if the task body is so unclear you can't tell what to ship, that's a `tpm block` situation (step 9), not "ship smaller and hope."
+
+"I'd like a second opinion before extending scope" is not a blocker. "I can't tell from the task what the scope is" is.
+
 ### Shape an open task (pre-execution discussion)
 Shape a task's Plan before any execution. Pure conversation that lands in the task body — never edits code, never `cd`s into the repo, never flips status to `in-progress`.
 1. Run `tpm context <slug>`. Read the briefing in full.
@@ -133,6 +141,8 @@ Shape a task's Plan before any execution. Pure conversation that lands in the ta
 6. (Optional) Ask whether the task is safe to run unattended. If yes, set `allow_orchestrator: true` in the frontmatter — relevant once scheduled orchestration ships, harmless before then.
 7. End condition: the user signals alignment ("okay let's go", "that looks right", "yes start it"). Run `tpm ready <slug>` — that flips status to `ready` and logs `promoted to ready` in one call. Then stop and tell the user the task is ready to execute.
 8. If discussion concludes the task isn't worth doing: edit `## Outcome` with the reason (file edit, since `tpm complete --outcome` would also flip status to `done` rather than `dropped`), then run `tpm status <slug> dropped`. Don't promote.
+
+**Open questions should be answered, not just enumerated.** A `## Open questions` section that lists questions without defaults turns each one into a halt point for the implementing agent (the "ship the smaller change" rule in **Start a task** only covers decisions the task body didn't mention at all — listed-but-unanswered questions are louder than that). Answer each question with a v0 default, even a tentative one. If a question genuinely can't be decided up front, mark it explicitly: `Decide during implementation; default to <X>.` The implementing agent then has an instruction rather than an open prompt.
 
 This is the canonical way to move a task from `open` to `ready`. A human can also flip the status manually, but the shaping action encodes the discipline (Context/Plan populated, Log timestamped, explicit confirmation).
 
