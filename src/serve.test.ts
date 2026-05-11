@@ -257,6 +257,33 @@ test("renderTask: done/dropped tasks render no action forms", () => {
   }
 });
 
+test("renderTask: needs-close offers Complete prominently + Log + Block", () => {
+  // Merged-PR sweep state: Complete is the dominant action.
+  const t = task("001-nc", "needs-close");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-nc", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /action="\/t\/alpha\/001-nc\/complete"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-nc\/log"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-nc\/block"/);
+});
+
+test("route: index agent queue includes needs-close, sorted needs-feedback > needs-close > ready", () => {
+  const p = project("alpha", [
+    task("001-old-ready",   "ready",          { created: "2026-01-01 00:00 PDT" }),
+    task("002-nc",          "needs-close",    { created: "2026-05-01 00:00 PDT" }),
+    task("003-nf",          "needs-feedback", { created: "2026-05-09 00:00 PDT" }),
+  ]);
+  const r = route("/", new URLSearchParams(), [p]);
+  for (const slug of ["001-old-ready", "002-nc", "003-nf"]) {
+    assert.match(r.body, new RegExp(slug));
+  }
+  const idxFeedback = r.body.indexOf("003-nf");
+  const idxClose    = r.body.indexOf("002-nc");
+  const idxReady    = r.body.indexOf("001-old-ready");
+  assert.ok(idxFeedback < idxClose, "needs-feedback should render before needs-close");
+  assert.ok(idxClose < idxReady, "needs-close should render before ready");
+});
+
 test("renderTask: parent container renders no action forms", () => {
   const child = task("003-child", "ready", { parent: "002-parent" });
   child.parent = "002-parent";

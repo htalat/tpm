@@ -9,6 +9,7 @@ export const VALID_STATUSES = [
   "ready",
   "in-progress",
   "needs-feedback",
+  "needs-close",
   "needs-review",
   "blocked",
   "done",

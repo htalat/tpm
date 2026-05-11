@@ -5,6 +5,7 @@
 # CLI (`gh` for GitHub) for each PR, then hands the gathered JSON to
 # `src/pr_signal.ts` for classification:
 #
+#   - any linked PR merged                     -> needs-close    (agent close-out)
 #   - CI red / behind main / reviewer comments -> needs-feedback (agent inbox)
 #   - CHANGES_REQUESTED / merge conflict       -> needs-review   (human inbox)
 #   - otherwise                                -> leave in-progress

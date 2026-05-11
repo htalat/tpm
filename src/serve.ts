@@ -290,18 +290,23 @@ function renderIndex(projects: Project[], projectFilter: string | null): string 
 
   // Inbox = needs-review > blocked > open across the filtered set.
   const inbox = inboxItems(filtered);
-  // Agent queue = next-eligible (needs-feedback > ready). Show all candidates,
-  // not just the head, so the page is a useful overview.
+  // Agent queue = next-eligible (needs-feedback > needs-close > ready). Show
+  // all candidates, not just the head, so the page is a useful overview.
   const agentItems: Array<{ project: Project; task: Task; status: string }> = [];
+  const agentStatuses: Record<string, number> = {
+    "needs-feedback": 0,
+    "needs-close": 1,
+    "ready": 2,
+  };
   for (const p of filtered) {
     for (const t of flatTasks(p.tasks)) {
       if (t.archived || isParent(t)) continue;
       const s = String(t.data.status ?? "");
-      if (s === "ready" || s === "needs-feedback") agentItems.push({ project: p, task: t, status: s });
+      if (s in agentStatuses) agentItems.push({ project: p, task: t, status: s });
     }
   }
   agentItems.sort((a, b) => {
-    const dp = (a.status === "needs-feedback" ? 0 : 1) - (b.status === "needs-feedback" ? 0 : 1);
+    const dp = agentStatuses[a.status] - agentStatuses[b.status];
     if (dp !== 0) return dp;
     return String(a.task.data.created ?? "").localeCompare(String(b.task.data.created ?? ""));
   });
@@ -330,7 +335,7 @@ ${projectChips(projects, null)}
 </section>
 <section class="queue">
   <h2>Agent queue <span class="meta">(${agentItems.length})</span></h2>
-  ${agentItems.length === 0 ? `<p class="queue-empty">Nothing ready or needing feedback.</p>` : agentItems.map(it => taskRow(it.project, it.task, it.status)).join("")}
+  ${agentItems.length === 0 ? `<p class="queue-empty">Nothing ready, needing feedback, or awaiting close.</p>` : agentItems.map(it => taskRow(it.project, it.task, it.status)).join("")}
 </section>
 <section class="queue">
   <h2>In flight <span class="meta">(${inFlight.length})</span></h2>
@@ -351,7 +356,7 @@ function renderProject(project: Project, allProjects: Project[], showArchived: b
     byStatus.set(s, arr);
   }
   // Live queues first, archived terminal states last.
-  const order = ["needs-review", "needs-feedback", "in-progress", "blocked", "ready", "open", "done", "dropped"];
+  const order = ["needs-review", "needs-feedback", "needs-close", "in-progress", "blocked", "ready", "open", "done", "dropped"];
   const sectionsHtml = order
     .filter(s => byStatus.has(s))
     .map(s => {
@@ -520,6 +525,13 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
     case "needs-feedback":
       forms.push(logForm(href));
       forms.push(completeForm(href));
+      forms.push(blockForm(href));
+      break;
+    case "needs-close":
+      // Merged-PR sweep: the dominant action is closing out. Keep log/block
+      // as escape hatches if the user needs to annotate or pause.
+      forms.push(completeForm(href));
+      forms.push(logForm(href));
       forms.push(blockForm(href));
       break;
     case "needs-review":

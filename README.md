@@ -128,12 +128,13 @@ tpm splits work across two inboxes:
 | `open`            | human       | `tpm inbox` / manual triage       |
 | `ready`           | agent       | `tpm next` → `/tpm <slug>`        |
 | `needs-feedback`  | agent       | `tpm next` → `/tpm feedback <slug>` |
+| `needs-close`     | agent       | `tpm next` → `/tpm done <slug>`   |
 | `in-progress`     | passive     | (work happening or waiting on review) |
 | `needs-review`    | human       | `tpm inbox` (agent escalated)     |
 | `blocked`         | human       | `tpm inbox` (external dep)        |
 | `done` / `dropped`| —           | (terminal)                        |
 
-`tpm next` returns `needs-feedback` ahead of `ready` (in-flight signal is time-sensitive). `tpm inbox` is the human equivalent: lists `needs-review`, `blocked`, and `open` cross-project, most actionable first.
+`tpm next` selection priority: `needs-feedback` > `needs-close` > `ready` (in-flight signal first, then sweep merged work, then new tasks). `tpm inbox` is the human equivalent: lists `needs-review`, `blocked`, and `open` cross-project, most actionable first.
 
 Promotion `open` → `ready` is a deliberate human act. The canonical way is the `/tpm discuss <slug>` Claude Code skill mode, which shapes the task body via conversation and only flips status on explicit confirmation. Manual frontmatter edits also work.
 
@@ -149,12 +150,15 @@ stateDiagram-v2
 
     in_progress --> done: /tpm done (PR merged)
     in_progress --> needs_feedback: poller — CI red / rebase / threads
+    in_progress --> needs_close: poller — PR merged
     in_progress --> needs_review: poller — changes requested / conflict
     in_progress --> blocked: external dep
     in_progress --> dropped
 
     needs_feedback --> in_progress: /tpm feedback (round done)
     needs_feedback --> needs_review: agent escalates
+
+    needs_close --> done: /tpm done (auto-fill Outcome)
 
     needs_review --> in_progress: human pushed update
     needs_review --> dropped
@@ -167,7 +171,7 @@ stateDiagram-v2
     dropped --> [*]
 ```
 
-The poller that flips `in-progress` → `needs-feedback` / `needs-review` ships at `scripts/recurring/check-pr-signal.sh` — see [Recurring scripts](#recurring-scripts) below.
+The poller that flips `in-progress` → `needs-feedback` / `needs-close` / `needs-review` ships at `scripts/recurring/check-pr-signal.sh` — see [Recurring scripts](#recurring-scripts) below.
 
 ### Drain the agent queue: three flavors
 
@@ -261,7 +265,7 @@ Tasks don't have to be human-authored. A recurring script harvests state on a cl
 Two ship in this repo:
 
 - **`scripts/recurring/template.sh`** — copy this, fill in the four TODO blocks (source command, slug derivation, optional Context/Plan population, summary line). Idempotent on re-run via the `tpm context "$PROJECT/$slug" >/dev/null 2>&1` existence check.
-- **`scripts/recurring/check-pr-signal.sh`** — the PR-signal poller. Walks every `in-progress` task with non-empty `prs:`, queries `gh` (v0 supports `host: github` only; ado projects skipped with a warning), and flips status to `needs-feedback` (CI red / branch behind / open threads) or `needs-review` (`CHANGES_REQUESTED` / merge conflict).
+- **`scripts/recurring/check-pr-signal.sh`** — the PR-signal poller. Walks every `in-progress` task with non-empty `prs:`, queries `gh` (v0 supports `host: github` only; ado projects skipped with a warning), and flips status to `needs-feedback` (CI red / branch behind / open threads), `needs-close` (any linked PR merged — auto-routes to `/tpm done`), or `needs-review` (`CHANGES_REQUESTED` / merge conflict).
 
 Customize the template for your own intake (review my open PRs, sweep stale dependency reports, file an alert-driven task, etc.):
 
@@ -490,7 +494,7 @@ same_repo_strategy: serialize  # serialize | worktree — how parallel agents sh
 title: Refactor auth middleware
 slug: refactor-auth
 project: my-project
-status: open          # open | ready | in-progress | needs-feedback | needs-review | blocked | done | dropped
+status: open          # open | ready | in-progress | needs-feedback | needs-close | needs-review | blocked | done | dropped
 type: pr              # pr | investigation | spike | chore
 created: 2026-04-25 09:30 PDT
 closed:               # YYYY-MM-DD HH:MM ZZZ when status flips to done

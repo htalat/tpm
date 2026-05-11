@@ -126,6 +126,43 @@ test("selectCandidates: returns full sorted list (used by tpm next --claim fall-
   ]);
 });
 
+test("selectNext: needs-close sits between needs-feedback and ready", () => {
+  // Feedback is most urgent (in-flight signal); needs-close sweeps merged
+  // work before new ready tasks pile in-progress hangs.
+  const p = project("a", [
+    task("001-ready",    "ready",          "2026-01-01 10:00 PDT"),
+    task("002-close",    "needs-close",    "2026-05-01 10:00 PDT"),
+    task("003-feedback", "needs-feedback", "2026-05-09 10:00 PDT"),
+  ]);
+  const list = selectCandidates([p]);
+  assert.deepEqual(list.map(c => c.task.slug), [
+    "003-feedback",
+    "002-close",
+    "001-ready",
+  ]);
+});
+
+test("selectNext: needs-close wins over ready even if older ready exists", () => {
+  // Regression: don't let an old ready task starve a fresh merged PR's
+  // close-out — the merged PR is time-sensitive (branch/remote cleanup,
+  // archive hygiene).
+  const p = project("a", [
+    task("001-old-ready", "ready",       "2026-01-01 10:00 PDT"),
+    task("002-fresh-close", "needs-close", "2026-05-09 10:00 PDT"),
+  ]);
+  const pick = selectNext([p]);
+  assert.equal(pick?.task.slug, "002-fresh-close");
+});
+
+test("selectNext: --autonomous gate also applies to needs-close", () => {
+  const p = project("a", [
+    task("001-no-flag",   "needs-close", "2026-01-01 10:00 PDT"),
+    task("002-with-flag", "needs-close", "2026-01-02 10:00 PDT", { allow_orchestrator: true }),
+  ]);
+  const pick = selectNext([p], { autonomous: true });
+  assert.equal(pick?.task.slug, "002-with-flag");
+});
+
 test("selectCandidates: empty when no eligible tasks", () => {
   const p = project("a", [task("001", "in-progress", "2026-01-01 10:00 PDT")]);
   assert.deepEqual(selectCandidates([p]), []);

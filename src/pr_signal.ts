@@ -1,9 +1,10 @@
 // Classifier for the PR-signal poller (scripts/recurring/check-pr-signal.sh).
 //
 // Decides whether a task's in-flight PRs warrant a status flip
-// (`needs-feedback` for the agent, `needs-review` for the human). The shell
-// script gathers `gh pr view --json` payloads per PR, pipes them in as JSON
-// on stdin, and reads structured decision lines from stdout.
+// (`needs-close` once any PR has merged, `needs-feedback` for the agent,
+// `needs-review` for the human). The shell script gathers `gh pr view --json`
+// payloads per PR, pipes them in as JSON on stdin, and reads structured
+// decision lines from stdout.
 //
 // Output protocol — one DECIDE line per PR, then optionally one FLIP line:
 //
@@ -45,14 +46,15 @@ export type RawPrJson = {
 };
 
 export type Classification = {
-  status: "needs-review" | "needs-feedback";
+  status: "needs-review" | "needs-feedback" | "needs-close";
   reasons: string[];
 };
 
 export type PrAction =
   | "no-signal"
   | "flip-to-needs-feedback"
-  | "flip-to-needs-review";
+  | "flip-to-needs-review"
+  | "flip-to-needs-close";
 
 export type PrDecision = {
   url: string;
@@ -81,7 +83,8 @@ const CI_PENDING_CONCLUSIONS = new Set([
 
 // Per-PR analysis: independent verdict for one PR. Exposed so the poller can
 // log a `decide` line per PR (no more invisible no-signal skips). The
-// aggregation precedence (needs-review > needs-feedback) lives in classifyPrs.
+// aggregation precedence (needs-close > needs-review > needs-feedback) lives
+// in classifyPrs.
 export function analyzePr(pr: RawPrJson): PrDecision {
   const url = pr.url ?? "<unknown>";
   const state = (pr.state ?? "UNKNOWN").toUpperCase();
@@ -89,8 +92,13 @@ export function analyzePr(pr: RawPrJson): PrDecision {
   const review = pickReview(pr);
   const ci = pickCi(pr);
 
-  // Drafts and closed/merged PRs cast no vote.
-  if (pr.isDraft === true || (state !== "OPEN")) {
+  // Merged PR — the work shipped, task should close out.
+  if (state === "MERGED") {
+    return { url, state, review, ci, mergeable, action: "flip-to-needs-close" };
+  }
+
+  // Drafts and closed-not-merged PRs cast no vote.
+  if (pr.isDraft === true || state !== "OPEN") {
     return { url, state, review, ci, mergeable, action: "no-signal" };
   }
 
@@ -135,14 +143,26 @@ function pickCi(pr: RawPrJson): PrDecision["ci"] {
 
 // Returns null when no signal warrants a flip.
 //
-// Precedence (matches the pre-refactor bash):
-//   needs-review (conflict, CHANGES_REQUESTED) > needs-feedback (CI red,
-//   behind main, reviewer comments). Once any PR triggers needs-review,
-//   subsequent needs-feedback signals are suppressed; needs-review reasons
-//   accumulate across PRs.
+// Precedence:
+//   needs-close (any PR merged — work shipped, close the task) >
+//   needs-review (conflict, CHANGES_REQUESTED) >
+//   needs-feedback (CI red, behind main, reviewer comments).
+// Once any PR triggers needs-review, subsequent needs-feedback signals are
+// suppressed; needs-review reasons accumulate across PRs. needs-close
+// supersedes everything — if the work shipped on any linked PR, that's the
+// signal that matters and the task should close. Follow-up work for a
+// secondary PR belongs in a separate task.
 //
-// Closed/merged PRs and draft PRs are ignored.
+// Closed-not-merged PRs and draft PRs are ignored.
 export function classifyPrs(prs: RawPrJson[]): Classification | null {
+  const merged = prs.filter((pr) => pr.state === "MERGED");
+  if (merged.length > 0) {
+    return {
+      status: "needs-close",
+      reasons: merged.map((pr) => `merged ${pr.url ?? "<unknown>"}`),
+    };
+  }
+
   const reasons: string[] = [];
   let status: Classification["status"] | null = null;
 

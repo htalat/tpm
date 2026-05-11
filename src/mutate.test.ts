@@ -518,6 +518,36 @@ test("status: in-progress -> needs-feedback (poller path) is accepted", () => {
   }
 });
 
+test("status: in-progress -> needs-close (poller path on merged PR) is accepted", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    setStatus(t, "needs-close");
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: needs-close/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("complete: needs-close -> done (close-out from poller-flagged task)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    const livePath = writeTask(dir, "001-a.md", "needs-close", "pr");
+    const t = loadTask(root, "alpha", "001-a");
+    const r = complete(t, { outcome: "shipped via PR #1" });
+    assert.match(r.message, /-> done/);
+    // type: pr archives by default, so live path no longer exists.
+    assert.ok(r.archivedAt);
+    assert.ok(!existsSync(livePath));
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 test("status: needs-feedback -> needs-review (agent escalation) is accepted", () => {
   const root = mkTempDir();
   try {
