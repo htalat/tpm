@@ -149,9 +149,9 @@ stateDiagram-v2
     ready --> blocked: external dep noted
 
     in_progress --> done: /tpm done (PR merged)
-    in_progress --> needs_feedback: poller — CI red / rebase / threads
+    in_progress --> needs_feedback: poller — conflict / CI red / behind / threads
     in_progress --> needs_close: poller — PR merged
-    in_progress --> needs_review: poller — changes requested / conflict
+    in_progress --> needs_review: poller — changes requested
     in_progress --> blocked: external dep
     in_progress --> dropped
 
@@ -265,7 +265,7 @@ Tasks don't have to be human-authored. A recurring script harvests state on a cl
 Two ship in this repo:
 
 - **`scripts/recurring/template.sh`** — copy this, fill in the four TODO blocks (source command, slug derivation, optional Context/Plan population, summary line). Idempotent on re-run via the `tpm context "$PROJECT/$slug" >/dev/null 2>&1` existence check.
-- **`scripts/recurring/check-pr-signal.sh`** — the PR-signal poller. Walks every `in-progress` task with non-empty `prs:`, queries `gh` (v0 supports `host: github` only; ado projects skipped with a warning), and flips status to `needs-feedback` (CI red / branch behind / open threads), `needs-close` (any linked PR merged — auto-routes to `/tpm done`), or `needs-review` (`CHANGES_REQUESTED` / merge conflict).
+- **`scripts/recurring/check-pr-signal.sh`** — the PR-signal poller. Walks every `in-progress` task with non-empty `prs:`, queries `gh` (v0 supports `host: github` only; ado projects skipped with a warning), and flips status to `needs-feedback` (merge conflict / CI red / branch behind / open threads — agent attempts the rebase and other fixes via `/tpm feedback`), `needs-close` (any linked PR merged — auto-routes to `/tpm done`), or `needs-review` (`CHANGES_REQUESTED` — only signal that needs a human up front).
 
 Customize the template for your own intake (review my open PRs, sweep stale dependency reports, file an alert-driven task, etc.):
 

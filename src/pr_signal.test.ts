@@ -53,7 +53,9 @@ test("classifyPrs: behind main -> needs-feedback", () => {
   });
 });
 
-test("classifyPrs: merge conflict -> needs-review", () => {
+test("classifyPrs: merge conflict -> needs-feedback (agent attempts rebase)", () => {
+  // Routing was needs-review until task 044 — the agent now attempts the
+  // rebase via /tpm feedback and only escalates if it can't resolve cleanly.
   const result = classifyPrs([
     pr("https://x/1", {
       mergeStateStatus: "DIRTY",
@@ -61,7 +63,22 @@ test("classifyPrs: merge conflict -> needs-review", () => {
     }),
   ]);
   assert.deepEqual(result, {
-    status: "needs-review",
+    status: "needs-feedback",
+    reasons: ["merge conflict on https://x/1"],
+  });
+});
+
+test("classifyPrs: merge conflict + CI failed on same PR -> needs-feedback, conflict reason wins", () => {
+  // Within one PR, rebase comes before CI in the feedback procedure's
+  // priority order. Surface the conflict so the agent tackles it first.
+  const result = classifyPrs([
+    pr("https://x/1", {
+      mergeStateStatus: "DIRTY",
+      statusCheckRollup: [{ conclusion: "FAILURE" }],
+    }),
+  ]);
+  assert.deepEqual(result, {
+    status: "needs-feedback",
     reasons: ["merge conflict on https://x/1"],
   });
 });
@@ -188,19 +205,41 @@ test("classifyPrs: needs-review wins over needs-feedback across PRs", () => {
       statusCheckRollup: [{ conclusion: "FAILURE" }],
     }),
     pr("https://x/2", {
-      mergeStateStatus: "DIRTY",
+      reviewDecision: "CHANGES_REQUESTED",
+      mergeStateStatus: "BLOCKED",
       statusCheckRollup: [{ conclusion: "SUCCESS" }],
     }),
   ]);
   assert.equal(result?.status, "needs-review");
-  // First PR's CI-failed reason still accumulates, but conflict pushes status.
+  // First PR's CI-failed reason still accumulates, but CHANGES_REQUESTED pushes status.
   assert.deepEqual(result?.reasons, [
     "CI failed on https://x/1",
-    "merge conflict on https://x/2",
+    "CHANGES_REQUESTED on https://x/2",
   ]);
 });
 
 test("classifyPrs: subsequent feedback signals suppressed once needs-review is set", () => {
+  const result = classifyPrs([
+    pr("https://x/1", {
+      reviewDecision: "CHANGES_REQUESTED",
+      mergeStateStatus: "BLOCKED",
+      statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    }),
+    pr("https://x/2", {
+      mergeStateStatus: "BEHIND",
+      statusCheckRollup: [{ conclusion: "FAILURE" }],
+    }),
+  ]);
+  assert.deepEqual(result, {
+    status: "needs-review",
+    reasons: ["CHANGES_REQUESTED on https://x/1"],
+  });
+});
+
+test("classifyPrs: conflict on one PR + feedback signal on another -> single feedback reason", () => {
+  // Both signals are needs-feedback after task 044. First PR's conflict wins
+  // (rebase before CI in the feedback procedure's priority); subsequent
+  // feedback reasons are suppressed by the !status guard.
   const result = classifyPrs([
     pr("https://x/1", {
       mergeStateStatus: "DIRTY",
@@ -212,7 +251,7 @@ test("classifyPrs: subsequent feedback signals suppressed once needs-review is s
     }),
   ]);
   assert.deepEqual(result, {
-    status: "needs-review",
+    status: "needs-feedback",
     reasons: ["merge conflict on https://x/1"],
   });
 });
@@ -252,12 +291,12 @@ test("analyzePr: behind main -> flip-to-needs-feedback (mergeable=BEHIND)", () =
   assert.equal(d.mergeable, "BEHIND");
 });
 
-test("analyzePr: merge conflict -> flip-to-needs-review", () => {
+test("analyzePr: merge conflict -> flip-to-needs-feedback (agent attempts rebase)", () => {
   const d = analyzePr(pr("https://x/1", {
     mergeStateStatus: "DIRTY",
     statusCheckRollup: [{ conclusion: "SUCCESS" }],
   }));
-  assert.equal(d.action, "flip-to-needs-review");
+  assert.equal(d.action, "flip-to-needs-feedback");
   assert.equal(d.mergeable, "DIRTY");
 });
 

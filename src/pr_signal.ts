@@ -108,10 +108,14 @@ export function analyzePr(pr: RawPrJson): PrDecision {
   const behind = mergeable === "BEHIND";
   const commented = (pr.latestReviews ?? []).some((r) => r.state === "COMMENTED");
 
+  // DIRTY is the agent's problem first — /tpm feedback attempts the rebase,
+  // resolves conflicts where tests still pass, and only escalates if the
+  // resolution is genuinely ambiguous. Only CHANGES_REQUESTED is unconditional
+  // human queue: a reviewer's "no" needs a human to translate it to a fix.
   let action: PrAction = "no-signal";
-  if (conflicting || changesRequested) {
+  if (changesRequested) {
     action = "flip-to-needs-review";
-  } else if (ciFailed || behind || commented) {
+  } else if (conflicting || ciFailed || behind || commented) {
     action = "flip-to-needs-feedback";
   }
 
@@ -145,13 +149,18 @@ function pickCi(pr: RawPrJson): PrDecision["ci"] {
 //
 // Precedence:
 //   needs-close (any PR merged — work shipped, close the task) >
-//   needs-review (conflict, CHANGES_REQUESTED) >
-//   needs-feedback (CI red, behind main, reviewer comments).
+//   needs-review (CHANGES_REQUESTED only) >
+//   needs-feedback (merge conflict, CI red, behind main, reviewer comments).
 // Once any PR triggers needs-review, subsequent needs-feedback signals are
 // suppressed; needs-review reasons accumulate across PRs. needs-close
 // supersedes everything — if the work shipped on any linked PR, that's the
 // signal that matters and the task should close. Follow-up work for a
 // secondary PR belongs in a separate task.
+//
+// Merge conflicts (mergeStateStatus=DIRTY) route to needs-feedback, not
+// needs-review: the agent attempts the rebase via /tpm feedback and only
+// escalates if the conflict can't be resolved cleanly (test-as-arbiter).
+// Routing every conflict to the human inbox defeats the harness's promise.
 //
 // Closed-not-merged PRs and draft PRs are ignored.
 export function classifyPrs(prs: RawPrJson[]): Classification | null {
@@ -181,12 +190,12 @@ export function classifyPrs(prs: RawPrJson[]): Classification | null {
     );
     const changesRequested = pr.reviewDecision === "CHANGES_REQUESTED";
 
-    if (conflicting) {
-      status = "needs-review";
-      reasons.push(`merge conflict on ${url}`);
-    } else if (changesRequested) {
+    if (changesRequested) {
       status = "needs-review";
       reasons.push(`CHANGES_REQUESTED on ${url}`);
+    } else if (!status && conflicting) {
+      status = "needs-feedback";
+      reasons.push(`merge conflict on ${url}`);
     } else if (!status && ciFailed) {
       status = "needs-feedback";
       reasons.push(`CI failed on ${url}`);
