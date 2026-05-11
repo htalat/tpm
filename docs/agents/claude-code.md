@@ -25,6 +25,7 @@ The repo's [README setup section](../../README.md#setup-on-a-new-device) does th
 | `/tpm done <slug>`  | Close out a merged PR task: outcome, archive, branch cleanup |
 | `/tpm new <project> <slug>` | Scaffold a task                                     |
 | `/tpm fold <slug>`  | Promote file-form task to folder-form                       |
+| `/tpm reparent <slug> <new-parent \| --top>` | Move a task under a new parent (or to top-level) |
 | `/tpm ls`, `/tpm report`, `/tpm path`, … | Pass-throughs to the CLI                |
 
 See `skills/tpm/SKILL.md` for the full action procedures.

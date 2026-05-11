@@ -6,7 +6,7 @@ import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
 import { loadProjects } from "./tree.ts";
 import {
   start, ready, block, reopen, revert, logEntry, addPr, setStatus, complete,
-  setAllowOrchestrator,
+  setAllowOrchestrator, reparent,
   appendLog, setSection, sectionHasContent,
 } from "./mutate.ts";
 import { parse } from "./frontmatter.ts";
@@ -678,6 +678,248 @@ test("guard: archived tasks reject mutations", () => {
     assert.equal(t.archived, true);
     assert.throws(() => logEntry(t, "anything"), /Cannot mutate archived task/);
     assert.throws(() => start(t), /Cannot mutate archived task/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+// ---- reparent -------------------------------------------------------------
+
+function loadByQualifiedSlug(root: string, projectSlug: string, slug: string) {
+  const [proj] = loadProjects(root, { archived: true }).filter(p => p.slug === projectSlug);
+  for (const t of proj.tasks) {
+    if (t.slug === slug) return t;
+    for (const c of t.children ?? []) if (c.slug === slug) return c;
+  }
+  throw new Error(`No task ${slug} in ${projectSlug}`);
+}
+
+test("reparent: top-level -> child of an existing parent (auto-folds parent, adds parent: frontmatter)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-parent.md");
+    writeTask(dir, "002-loose.md");
+    const task = loadTask(root, "alpha", "002-loose");
+    const newParent = loadTask(root, "alpha", "001-parent");
+    const r = reparent(task, newParent);
+    assert.equal(r.newSlug, "001-loose");
+    assert.equal(r.newPath, join(dir, "tasks", "001-parent", "001-loose.md"));
+    assert.ok(existsSync(r.newPath));
+    assert.ok(!existsSync(join(dir, "tasks", "002-loose.md")));
+    // Parent got folded.
+    assert.ok(existsSync(join(dir, "tasks", "001-parent", "task.md")));
+    // Frontmatter has parent: pointing at the parent's NNN-prefixed slug.
+    const { data } = parse(readFileSync(r.newPath, "utf8"));
+    assert.equal(data.parent, "001-parent");
+    // Log line written.
+    assert.match(readFileSync(r.newPath, "utf8"), /reparented from top-level to under 001-parent/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("reparent: child -> top-level (drops parent: from frontmatter)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    // Folder-form parent with two children.
+    const parentDir = join(dir, "tasks", "002-parent");
+    mkdirSync(parentDir, { recursive: true });
+    writeFileSync(join(parentDir, "task.md"), taskMd("002-parent"));
+    writeFileSync(join(parentDir, "001-child.md"),
+      taskMd("001-child").replace("project: alpha\n", "project: alpha\nparent: 002-parent\n"));
+    writeTask(dir, "001-other.md"); // top-level neighbor so renumber must skip 001
+    const child = loadByQualifiedSlug(root, "alpha", "001-child");
+    const r = reparent(child, null);
+    // Top-level now has 001-other.md (and 002-parent/), so next NNN is 003.
+    assert.equal(r.newSlug, "003-child");
+    assert.equal(r.newPath, join(dir, "tasks", "003-child.md"));
+    assert.ok(existsSync(r.newPath));
+    assert.ok(!existsSync(join(parentDir, "001-child.md")));
+    const { data } = parse(readFileSync(r.newPath, "utf8"));
+    assert.equal(data.parent, undefined);
+    assert.match(readFileSync(r.newPath, "utf8"), /reparented from under 002-parent to top-level/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("reparent: child -> different parent (renumbers in destination)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    // Two folder-form parents.
+    for (const p of ["001-old-parent", "002-new-parent"]) {
+      const pd = join(dir, "tasks", p);
+      mkdirSync(pd, { recursive: true });
+      writeFileSync(join(pd, "task.md"), taskMd(p));
+    }
+    // Source child + an existing destination child to force renumbering.
+    writeFileSync(
+      join(dir, "tasks", "001-old-parent", "001-mover.md"),
+      taskMd("001-mover").replace("project: alpha\n", "project: alpha\nparent: 001-old-parent\n"),
+    );
+    writeFileSync(
+      join(dir, "tasks", "002-new-parent", "001-resident.md"),
+      taskMd("001-resident").replace("project: alpha\n", "project: alpha\nparent: 002-new-parent\n"),
+    );
+    const child = loadByQualifiedSlug(root, "alpha", "001-mover");
+    const newParent = loadTask(root, "alpha", "002-new-parent");
+    const r = reparent(child, newParent);
+    assert.equal(r.newSlug, "002-mover");
+    assert.equal(r.newPath, join(dir, "tasks", "002-new-parent", "002-mover.md"));
+    assert.ok(existsSync(r.newPath));
+    assert.ok(!existsSync(join(dir, "tasks", "001-old-parent", "001-mover.md")));
+    const { data } = parse(readFileSync(r.newPath, "utf8"));
+    assert.equal(data.parent, "002-new-parent");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("reparent: numbering picks max(NNN)+1 across destination + its archive sibling", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-parent.md");
+    writeTask(dir, "002-mover.md");
+    // Pre-existing archived child of 001-parent at 005 — new file must skip past it.
+    const archiveParent = join(dir, "tasks", "archive", "001-parent");
+    mkdirSync(archiveParent, { recursive: true });
+    writeFileSync(join(archiveParent, "005-old.md"),
+      taskMd("005-old", "done").replace("project: alpha\n", "project: alpha\nparent: 001-parent\n"));
+    const task = loadTask(root, "alpha", "002-mover");
+    const newParent = loadTask(root, "alpha", "001-parent");
+    const r = reparent(task, newParent);
+    assert.equal(r.newSlug, "006-mover");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("reparent: refuses parent task (would create grandchildren)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    const parentDir = join(dir, "tasks", "001-big");
+    mkdirSync(parentDir, { recursive: true });
+    writeFileSync(join(parentDir, "task.md"), taskMd("001-big"));
+    writeFileSync(join(parentDir, "001-kid.md"),
+      taskMd("001-kid").replace("project: alpha\n", "project: alpha\nparent: 001-big\n"));
+    writeTask(dir, "002-target.md");
+    const big = loadTask(root, "alpha", "001-big");
+    const target = loadTask(root, "alpha", "002-target");
+    assert.throws(() => reparent(big, target), /has children/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("reparent: refuses folder-form task (even with no children — would orphan supporting files)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    const folder = join(dir, "tasks", "001-foldy");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "task.md"), taskMd("001-foldy"));
+    writeTask(dir, "002-target.md");
+    const foldy = loadTask(root, "alpha", "001-foldy");
+    const target = loadTask(root, "alpha", "002-target");
+    assert.throws(() => reparent(foldy, target), /folder-form/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("reparent: refuses moving a child under another child (one level of nesting)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    const parentDir = join(dir, "tasks", "001-parent");
+    mkdirSync(parentDir, { recursive: true });
+    writeFileSync(join(parentDir, "task.md"), taskMd("001-parent"));
+    writeFileSync(join(parentDir, "001-a.md"),
+      taskMd("001-a").replace("project: alpha\n", "project: alpha\nparent: 001-parent\n"));
+    writeFileSync(join(parentDir, "002-b.md"),
+      taskMd("002-b").replace("project: alpha\n", "project: alpha\nparent: 001-parent\n"));
+    const a = loadByQualifiedSlug(root, "alpha", "001-a");
+    const b = loadByQualifiedSlug(root, "alpha", "002-b");
+    assert.throws(() => reparent(a, b), /Only one level of nesting/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("reparent: refuses no-op (already a child of the same parent)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    const parentDir = join(dir, "tasks", "001-parent");
+    mkdirSync(parentDir, { recursive: true });
+    writeFileSync(join(parentDir, "task.md"), taskMd("001-parent"));
+    writeFileSync(join(parentDir, "001-c.md"),
+      taskMd("001-c").replace("project: alpha\n", "project: alpha\nparent: 001-parent\n"));
+    const child = loadByQualifiedSlug(root, "alpha", "001-c");
+    const parent = loadTask(root, "alpha", "001-parent");
+    assert.throws(() => reparent(child, parent), /already a child of 001-parent/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("reparent: refuses no-op (already top-level)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-loose.md");
+    const t = loadTask(root, "alpha", "001-loose");
+    assert.throws(() => reparent(t, null), /already top-level/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("reparent: refuses archived task", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-target.md");
+    const archive = join(dir, "tasks", "archive");
+    mkdirSync(archive, { recursive: true });
+    writeFileSync(join(archive, "002-old.md"), taskMd("002-old", "done"));
+    const old = loadByQualifiedSlug(root, "alpha", "002-old");
+    const target = loadTask(root, "alpha", "001-target");
+    assert.throws(() => reparent(old, target), /Cannot mutate archived/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("reparent: refuses moving into self", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-self.md");
+    const t = loadTask(root, "alpha", "001-self");
+    assert.throws(() => reparent(t, t), /into itself/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("reparent: parent: field is inserted right after project: (preserves key order)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-parent.md");
+    writeTask(dir, "002-loose.md");
+    const task = loadTask(root, "alpha", "002-loose");
+    const newParent = loadTask(root, "alpha", "001-parent");
+    const r = reparent(task, newParent);
+    const text = readFileSync(r.newPath, "utf8");
+    // project: ... newline, then parent: ...
+    assert.match(text, /project: alpha\nparent: 001-parent\n/);
   } finally {
     rmTempDir(root);
   }

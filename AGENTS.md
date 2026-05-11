@@ -217,9 +217,17 @@ Don't:
 ### Fold a task to folder-form
 Use when a task needs supporting files (subtasks, scratch notes, screenshots) alongside it. `tpm fold <slug>` rewrites `tasks/NNN-slug.md` to `tasks/NNN-slug/task.md`. Idempotent. Children can then be added with `tpm new task <project> <child> --parent <slug>`.
 
+### Reparent a task
+Use when a task ends up in the wrong place — needs to become a child of an existing parent, move between parents, or be promoted back to top-level.
+
+- `tpm reparent <task> <new-parent>` moves a task under a new parent. Folds the new parent automatically if it's still file-form. Renumbers the moved file within the destination container.
+- `tpm reparent <task> --top` promotes a child back to top-level (drops `parent:` from frontmatter).
+
+Refuses to move a task that has children (would create grandchildren), a folder-form task (would orphan supporting files — flatten manually first), or any move that would land the task under a child task. Also refuses no-op moves (already a child of the named parent / already top-level). Cross-project moves aren't supported — `<new-parent>` resolves within the source task's project.
+
 ## Conventions
 
-- **Prefer CLI verbs over manual file edits for state changes.** Use `tpm start | ready | complete | block | reopen | revert | log | pr | status | archive | fold | new` for frontmatter and Log mutations. Manual file edits are only for body-text authoring (`## Context`, `## Plan`, `## Outcome`).
+- **Prefer CLI verbs over manual file edits for state changes.** Use `tpm start | ready | complete | block | reopen | revert | log | pr | status | archive | fold | reparent | new` for frontmatter and Log mutations. Manual file edits are only for body-text authoring (`## Context`, `## Plan`, `## Outcome`).
 - When you do edit a task file directly, only touch the four canonical body sections. Preserve key order in frontmatter.
 - Don't reformat unrelated frontmatter or rename slugs.
 - Don't delete the `## Outcome` section even if empty — it's a closing prompt.

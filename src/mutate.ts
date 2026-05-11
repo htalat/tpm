@@ -1,7 +1,8 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { parse, stringify } from "./frontmatter.ts";
 import { now } from "./time.ts";
-import { archiveTask, isParent } from "./tree.ts";
+import { archiveTask, foldTask, isParent } from "./tree.ts";
 import type { Task } from "./tree.ts";
 
 export const VALID_STATUSES = [
@@ -25,6 +26,11 @@ export interface MutateResult {
 export interface CompleteOptions {
   outcome?: string;
   archive?: boolean;
+}
+
+export interface ReparentResult extends MutateResult {
+  newPath: string;
+  newSlug: string;
 }
 
 // ---- public verbs ---------------------------------------------------------
@@ -165,6 +171,109 @@ export function complete(task: Task, opts: CompleteOptions = {}): MutateResult {
   return { message: `${task.slug} -> done`, archivedAt };
 }
 
+// Move a task to a new parent (or to top-level when newParent is null). Renumbers
+// the file within its destination container, rewrites the `parent:` frontmatter,
+// folds the new parent if it isn't already folder-form, and appends a Log line.
+//
+// Refusals (v0): can't reparent an archived task, a parent (would make grandchildren),
+// or a folder-form task with supporting files (would orphan them — unfold/move manually).
+// Can't reparent into a child, into self, into an archived parent, or to the same
+// parent (no-op). Cross-project reparenting isn't supported here — the CLI resolves
+// `<new-parent>` within the source task's project.
+export function reparent(task: Task, newParent: Task | null): ReparentResult {
+  guardArchived(task);
+  if (isParent(task)) {
+    throw new Error(`Cannot reparent ${task.slug}: it has children. Move or close them first.`);
+  }
+  if (task.dir) {
+    throw new Error(`Cannot reparent folder-form task ${task.slug}: would orphan supporting files. Move manually.`);
+  }
+  if (newParent) {
+    if (newParent.archived) {
+      throw new Error(`Cannot reparent into archived parent: ${newParent.slug}`);
+    }
+    if (newParent.parent) {
+      throw new Error(`Cannot reparent under "${newParent.slug}": it is itself a child. Only one level of nesting is supported.`);
+    }
+    if (newParent.path === task.path) {
+      throw new Error(`Cannot reparent ${task.slug} into itself`);
+    }
+  }
+
+  // tasksDir is <project>/tasks. For a top-level file it's dirname(task.path);
+  // for a child it's the parent of the parent dir.
+  const tasksDir = task.parent ? dirname(dirname(task.path)) : dirname(task.path);
+
+  let destContainer: string;
+  let destArchive: string;
+  let parentSlugForFm: string | null = null;
+
+  if (newParent) {
+    if (!newParent.dir) {
+      // Fold so the new parent has a directory to receive children. Update the
+      // in-memory shape so subsequent reparents in the same process see it folded.
+      foldTask(newParent);
+      newParent.dir = join(tasksDir, newParent.slug);
+      newParent.path = join(newParent.dir, "task.md");
+    }
+    destContainer = newParent.dir;
+    destArchive = join(tasksDir, "archive", newParent.slug);
+    parentSlugForFm = newParent.slug;
+  } else {
+    destContainer = tasksDir;
+    destArchive = join(tasksDir, "archive");
+  }
+
+  const currentParent = task.parent ?? null;
+  if (currentParent === parentSlugForFm) {
+    const where = parentSlugForFm ? `a child of ${parentSlugForFm}` : "top-level";
+    throw new Error(`${task.slug} is already ${where}`);
+  }
+
+  // Renumber: pick max(NNN) + 1 across the destination container and its archive
+  // sibling, so we don't collide with an archived child that could be unarchived later.
+  const baseSlug = task.slug.replace(/^\d{3,}-/, "");
+  let max = 0;
+  for (const dir of [destContainer, destArchive]) {
+    if (!existsSync(dir)) continue;
+    for (const entry of readdirSync(dir)) {
+      const m = entry.match(/^(\d{3,})-/);
+      if (m) max = Math.max(max, Number(m[1]));
+    }
+  }
+  const nextNum = String(max + 1).padStart(3, "0");
+  const newSlug = `${nextNum}-${baseSlug}`;
+  const newPath = join(destContainer, `${newSlug}.md`);
+  if (existsSync(newPath)) {
+    throw new Error(`Cannot reparent ${task.slug}: destination ${newPath} already exists`);
+  }
+
+  const oldSlug = task.slug;
+  const oldPath = task.path;
+  const oldDesc = currentParent ? `under ${currentParent}` : "top-level";
+  const newDesc = parentSlugForFm ? `under ${parentSlugForFm}` : "top-level";
+
+  const { data, body } = readParsed(task);
+  const newData = setParentField(data, parentSlugForFm);
+  const newBody = appendLog(body, `${now()}: reparented from ${oldDesc} to ${newDesc} (${oldSlug} -> ${newSlug})`);
+
+  mkdirSync(destContainer, { recursive: true });
+  writeFileSync(newPath, stringify(newData, newBody));
+  unlinkSync(oldPath);
+
+  task.path = newPath;
+  task.slug = newSlug;
+  task.parent = parentSlugForFm ?? undefined;
+  task.data = newData;
+  task.body = newBody;
+
+  return {
+    message: `${oldSlug} -> ${newSlug} (${newDesc})`,
+    newPath,
+    newSlug,
+  };
+}
+
 // ---- internals ------------------------------------------------------------
 
 interface TransitionOpts {
@@ -212,6 +321,26 @@ function syncInMemory(task: Task, data: Record<string, unknown>, body: string): 
 
 function isStatus(s: string): s is Status {
   return (VALID_STATUSES as readonly string[]).includes(s);
+}
+
+// Insert/replace/remove `parent:` while preserving the canonical key order
+// (right after `project:`, mirroring how `tpm new task --parent` writes it).
+function setParentField(
+  data: Record<string, unknown>,
+  parentSlug: string | null,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  let inserted = false;
+  for (const [k, v] of Object.entries(data)) {
+    if (k === "parent") continue;
+    out[k] = v;
+    if (!inserted && parentSlug && k === "project") {
+      out.parent = parentSlug;
+      inserted = true;
+    }
+  }
+  if (!inserted && parentSlug) out.parent = parentSlug;
+  return out;
 }
 
 // ---- body section helpers -------------------------------------------------
