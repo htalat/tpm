@@ -6,6 +6,7 @@ import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
 import { loadProjects } from "./tree.ts";
 import {
   start, ready, block, reopen, revert, logEntry, addPr, setStatus, complete,
+  setAllowOrchestrator,
   appendLog, setSection, sectionHasContent,
 } from "./mutate.ts";
 import { parse } from "./frontmatter.ts";
@@ -576,6 +577,60 @@ test("round-trip: unrelated body sections are not reflowed", () => {
     const text = readFileSync(t.path, "utf8");
     // ## Context and ## Plan should be byte-identical to the template.
     assert.match(text, /## Context\nsome context\n\n## Plan\n1\. do the thing\n\n## Log/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+// ---- setAllowOrchestrator -------------------------------------------------
+
+test("setAllowOrchestrator: writes allow_orchestrator: true and logs verb", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "ready");
+    const t = loadTask(root, "alpha", "001-a");
+    const r = setAllowOrchestrator(t, true);
+    assert.match(r.message, /-> true/);
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /allow_orchestrator: true/);
+    assert.match(text, /allow_orchestrator: true \(safe for autonomous runs\)$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("setAllowOrchestrator: idempotent — same value is no-op", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "ready");
+    const t = loadTask(root, "alpha", "001-a");
+    setAllowOrchestrator(t, true);
+    const before = readFileSync(t.path, "utf8");
+    // Reload task to pick up the new value
+    const t2 = loadTask(root, "alpha", "001-a");
+    const r = setAllowOrchestrator(t2, true);
+    assert.match(r.message, /already true/);
+    assert.equal(readFileSync(t.path, "utf8"), before);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("setAllowOrchestrator: refuses parent containers", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    // Make a folder-form parent with a child so it's a container
+    const parentDir = join(dir, "tasks", "002-parent");
+    mkdirSync(parentDir, { recursive: true });
+    writeFileSync(join(parentDir, "task.md"), taskMd("002-parent", "ready").replace("project: alpha", "project: alpha"));
+    writeFileSync(join(parentDir, "003-child.md"), taskMd("003-child", "ready").replace(/project: alpha/, "project: alpha\nparent: 002-parent"));
+    const [proj] = loadProjects(root, { archived: true });
+    const parent = proj.tasks.find(t => t.slug === "002-parent")!;
+    assert.ok(parent.children?.length);
+    assert.throws(() => setAllowOrchestrator(parent, true), /parents aren't claimable/);
   } finally {
     rmTempDir(root);
   }
