@@ -26,7 +26,7 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
   - `ready` = agent's queue. Promoted via `/tpm discuss`.
   - `in-progress` = work in flight (for `type: pr` tasks, this includes the PR-open / awaiting-merge phase).
   - `needs-feedback` = agent's queue for in-flight PRs. Routes to `/tpm feedback`. Set by the PR-signal poller (merge conflict, CI red, behind main, open threads) or by the agent during a feedback round.
-  - `needs-close` = agent's queue for merged PRs awaiting close-out. Routes to `/tpm done`. Set by the PR-signal poller when a linked PR transitions to `MERGED`.
+  - `needs-close` = transient/escape-hatch state. The PR-signal poller flips a task here on a MERGED PR then immediately auto-closes inline via `tpm complete --outcome "<derived>"` in the same tick, so the task is usually `done` by the time anyone looks. A task lingers at `needs-close` only when the inline auto-close fails (empty PR body, Outcome already filled, lock contention) — surface those with `tpm ls --status needs-close` and run `/tpm done <slug>` manually.
   - `needs-review` = human's queue. Agent escalated (design pushback, `CHANGES_REQUESTED`, a merge conflict the agent couldn't resolve). Surfaced via `tpm inbox`.
   - `blocked` = human's queue, external dep. Surfaced via `tpm inbox`.
   - Parent containers display a roll-up status (all children done → done; any in-progress → in-progress; else parent's declared status). The roll-up is display only — not written to frontmatter.
@@ -97,13 +97,12 @@ Shape a task's Plan before any execution. Pure conversation that lands in the ta
 Discuss mode is the canonical way to move a task from `open` to `ready`. A human can also flip the status manually, but `/tpm discuss` encodes the discipline (Context/Plan populated, Log timestamped, explicit confirmation).
 
 ### Pick the next ready task and run it (`/tpm next`)
-Auto-select mode. Resolves the next eligible leaf task (parents are skipped) and dispatches the right mode based on its status. Selection priority: `needs-feedback` > `needs-close` > `ready`.
+Auto-select mode. Resolves the next eligible leaf task (parents are skipped) and dispatches the right mode based on its status. Selection priority: `needs-feedback` > `ready`. (`needs-close` isn't in the priority — the poller auto-closes merged PRs inline. Stragglers go through the manual `/tpm done <slug>` escape hatch.)
 1. Run `tpm next` (optionally with `--project <slug>`). It prints a qualified slug on success or exits non-zero if nothing is eligible.
 2. If non-zero, surface the message and stop. Don't fall back to `open` tasks — the human needs to promote one via `/tpm discuss` first.
 3. On success, look at the task's status (`tpm context <slug>` shows it). Dispatch by status:
    - `ready` → **start a task** mode (same flow as `/tpm <slug>`).
    - `needs-feedback` → **handle PR feedback** mode (same flow as `/tpm feedback <slug>`).
-   - `needs-close` → **close out** mode (same flow as `/tpm done <slug>`).
 
 `/tpm next` is the manual path. Use `tpm next --autonomous` only from scheduled/unattended runs (filters to tasks with `allow_orchestrator: true`); the manual `/tpm next` skill mode does not pass `--autonomous`.
 

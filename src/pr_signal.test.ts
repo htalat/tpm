@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { analyzePr, classifyPrs, PR_JSON_FIELDS, type RawPrJson } from "./pr_signal.ts";
+import { analyzePr, classifyPrs, deriveCloseOutcome, stripPrBody, PR_JSON_FIELDS, type RawPrJson } from "./pr_signal.ts";
 
 function pr(url: string, extra: Omit<RawPrJson, "url">): RawPrJson {
   return { url, state: "OPEN", isDraft: false, ...extra };
@@ -398,4 +398,134 @@ test("PR_JSON_FIELDS: includes only real `gh pr view --json` fields", () => {
   assert.ok(PR_JSON_FIELDS.includes("latestReviews"));
   assert.ok(PR_JSON_FIELDS.includes("isDraft"));
   assert.ok(PR_JSON_FIELDS.includes("url"));
+  // Task 045: deriveCloseOutcome needs title/body/mergedAt for inline auto-close.
+  assert.ok(PR_JSON_FIELDS.includes("title"));
+  assert.ok(PR_JSON_FIELDS.includes("body"));
+  assert.ok(PR_JSON_FIELDS.includes("mergedAt"));
+});
+
+// ---- stripPrBody / deriveCloseOutcome (task 045) -------------------------
+
+test("stripPrBody: cuts everything from '## Test plan' onward", () => {
+  const body = [
+    "## Summary",
+    "- bullet 1",
+    "- bullet 2",
+    "",
+    "## Test plan",
+    "- [ ] verify thing",
+  ].join("\n");
+  assert.equal(stripPrBody(body), "## Summary\n- bullet 1\n- bullet 2");
+});
+
+test("stripPrBody: 'Test Plan' header (case-insensitive) also cuts", () => {
+  const body = "Words.\n\n## Test Plan\nfoo";
+  assert.equal(stripPrBody(body), "Words.");
+});
+
+test("stripPrBody: drops Claude Code footer line (with or without robot emoji)", () => {
+  const withEmoji = "Body line.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)";
+  assert.equal(stripPrBody(withEmoji), "Body line.");
+  const noEmoji = "Body line.\n\nGenerated with Claude Code";
+  assert.equal(stripPrBody(noEmoji), "Body line.");
+});
+
+test("stripPrBody: empty body returns empty string", () => {
+  assert.equal(stripPrBody(""), "");
+});
+
+test("stripPrBody: body that is only the Claude Code footer returns empty", () => {
+  assert.equal(stripPrBody("🤖 Generated with Claude Code\n"), "");
+});
+
+test("stripPrBody: CRLF line endings normalized to LF before stripping", () => {
+  const body = "## Summary\r\n- a\r\n\r\n## Test plan\r\n- check";
+  assert.equal(stripPrBody(body), "## Summary\n- a");
+});
+
+test("deriveCloseOutcome: returns null when no merged PR in the list", () => {
+  assert.equal(deriveCloseOutcome([{ url: "https://x/1", state: "OPEN" }]), null);
+  assert.equal(deriveCloseOutcome([{ url: "https://x/1", state: "CLOSED" }]), null);
+  assert.equal(deriveCloseOutcome([]), null);
+});
+
+test("deriveCloseOutcome: typical merged PR -> title + summary + merge link", () => {
+  const out = deriveCloseOutcome([
+    {
+      url: "https://github.com/o/r/pull/42",
+      state: "MERGED",
+      title: "Fix the foo widget",
+      body: "## Summary\n- swapped the bar for a baz\n\n## Test plan\n- [ ] click foo\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+      mergedAt: "2026-05-10T19:00:00Z",
+    },
+  ]);
+  assert.equal(
+    out,
+    "Fix the foo widget.\n\n## Summary\n- swapped the bar for a baz\n\nMerged via https://github.com/o/r/pull/42 at 2026-05-10T19:00:00Z.",
+  );
+});
+
+test("deriveCloseOutcome: picks the FIRST merged PR when multiple are merged", () => {
+  const out = deriveCloseOutcome([
+    { url: "https://x/1", state: "MERGED", title: "First", body: "first body", mergedAt: "2026-01-01" },
+    { url: "https://x/2", state: "MERGED", title: "Second", body: "second body", mergedAt: "2026-01-02" },
+  ]);
+  assert.match(out ?? "", /^First\./);
+  assert.match(out ?? "", /https:\/\/x\/1/);
+  assert.doesNotMatch(out ?? "", /Second/);
+});
+
+test("deriveCloseOutcome: skips a non-merged PR to find a merged one", () => {
+  const out = deriveCloseOutcome([
+    { url: "https://x/1", state: "OPEN" },
+    { url: "https://x/2", state: "MERGED", title: "Real one", body: "body", mergedAt: "2026-05-10" },
+  ]);
+  assert.match(out ?? "", /^Real one\./);
+});
+
+test("deriveCloseOutcome: title-only PR (empty body after stripping) still derives", () => {
+  const out = deriveCloseOutcome([
+    {
+      url: "https://x/1",
+      state: "MERGED",
+      title: "Just a title",
+      body: "## Test plan\n- check it\n",
+      mergedAt: "2026-05-10T19:00:00Z",
+    },
+  ]);
+  assert.equal(out, "Just a title.\n\nMerged via https://x/1 at 2026-05-10T19:00:00Z.");
+});
+
+test("deriveCloseOutcome: title that already ends with period not double-punctuated", () => {
+  const out = deriveCloseOutcome([
+    { url: "https://x/1", state: "MERGED", title: "Done.", body: "", mergedAt: "" },
+  ]);
+  assert.match(out ?? "", /^Done\.$/m);
+  assert.doesNotMatch(out ?? "", /Done\.\./);
+});
+
+test("deriveCloseOutcome: no title AND no usable body -> null (manual escape hatch)", () => {
+  assert.equal(
+    deriveCloseOutcome([
+      { url: "https://x/1", state: "MERGED", title: "", body: "🤖 Generated with Claude Code\n", mergedAt: "2026-05-10" },
+    ]),
+    null,
+  );
+});
+
+test("deriveCloseOutcome: missing mergedAt -> 'Merged via <url>.' without timestamp", () => {
+  const out = deriveCloseOutcome([
+    { url: "https://x/1", state: "MERGED", title: "Ship it", body: "" },
+  ]);
+  assert.equal(out, "Ship it.\n\nMerged via https://x/1.");
+});
+
+test("deriveCloseOutcome: multi-paragraph body preserved between title and merge link", () => {
+  const body = "Para one — context.\n\nPara two — what we shipped.\n\n## Test plan\n- [ ] later";
+  const out = deriveCloseOutcome([
+    { url: "https://x/1", state: "MERGED", title: "Title", body, mergedAt: "2026-05-10" },
+  ]);
+  assert.match(out ?? "", /Para one — context\./);
+  assert.match(out ?? "", /Para two — what we shipped\./);
+  assert.doesNotMatch(out ?? "", /Test plan/);
 });

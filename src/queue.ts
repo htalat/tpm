@@ -11,15 +11,22 @@ export interface QueueItem {
   task: Task;
 }
 
-const NEXT_STATUSES = ["needs-feedback", "needs-close", "ready"] as const;
+const NEXT_STATUSES = ["needs-feedback", "ready"] as const;
 
 // All eligible leaf candidates in selection order:
 //   needs-feedback (in-flight signal, time-sensitive) >
-//   needs-close   (PR merged, sweep before piling on new work) >
 //   ready         (new work),
 // then oldest by created within each bucket. Parents and archived excluded.
 // Used by both `selectNext` (head) and `tpm next --claim` (walk until one
 // can be locked).
+//
+// `needs-close` is intentionally absent: task 045 made the poller auto-close
+// inline (`tpm complete` from check-pr-signal.sh) right after the
+// `needs-close` flip, so under normal operation the status is transient and
+// already gone by the next tick. Stragglers (auto-close failed — body empty,
+// lock contention, Outcome pre-filled) stay at `needs-close` for the manual
+// `/tpm done <slug>` escape hatch; surface them with `tpm ls --status
+// needs-close` if you want a sweep.
 export function selectCandidates(projects: Project[], opts: SelectNextOpts = {}): QueueItem[] {
   const candidates: QueueItem[] = [];
   for (const p of projects) {

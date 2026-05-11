@@ -377,7 +377,7 @@ try {
         if (!pick) {
           const where = projectFilter ? ` in project "${projectFilter}"` : "";
           const gate = autonomous ? " with allow_orchestrator: true" : "";
-          console.error(`No ready, needs-feedback, or needs-close tasks${where}${gate}.`);
+          console.error(`No ready or needs-feedback tasks${where}${gate}.`);
           process.exit(1);
         }
         console.log(qualifySlug(pick.project.slug, pick.task));
@@ -424,7 +424,7 @@ try {
       }
       const where = projectFilter ? ` in project "${projectFilter}"` : "";
       const gate = autonomous ? " with allow_orchestrator: true" : "";
-      console.error(`No claimable ready, needs-feedback, or needs-close tasks${where}${gate} (all candidates locked or their repos busy).`);
+      console.error(`No claimable ready or needs-feedback tasks${where}${gate} (all candidates locked or their repos busy).`);
       process.exit(1);
     }
     case "serve": {
@@ -705,7 +705,7 @@ Usage:
   tpm lock release-stale [--ttl <minutes>]   clear locks whose heartbeat is older than ttl
   tpm drift-check <project | task>           verify the project's repo.local is on its default branch + clean
   tpm next [--project <slug>] [--autonomous] [--claim <id>] [--any-repo]
-                                             print next leaf task (needs-feedback > needs-close > ready, oldest first); --claim atomically locks; affinity from ~/.tpm/agents.json applies unless --any-repo
+                                             print next leaf task (needs-feedback > ready, oldest first); --claim atomically locks; affinity from ~/.tpm/agents.json applies unless --any-repo
   tpm agents list                            print the per-host agent registry
   tpm agents add <id> --repo <slug> [--comment <s>]   register an agent's preferred repo
   tpm agents remove <id>                     drop an agent entry

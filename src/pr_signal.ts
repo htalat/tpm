@@ -25,6 +25,8 @@ import { pathToFileURL } from "node:url";
 
 // Field set passed to `gh pr view --json`. The shell script reads this list
 // at runtime so the request stays in sync with the classifier's expectations.
+// `title`, `body`, `mergedAt` feed deriveCloseOutcome so the poller can write
+// an auto-Outcome inline without a second gh round-trip.
 export const PR_JSON_FIELDS = [
   "url",
   "state",
@@ -33,6 +35,9 @@ export const PR_JSON_FIELDS = [
   "statusCheckRollup",
   "mergeStateStatus",
   "latestReviews",
+  "title",
+  "body",
+  "mergedAt",
 ] as const;
 
 export type RawPrJson = {
@@ -43,6 +48,9 @@ export type RawPrJson = {
   statusCheckRollup?: Array<{ conclusion?: string | null }>;
   mergeStateStatus?: string;
   latestReviews?: Array<{ state?: string }>;
+  title?: string;
+  body?: string;
+  mergedAt?: string;
 };
 
 export type Classification = {
@@ -211,15 +219,70 @@ export function classifyPrs(prs: RawPrJson[]): Classification | null {
   return status ? { status, reasons } : null;
 }
 
+// Build the auto-Outcome string for a merged PR so the poller can call
+// `tpm complete --outcome "<derived>"` inline instead of handing off to a
+// model-driven /tpm done round. Returns null when there's nothing useful to
+// derive (no merged PR, or title+body both empty) — caller then leaves the
+// task at `needs-close` for the manual escape hatch.
+//
+// Shape: PR title as the headline, body trimmed to everything before
+// "## Test plan" (case-insensitive) and minus the "🤖 Generated with Claude
+// Code" footer, followed by `Merged via <url> at <mergedAt>.` when those
+// fields are present.
+export function deriveCloseOutcome(prs: RawPrJson[]): string | null {
+  const merged = prs.find((p) => (p.state ?? "").toUpperCase() === "MERGED");
+  if (!merged) return null;
+
+  const title = (merged.title ?? "").trim();
+  const body = stripPrBody(merged.body ?? "");
+  if (!title && !body) return null;
+
+  const url = (merged.url ?? "").trim();
+  const mergedAt = (merged.mergedAt ?? "").trim();
+
+  const parts: string[] = [];
+  if (title) parts.push(title.endsWith(".") ? title : `${title}.`);
+  if (body) parts.push(body);
+  if (url) {
+    parts.push(mergedAt ? `Merged via ${url} at ${mergedAt}.` : `Merged via ${url}.`);
+  }
+  return parts.join("\n\n");
+}
+
+// Strip the "## Test plan" tail and the Claude Code footer from a PR body.
+// Keeps everything before "## Test plan" (case-insensitive) and drops any
+// trailing line containing "Generated with Claude Code" (with or without the
+// 🤖 prefix or markdown link wrapping). Exposed for unit tests.
+export function stripPrBody(body: string): string {
+  if (!body) return "";
+  let result = body.replace(/\r\n/g, "\n");
+
+  const testPlanMatch = result.match(/^##\s+test plan\b/im);
+  if (testPlanMatch && testPlanMatch.index !== undefined) {
+    result = result.slice(0, testPlanMatch.index);
+  }
+
+  result = result
+    .split("\n")
+    .filter((line) => !/generated with .*claude code/i.test(line))
+    .join("\n");
+
+  return result.trim();
+}
+
 // CLI entry: reads a JSON array of `gh pr view --json <PR_JSON_FIELDS>`
 // objects from stdin and writes:
 //
 //   DECIDE pr=<url> state=<S> review=<R> ci=<C> mergeable=<M> action=<A>
 //   ...one per PR...
 //   FLIP <new-status> <reason1>; <reason2>; ...
+//   OUTCOME_BEGIN
+//   <auto-Outcome lines>
+//   OUTCOME_END
 //
-// The FLIP line is omitted when no flip is warranted. The shell script logs
-// each DECIDE as an INFO line and uses FLIP to dispatch `tpm status` + `tpm log`.
+// The FLIP line is omitted when no flip is warranted. The OUTCOME block is
+// emitted only when the flip is `needs-close` AND deriveCloseOutcome returns
+// non-null — the shell script then calls `tpm complete --outcome` inline.
 function main(): void {
   const raw = readFileSync(0, "utf8");
   const parsed = JSON.parse(raw) as RawPrJson[];
@@ -232,6 +295,15 @@ function main(): void {
   const decision = classifyPrs(parsed);
   if (!decision) return;
   process.stdout.write(`FLIP ${decision.status} ${decision.reasons.join("; ")}\n`);
+  if (decision.status === "needs-close") {
+    const outcome = deriveCloseOutcome(parsed);
+    if (outcome !== null) {
+      process.stdout.write("OUTCOME_BEGIN\n");
+      process.stdout.write(outcome);
+      if (!outcome.endsWith("\n")) process.stdout.write("\n");
+      process.stdout.write("OUTCOME_END\n");
+    }
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

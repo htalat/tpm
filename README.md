@@ -128,13 +128,13 @@ tpm splits work across two inboxes:
 | `open`            | human       | `tpm inbox` / manual triage       |
 | `ready`           | agent       | `tpm next` → `/tpm <slug>`        |
 | `needs-feedback`  | agent       | `tpm next` → `/tpm feedback <slug>` |
-| `needs-close`     | agent       | `tpm next` → `/tpm done <slug>`   |
+| `needs-close`     | (transient) | poller auto-closes inline; manual `/tpm done <slug>` for stragglers |
 | `in-progress`     | passive     | (work happening or waiting on review) |
 | `needs-review`    | human       | `tpm inbox` (agent escalated)     |
 | `blocked`         | human       | `tpm inbox` (external dep)        |
 | `done` / `dropped`| —           | (terminal)                        |
 
-`tpm next` selection priority: `needs-feedback` > `needs-close` > `ready` (in-flight signal first, then sweep merged work, then new tasks). `tpm inbox` is the human equivalent: lists `needs-review`, `blocked`, and `open` cross-project, most actionable first.
+`tpm next` selection priority: `needs-feedback` > `ready` (in-flight signal first, then new tasks). `needs-close` isn't dispatched — the PR-signal poller flips a merged PR's task to `needs-close` then immediately calls `tpm complete --outcome "<derived from PR title + body>"` in the same tick. Stragglers (auto-close failed: PR body empty, Outcome already filled, lock contention) stay at `needs-close` for the manual `/tpm done <slug>` escape hatch — `tpm ls --status needs-close` surfaces them. `tpm inbox` lists `needs-review`, `blocked`, and `open` cross-project, most actionable first.
 
 Promotion `open` → `ready` is a deliberate human act. The canonical way is the `/tpm discuss <slug>` Claude Code skill mode, which shapes the task body via conversation and only flips status on explicit confirmation. Manual frontmatter edits also work.
 
@@ -148,9 +148,9 @@ stateDiagram-v2
     ready --> in_progress: /tpm next or /tpm <slug>
     ready --> blocked: external dep noted
 
-    in_progress --> done: /tpm done (PR merged)
+    in_progress --> done: poller — PR merged (auto-close inline)
     in_progress --> needs_feedback: poller — conflict / CI red / behind / threads
-    in_progress --> needs_close: poller — PR merged
+    in_progress --> needs_close: poller — auto-close failed (escape hatch)
     in_progress --> needs_review: poller — changes requested
     in_progress --> blocked: external dep
     in_progress --> dropped
@@ -158,7 +158,7 @@ stateDiagram-v2
     needs_feedback --> in_progress: /tpm feedback (round done)
     needs_feedback --> needs_review: agent escalates
 
-    needs_close --> done: /tpm done (auto-fill Outcome)
+    needs_close --> done: manual /tpm done (escape hatch)
 
     needs_review --> in_progress: human pushed update
     needs_review --> dropped
@@ -171,7 +171,7 @@ stateDiagram-v2
     dropped --> [*]
 ```
 
-The poller that flips `in-progress` → `needs-feedback` / `needs-close` / `needs-review` ships at `scripts/recurring/check-pr-signal.sh` — see [Recurring scripts](#recurring-scripts) below.
+The poller that flips `in-progress` → `done` (inline auto-close on merge) / `needs-feedback` / `needs-review` ships at `scripts/recurring/check-pr-signal.sh` — see [Recurring scripts](#recurring-scripts) below.
 
 ### Drain the agent queue: three flavors
 
@@ -265,7 +265,7 @@ Tasks don't have to be human-authored. A recurring script harvests state on a cl
 Two ship in this repo:
 
 - **`scripts/recurring/template.sh`** — copy this, fill in the four TODO blocks (source command, slug derivation, optional Context/Plan population, summary line). Idempotent on re-run via the `tpm context "$PROJECT/$slug" >/dev/null 2>&1` existence check.
-- **`scripts/recurring/check-pr-signal.sh`** — the PR-signal poller. Walks every `in-progress` task with non-empty `prs:`, queries `gh` (v0 supports `host: github` only; ado projects skipped with a warning), and flips status to `needs-feedback` (merge conflict / CI red / branch behind / open threads — agent attempts the rebase and other fixes via `/tpm feedback`), `needs-close` (any linked PR merged — auto-routes to `/tpm done`), or `needs-review` (`CHANGES_REQUESTED` — only signal that needs a human up front).
+- **`scripts/recurring/check-pr-signal.sh`** — the PR-signal poller. Walks every `in-progress` task with non-empty `prs:`, queries `gh` (v0 supports `host: github` only; ado projects skipped with a warning), and flips status to `needs-feedback` (merge conflict / CI red / branch behind / open threads — agent attempts the rebase and other fixes via `/tpm feedback`), `needs-review` (`CHANGES_REQUESTED` — only signal that needs a human up front), or **auto-closes inline** when any linked PR merged: flips to `needs-close`, derives an Outcome from PR title + body (Test plan + Claude Code footer stripped), and calls `tpm complete --outcome "<derived>"` in the same tick. No claude session spawned, no orchestrator wait. If the inline auto-close fails (body empty, Outcome already filled, lock contention) the task stays at `needs-close` for manual `/tpm done <slug>`.
 
 Customize the template for your own intake (review my open PRs, sweep stale dependency reports, file an alert-driven task, etc.):
 
