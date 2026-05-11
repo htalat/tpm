@@ -5,10 +5,18 @@
 # CLI (`gh` for GitHub) for each PR, then hands the gathered JSON to
 # `src/pr_signal.ts` for classification:
 #
-#   - any linked PR merged                                 -> needs-close    (agent close-out)
+#   - any linked PR merged                                 -> needs-close    (then auto-close inline)
 #   - merge conflict / CI red / behind main / reviewer cmt -> needs-feedback (agent inbox)
 #   - CHANGES_REQUESTED                                    -> needs-review   (human inbox)
 #   - otherwise                                            -> leave in-progress
+#
+# For the merged case the classifier also emits an OUTCOME block (PR title +
+# stripped body + merge link) which this script feeds straight into
+# `tpm complete --outcome` so the task closes in the same tick. Skipping the
+# claude/skill spawn turns a 90-minute drain into a single poller tick. The
+# `needs-close` flip happens first (preserves audit trail; one log line); if
+# `tpm complete` fails the task stays at `needs-close` for the manual
+# `/tpm done <slug>` escape hatch to pick up.
 #
 # Idempotent: re-running over an already-flipped task is a no-op (the task is
 # no longer `in-progress` once flipped, so the filter excludes it).
@@ -139,11 +147,22 @@ while IFS= read -r slug; do
   }
 
   # Parse classifier output: zero or more DECIDE lines, then optionally one
-  # FLIP line. Log every DECIDE as a structured INFO line; capture FLIP for
-  # the mutation step.
+  # FLIP line, then optionally an OUTCOME_BEGIN/_END block (only for
+  # needs-close flips with a derivable Outcome). Log every DECIDE as a
+  # structured INFO line; capture FLIP + OUTCOME for the mutation step.
   flip_status=""
   flip_reasons=""
+  outcome=""
+  in_outcome=0
   while IFS= read -r line; do
+    if [ "$in_outcome" = "1" ]; then
+      if [ "$line" = "OUTCOME_END" ]; then
+        in_outcome=0
+        continue
+      fi
+      outcome+="$line"$'\n'
+      continue
+    fi
     [ -n "$line" ] || continue
     case "$line" in
       "DECIDE "*)
@@ -154,6 +173,9 @@ while IFS= read -r slug; do
         flip_status=${rest%% *}
         flip_reasons=${rest#"$flip_status" }
         ;;
+      "OUTCOME_BEGIN")
+        in_outcome=1
+        ;;
     esac
   done <<< "$classifier_out"
 
@@ -163,14 +185,37 @@ while IFS= read -r slug; do
   fi
 
   if [ "$DRY_RUN" = "1" ]; then
-    log_info "would flip $slug -> $flip_status ($flip_reasons)"
+    if [ "$flip_status" = "needs-close" ] && [ -n "$outcome" ]; then
+      log_info "would auto-close $slug ($flip_reasons)"
+    else
+      log_info "would flip $slug -> $flip_status ($flip_reasons)"
+    fi
     flipped=$((flipped + 1))
     continue
   fi
 
   tpm status "$slug" "$flip_status" >/dev/null
   tpm log    "$slug" "poller — $flip_reasons" >/dev/null
-  log_info "flipped $slug -> $flip_status ($flip_reasons)"
+
+  # Auto-close inline when a linked PR merged AND we derived an Outcome from
+  # the PR body. `tpm complete` flips needs-close -> done, stamps closed,
+  # appends the Log line, archives per type. On failure (e.g. Outcome already
+  # has content, lock contention) the task stays at needs-close for manual
+  # /tpm done <slug>.
+  if [ "$flip_status" = "needs-close" ] && [ -n "$outcome" ]; then
+    outcome=${outcome%$'\n'}
+    err_tmp=$(mktemp)
+    if tpm complete "$slug" --outcome "$outcome" >/dev/null 2>"$err_tmp"; then
+      rm -f "$err_tmp"
+      log_info "auto-closed $slug ($flip_reasons)"
+    else
+      rc=$?
+      log_warn "auto-close failed $slug (tpm complete exit=$rc) — $(head -2 "$err_tmp" | tr '\n' ' ') — leaving at needs-close"
+      rm -f "$err_tmp"
+    fi
+  else
+    log_info "flipped $slug -> $flip_status ($flip_reasons)"
+  fi
   flipped=$((flipped + 1))
 done <<< "$slugs"
 

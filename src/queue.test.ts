@@ -126,41 +126,31 @@ test("selectCandidates: returns full sorted list (used by tpm next --claim fall-
   ]);
 });
 
-test("selectNext: needs-close sits between needs-feedback and ready", () => {
-  // Feedback is most urgent (in-flight signal); needs-close sweeps merged
-  // work before new ready tasks pile in-progress hangs.
+test("selectNext: needs-close is NOT in tpm next priority (poller auto-closes inline)", () => {
+  // Task 045: the poller calls `tpm complete` right after the needs-close
+  // flip, so `tpm next` no longer routes needs-close work to an agent. Any
+  // task that lingers at needs-close (auto-close failed — body empty, lock
+  // contention) is a manual `/tpm done <slug>` case.
   const p = project("a", [
-    task("001-ready",    "ready",          "2026-01-01 10:00 PDT"),
-    task("002-close",    "needs-close",    "2026-05-01 10:00 PDT"),
-    task("003-feedback", "needs-feedback", "2026-05-09 10:00 PDT"),
+    task("001-close",    "needs-close",    "2026-01-01 10:00 PDT"),
+    task("002-ready",    "ready",          "2026-05-09 10:00 PDT"),
+  ]);
+  const list = selectCandidates([p]);
+  assert.deepEqual(list.map(c => c.task.slug), ["002-ready"]);
+  assert.equal(selectNext([p])?.task.slug, "002-ready");
+});
+
+test("selectNext: needs-feedback > ready when both are present", () => {
+  // Regression guard for the simplified priority after task 045.
+  const p = project("a", [
+    task("001-ready",     "ready",          "2026-01-01 10:00 PDT"),
+    task("002-feedback",  "needs-feedback", "2026-05-09 10:00 PDT"),
   ]);
   const list = selectCandidates([p]);
   assert.deepEqual(list.map(c => c.task.slug), [
-    "003-feedback",
-    "002-close",
+    "002-feedback",
     "001-ready",
   ]);
-});
-
-test("selectNext: needs-close wins over ready even if older ready exists", () => {
-  // Regression: don't let an old ready task starve a fresh merged PR's
-  // close-out — the merged PR is time-sensitive (branch/remote cleanup,
-  // archive hygiene).
-  const p = project("a", [
-    task("001-old-ready", "ready",       "2026-01-01 10:00 PDT"),
-    task("002-fresh-close", "needs-close", "2026-05-09 10:00 PDT"),
-  ]);
-  const pick = selectNext([p]);
-  assert.equal(pick?.task.slug, "002-fresh-close");
-});
-
-test("selectNext: --autonomous gate also applies to needs-close", () => {
-  const p = project("a", [
-    task("001-no-flag",   "needs-close", "2026-01-01 10:00 PDT"),
-    task("002-with-flag", "needs-close", "2026-01-02 10:00 PDT", { allow_orchestrator: true }),
-  ]);
-  const pick = selectNext([p], { autonomous: true });
-  assert.equal(pick?.task.slug, "002-with-flag");
 });
 
 test("selectCandidates: empty when no eligible tasks", () => {

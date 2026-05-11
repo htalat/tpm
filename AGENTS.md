@@ -25,7 +25,7 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
   - `ready` = agent's queue (Plan is well-specified, an agent can pick it up). Promoted via the **shape an open task** action.
   - `in-progress` = work in flight; for `type: pr` tasks this includes the period after the PR is opened, awaiting merge.
   - `needs-feedback` = agent's queue for in-flight PRs — merge conflict, CI red, branch behind main, or open review threads with a fixable suggestion. Routed to the **handle PR feedback** action. Set by the PR-signal poller (`scripts/recurring/check-pr-signal.sh`) or by the agent during a feedback round.
-  - `needs-close` = agent's queue for merged PRs awaiting close-out. Routed to the **close out** action. Set by the PR-signal poller when a linked PR transitions to `MERGED` so a hung-in-progress task doesn't accumulate.
+  - `needs-close` = transient/escape-hatch state for merged PRs. The PR-signal poller flips a task to `needs-close` and immediately calls `tpm complete --outcome "<derived from PR title + body>"` in the same tick, so under normal operation the task is `done` by the time anyone looks. A task only lingers at `needs-close` when the inline auto-close fails (PR body empty, `Outcome` already filled, lock contention) — surface those with `tpm ls --status needs-close` and run the **close out** action manually.
   - `needs-review` = human's queue — agent escalated (e.g. design pushback on a thread, `CHANGES_REQUESTED`, a merge conflict the agent couldn't resolve cleanly). Surfaced via `tpm inbox`.
   - `blocked` = human's queue, external dep. Surfaced via `tpm inbox`.
   - Parent containers display a roll-up status (all children done → done; any in-progress → in-progress; else parent's declared status). The roll-up is display only — never written to frontmatter.
@@ -50,13 +50,13 @@ Statuses split into two queues. The agent works `ready` and `needs-feedback`; th
 | `open`            | human       | `tpm inbox` / manual triage       |
 | `ready`           | agent       | `tpm next` → start a task         |
 | `needs-feedback`  | agent       | `tpm next` → handle PR feedback   |
-| `needs-close`     | agent       | `tpm next` → close out            |
+| `needs-close`     | (transient) | poller auto-closes inline; manual `/tpm done <slug>` for stragglers |
 | `in-progress`     | passive     | (work happening or waiting on review) |
 | `needs-review`    | human       | `tpm inbox` (agent escalated)     |
 | `blocked`         | human       | `tpm inbox` (external dep)        |
 | `done` / `dropped`| —           | (terminal)                        |
 
-`tpm next` selection priority: `needs-feedback` > `needs-close` > `ready`. The PR-signal poller (`scripts/recurring/check-pr-signal.sh`) flips `in-progress` tasks into `needs-feedback` (merge conflict, CI red, behind main, open threads), `needs-review` (CHANGES_REQUESTED), or `needs-close` (any linked PR merged — the work shipped, sweep the close-out). The agent's escalation path during the **handle PR feedback** action also flips `needs-feedback` → `needs-review` when the signal isn't agent-addressable (including a merge conflict the agent couldn't resolve).
+`tpm next` selection priority: `needs-feedback` > `ready`. The PR-signal poller (`scripts/recurring/check-pr-signal.sh`) flips `in-progress` tasks into `needs-feedback` (merge conflict, CI red, behind main, open threads) or `needs-review` (CHANGES_REQUESTED), and **auto-closes merged PRs inline**: a MERGED PR flips the task to `needs-close` then immediately calls `tpm complete --outcome "<derived>"` in the same tick (no model invocation, no orchestrator wait). The agent's escalation path during the **handle PR feedback** action also flips `needs-feedback` → `needs-review` when the signal isn't agent-addressable (including a merge conflict the agent couldn't resolve).
 
 ```mermaid
 stateDiagram-v2
@@ -68,9 +68,9 @@ stateDiagram-v2
     ready --> in_progress: tpm next or start a task
     ready --> blocked: external dep noted
 
-    in_progress --> done: close out (PR merged)
+    in_progress --> done: poller — PR merged (auto-close inline)
     in_progress --> needs_feedback: poller — conflict / CI red / behind / threads
-    in_progress --> needs_close: poller — PR merged
+    in_progress --> needs_close: poller — auto-close failed (escape hatch)
     in_progress --> needs_review: poller — changes requested
     in_progress --> blocked: external dep
     in_progress --> dropped
@@ -78,7 +78,7 @@ stateDiagram-v2
     needs_feedback --> in_progress: handle PR feedback (round done)
     needs_feedback --> needs_review: agent escalates
 
-    needs_close --> done: close out (auto-fill Outcome)
+    needs_close --> done: manual /tpm done (escape hatch)
 
     needs_review --> in_progress: human pushed update
     needs_review --> dropped
@@ -138,12 +138,11 @@ This is the canonical way to move a task from `open` to `ready`. A human can als
 
 ### Pick the next ready task and run it
 Auto-select mode. Resolves the next eligible leaf task (parents are skipped) and dispatches the right action based on status.
-1. Run `tpm next` (optionally with `--project <slug>`). It prints a qualified slug on success or exits non-zero if nothing is eligible. Selection priority: `needs-feedback` > `needs-close` > `ready`.
+1. Run `tpm next` (optionally with `--project <slug>`). It prints a qualified slug on success or exits non-zero if nothing is eligible. Selection priority: `needs-feedback` > `ready`. (`needs-close` isn't in the priority — the poller auto-closes merged PRs inline, so the agent queue doesn't dispatch close-outs. Stragglers go through the manual **close out** action via `/tpm done <slug>`.)
 2. If non-zero, surface the message and stop. Don't fall back to `open` tasks — the human needs to promote one via the shaping action first.
 3. On success, look up the task's status (`tpm context <slug>` shows it). Dispatch:
    - `ready` → **start a task** action
    - `needs-feedback` → **handle PR feedback** action
-   - `needs-close` → **close out** action
 4. After the action returns, the next `tpm next` invocation may pick a different task — don't loop here; the wrapper (cron, slash command) controls cadence.
 
 `tpm next --autonomous` is for scheduled/unattended runs only — it filters to tasks with `allow_orchestrator: true`. Manual invocations don't pass `--autonomous`.
@@ -199,7 +198,7 @@ Don't:
    - `prs:` empty (direct-push task) → skip merge detection.
    - **Shortcut:** if the task's current status is `needs-close`, the poller has already verified a linked PR merged — you can skip the `gh pr view ... --jq '.state'` round trip and proceed directly.
 3. Fill `## Outcome` with what shipped, what changed, what was learned. Reference PRs. (Free-form prose: edit the file directly. The CLI will refuse to overwrite an Outcome that already has content, so author it before the next step.)
-   - **Autonomous fill (status `needs-close`):** when invoked from the **pick the next ready task** action on a `needs-close` task, you may fill `## Outcome` from PR signal (title + body + recent commits via `gh pr view <url> --json title,body,commits`) without prompting the user. The merge already shipped; a faithful summary of the PR description is an acceptable Outcome. Reference each merged PR.
+   - **Autonomous fill (status `needs-close`):** stragglers reach this action only when the poller's inline auto-close failed (PR body empty, `Outcome` already filled, lock contention). You may still fill `## Outcome` from PR signal (title + body + recent commits via `gh pr view <url> --json title,body,commits`) without prompting the user — the merge already shipped; a faithful summary of the PR description is an acceptable Outcome. Reference each merged PR.
 4. Run `tpm complete <slug>`. This flips status to `done`, stamps `closed`, appends a `closed` Log line, and **archives by type**: `pr`/`chore` move under `tasks/archive/`; `investigation`/`spike` stay at the canonical path so `tpm ls --status done` and `tpm context <slug>` continue to find them. Override the default with `--archive` or `--no-archive` when needed.
 5. **Cleanup local branch** (when at least one linked PR was merged). For each merged PR:
    - `BRANCH=$(gh pr view <url> --json headRefName --jq '.headRefName')`. Skip if `BRANCH` equals the project's default branch (typically `main`).
