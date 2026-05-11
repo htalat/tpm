@@ -121,19 +121,64 @@ test("classifyPrs: draft PR -> ignored even with red CI", () => {
   assert.equal(result, null);
 });
 
-test("classifyPrs: closed / merged PRs ignored", () => {
-  for (const state of ["MERGED", "CLOSED"]) {
-    const result = classifyPrs([
-      {
-        url: "https://x/1",
-        state,
-        isDraft: false,
-        mergeStateStatus: "DIRTY",
-        statusCheckRollup: [{ conclusion: "FAILURE" }],
-      },
-    ]);
-    assert.equal(result, null, `state=${state}`);
-  }
+test("classifyPrs: closed (not merged) PRs ignored", () => {
+  // Abandoned PRs (state=CLOSED without merge) are not actionable signal —
+  // the human decides whether to drop the task or reopen the PR.
+  const result = classifyPrs([
+    {
+      url: "https://x/1",
+      state: "CLOSED",
+      isDraft: false,
+      mergeStateStatus: "DIRTY",
+      statusCheckRollup: [{ conclusion: "FAILURE" }],
+    },
+  ]);
+  assert.equal(result, null);
+});
+
+test("classifyPrs: merged PR -> needs-close", () => {
+  const result = classifyPrs([
+    {
+      url: "https://x/1",
+      state: "MERGED",
+      isDraft: false,
+    },
+  ]);
+  assert.deepEqual(result, {
+    status: "needs-close",
+    reasons: ["merged https://x/1"],
+  });
+});
+
+test("classifyPrs: merged wins over in-flight feedback signal on another PR", () => {
+  // Mixed multi-PR task: primary merged, secondary still draft / failing.
+  // The merge means the work shipped — close the task; spin up a new one
+  // for follow-up work if needed.
+  const result = classifyPrs([
+    { url: "https://x/1", state: "MERGED", isDraft: false },
+    {
+      url: "https://x/2",
+      state: "OPEN",
+      isDraft: false,
+      mergeStateStatus: "DIRTY",
+      statusCheckRollup: [{ conclusion: "FAILURE" }],
+    },
+  ]);
+  assert.deepEqual(result, {
+    status: "needs-close",
+    reasons: ["merged https://x/1"],
+  });
+});
+
+test("classifyPrs: multiple merged PRs -> all listed in reasons", () => {
+  const result = classifyPrs([
+    { url: "https://x/1", state: "MERGED", isDraft: false },
+    { url: "https://x/2", state: "MERGED", isDraft: false },
+  ]);
+  assert.deepEqual(result, {
+    status: "needs-close",
+    reasons: ["merged https://x/1", "merged https://x/2"],
+  });
 });
 
 test("classifyPrs: needs-review wins over needs-feedback across PRs", () => {
