@@ -53,6 +53,7 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
 | `/tpm new <project> <slug>`         | Scaffold a task                       |
 | `/tpm new project <slug>`           | Scaffold a project                    |
 | `/tpm fold <slug>`                  | Fold a task to folder-form            |
+| `/tpm reparent <slug> <new-parent \| --top>` | Reparent a task                |
 | `/tpm ls`, `/tpm inbox`, `/tpm report`, `/tpm root`, `/tpm path`, `/tpm context`, `/tpm init` | Pass through to the corresponding `tpm` subcommand |
 
 Read `$ARGUMENTS` and pick the matching action. If empty, default to "situational awareness".
@@ -166,12 +167,20 @@ Two args after `new` ⇒ task. Three with leading `project` ⇒ project.
 ### Fold a task to folder-form (`/tpm fold <slug>`)
 Use when a task needs supporting files (subtasks, scratch notes, screenshots) alongside it. `tpm fold <task>` rewrites `tasks/NNN-slug.md` to `tasks/NNN-slug/task.md`. Idempotent. Children can then be added with `tpm new task <project> <child> --parent <slug>`.
 
+### Reparent a task (`/tpm reparent <slug> <new-parent | --top>`)
+Use when a task ends up in the wrong place — needs to become a child of an existing parent, move between parents, or be promoted back to top-level.
+
+- `tpm reparent <task> <new-parent>` moves a task under a new parent. Folds the new parent automatically if it's still file-form. Renumbers within the destination container.
+- `tpm reparent <task> --top` promotes a child back to top-level (drops `parent:` from frontmatter).
+
+Refuses to move a task that has children (would create grandchildren), a folder-form task (would orphan supporting files — flatten manually first), or any move that would land the task under a child task. Also refuses no-op moves. Cross-project moves aren't supported — `<new-parent>` resolves within the source task's project.
+
 ### Pass-through (`/tpm ls`, `/tpm report`, `/tpm root`, `/tpm path`, `/tpm context`, `/tpm init`)
 Just run the corresponding `tpm` subcommand and print the result.
 
 ## Conventions
 
-- **Prefer CLI verbs over manual file edits for state changes.** `tpm start | ready | complete | block | reopen | revert | log | pr | status | archive | fold | new` cover frontmatter and Log mutations. Manual file edits are only for body-text authoring (`## Context`, `## Plan`, `## Outcome`).
+- **Prefer CLI verbs over manual file edits for state changes.** `tpm start | ready | complete | block | reopen | revert | log | pr | status | archive | fold | reparent | new` cover frontmatter and Log mutations. Manual file edits are only for body-text authoring (`## Context`, `## Plan`, `## Outcome`).
 - When you do edit a task file directly, only touch the four canonical body sections. Preserve key order in frontmatter.
 - Timestamps: the CLI verbs stamp `tpm now` automatically. If you need to write one yourself, use `tpm now` (format `YYYY-MM-DD HH:MM <ZZZ>` in the configured TZ — defaults to Pacific). Don't guess or hand-format.
 - Don't manually create project/task files where `tpm new` would do it.

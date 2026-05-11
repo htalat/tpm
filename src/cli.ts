@@ -114,6 +114,32 @@ try {
       console.log(`Folded ${qualifySlug(match.project.slug, match.task)} -> ${path}`);
       break;
     }
+    case "reparent": {
+      const root = findRoot();
+      const taskQuery = args[1];
+      const parentQuery = args[2];
+      if (!taskQuery || !parentQuery) usage("tpm reparent <task> <new-parent | --top>");
+      const projects = loadProjects(root);
+      const match = findTask(projects, taskQuery);
+      if (!match) throw new Error(`No task matched "${taskQuery}". Try \`tpm ls\`.`);
+      let newParent: Task | null = null;
+      if (parentQuery !== "--top") {
+        if (parentQuery.startsWith("-")) {
+          usage('tpm reparent <task> <new-parent | --top>  (parent slug cannot start with "-"; use --top to promote)');
+        }
+        // Resolve new-parent within the source task's project. Keeps the move
+        // local — cross-project moves aren't supported in v0.
+        const parentMatch = findTask([match.project], parentQuery);
+        if (!parentMatch) {
+          throw new Error(`No task matched new-parent "${parentQuery}" in project ${match.project.slug}.`);
+        }
+        newParent = parentMatch.task;
+      }
+      const r = mutate.reparent(match.task, newParent);
+      console.log(r.message);
+      console.log(`-> ${r.newPath}`);
+      break;
+    }
     case "context": {
       const root = findRoot();
       const query = args[1];
@@ -697,6 +723,7 @@ Usage:
   tpm disallow <task>                        set allow_orchestrator: false
   tpm archive <task | project/task>          move a done/dropped task to tasks/archive/
   tpm fold <task | project/task>             promote a file-form task to folder-form (idempotent)
+  tpm reparent <task> <new-parent | --top>   move a task under a new parent (or to top-level); folds the new parent if needed
   tpm lock acquire <task> --as <id>          claim a per-task lock (atomic O_CREAT|O_EXCL)
   tpm lock release <task> --as <id> [--force]  release a per-task lock
   tpm lock heartbeat <task> --as <id>        refresh a held lock so stale-lock sweeps don't reclaim it

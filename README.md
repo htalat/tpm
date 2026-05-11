@@ -412,6 +412,7 @@ tpm log <task> "<message>"                # append a single timestamped Log line
 tpm pr <task> <url>                       # add URL to prs:, log opened PR
 tpm archive <task | project/task>         # move a done/dropped task (or whole folder-form parent) to tasks/archive/
 tpm fold <task | project/task>            # promote a file-form task to folder-form (idempotent)
+tpm reparent <task> <new-parent | --top>  # move a task under a new parent (or to top-level); folds the new parent if needed
 tpm next [--project <slug>] [--autonomous] [--claim <id>]  # print next leaf task (--claim atomically locks it); exits non-zero if none/all-locked
 tpm inbox                                 # list human-queue tasks (needs-review, blocked, open) cross-project
 tpm orchestrate [--minutes <N>] [--claude <path>] [--task <slug>]  # claim next --autonomous (or use --task pre-claimed) and run claude with a hard time bound
@@ -540,10 +541,14 @@ tpm fold <task>                                  # promote NNN-slug.md → NNN-s
 tpm new task <project> <child> --parent <slug>   # creates a child inside the parent's folder
                                                  # folds the parent automatically if needed
                                                  # numbering is scoped to the parent folder
+tpm reparent <task> <new-parent>                 # move a top-level task under a parent
+                                                 # (or a child between parents); folds the new parent if needed;
+                                                 # renumbers within the destination
+tpm reparent <task> --top                        # promote a child back to top-level (drops parent: from frontmatter)
 tpm ls --flat                                    # flatten the tree (skip indentation)
 ```
 
-Only one level of nesting is supported — `--parent` rejects an attempt to nest under a child task.
+Only one level of nesting is supported — both `--parent` and `reparent` reject an attempt to nest under a child task. `reparent` also refuses to move a task that is itself a parent (would create grandchildren) or a folder-form task (would orphan supporting files — flatten manually first).
 
 ### Slug resolution
 
