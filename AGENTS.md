@@ -24,9 +24,9 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
   - `open` = author's queue (not yet shaped for an agent).
   - `ready` = agent's queue (Plan is well-specified, an agent can pick it up). Promoted via the **shape an open task** action.
   - `in-progress` = work in flight; for `type: pr` tasks this includes the period after the PR is opened, awaiting merge.
-  - `needs-feedback` = agent's queue for in-flight PRs — CI red, branch behind main, or open review threads with a fixable suggestion. Routed to the **handle PR feedback** action. Set by the PR-signal poller (`scripts/recurring/check-pr-signal.sh`) or by the agent during a feedback round.
+  - `needs-feedback` = agent's queue for in-flight PRs — merge conflict, CI red, branch behind main, or open review threads with a fixable suggestion. Routed to the **handle PR feedback** action. Set by the PR-signal poller (`scripts/recurring/check-pr-signal.sh`) or by the agent during a feedback round.
   - `needs-close` = agent's queue for merged PRs awaiting close-out. Routed to the **close out** action. Set by the PR-signal poller when a linked PR transitions to `MERGED` so a hung-in-progress task doesn't accumulate.
-  - `needs-review` = human's queue — agent escalated (e.g. design pushback on a thread, merge conflict requiring judgment, `CHANGES_REQUESTED`). Surfaced via `tpm inbox`.
+  - `needs-review` = human's queue — agent escalated (e.g. design pushback on a thread, `CHANGES_REQUESTED`, a merge conflict the agent couldn't resolve cleanly). Surfaced via `tpm inbox`.
   - `blocked` = human's queue, external dep. Surfaced via `tpm inbox`.
   - Parent containers display a roll-up status (all children done → done; any in-progress → in-progress; else parent's declared status). The roll-up is display only — never written to frontmatter.
 - **Types**: `pr | investigation | spike | chore`
@@ -56,7 +56,7 @@ Statuses split into two queues. The agent works `ready` and `needs-feedback`; th
 | `blocked`         | human       | `tpm inbox` (external dep)        |
 | `done` / `dropped`| —           | (terminal)                        |
 
-`tpm next` selection priority: `needs-feedback` > `needs-close` > `ready`. The PR-signal poller (`scripts/recurring/check-pr-signal.sh`) flips `in-progress` tasks into `needs-feedback` (CI red, behind main, open threads), `needs-review` (CHANGES_REQUESTED, merge conflict), or `needs-close` (any linked PR merged — the work shipped, sweep the close-out). The agent's escalation path during the **handle PR feedback** action also flips `needs-feedback` → `needs-review` when the signal isn't agent-addressable.
+`tpm next` selection priority: `needs-feedback` > `needs-close` > `ready`. The PR-signal poller (`scripts/recurring/check-pr-signal.sh`) flips `in-progress` tasks into `needs-feedback` (merge conflict, CI red, behind main, open threads), `needs-review` (CHANGES_REQUESTED), or `needs-close` (any linked PR merged — the work shipped, sweep the close-out). The agent's escalation path during the **handle PR feedback** action also flips `needs-feedback` → `needs-review` when the signal isn't agent-addressable (including a merge conflict the agent couldn't resolve).
 
 ```mermaid
 stateDiagram-v2
@@ -69,9 +69,9 @@ stateDiagram-v2
     ready --> blocked: external dep noted
 
     in_progress --> done: close out (PR merged)
-    in_progress --> needs_feedback: poller — CI red / rebase / threads
+    in_progress --> needs_feedback: poller — conflict / CI red / behind / threads
     in_progress --> needs_close: poller — PR merged
-    in_progress --> needs_review: poller — changes requested / conflict
+    in_progress --> needs_review: poller — changes requested
     in_progress --> blocked: external dep
     in_progress --> dropped
 
@@ -166,15 +166,19 @@ For the in-flight phase of a `type: pr` task — the PR is open, the task is `in
    - GitHub: `gh pr checkout <url>`
    - ADO: fetch and check out the source branch (`git fetch origin && git checkout <branch>`)
 6. **Apply the fix** by category:
-   - **Stale / conflict**: `git fetch origin main && git rebase origin/main`. If conflicts are non-trivial (more than the rebase tool can auto-resolve, or a semantic merge), **escalate** — see step 8. If clean, continue.
+   - **Stale (`BEHIND`)**: `git fetch origin main && git rebase origin/main`. Clean rebase → continue. Conflicts → drop into the conflict flow below.
+   - **Merge conflict (`DIRTY`)**: `git fetch origin main && git rebase origin/main`. For each conflict:
+     - **Skip on sight, escalate**: binary file conflicts (`git status` reports the path with no `<<<<<<<` markers to reason about). `git rebase --abort` and go to step 8.
+     - **Resolve where intent is clear**: read the conflict markers and apply the resolution that preserves both sides' intent. Common mechanical patterns: both sides added imports → take both; adjacent edits to the same line → merge; one side renamed/moved a symbol, the other edited the original → apply the edit at the new location.
+     - **Verify with tests (the arbiter)**: after resolving, run the workflow doc's test command. If tests pass, `git add` the resolved files and `git rebase --continue`. If tests fail, the resolution is wrong (or the conflict is semantically ambiguous) — `git rebase --abort` and escalate (step 8). Don't commit a resolution you can't verify; the Log entry tells the human which files to look at.
    - **CI failures**: pull the failed log (`gh run view <run-id> --log-failed` or the ADO equivalent). Fix the failing test/build. Commit with a clear message ("Fix: <what failed> — <one-line cause>").
    - **Review threads**: read each unresolved thread. For threads with a concrete code suggestion, apply the fix and commit. When the fix matches the suggestion exactly (e.g., reviewer pasted code, you applied it verbatim), you may resolve the thread (`gh api repos/<owner>/<repo>/pulls/<n>/threads/<id>/resolve` or the ADO equivalent). For ambiguous, debatable, or design-level threads, **don't apply a guess** — escalate.
 7. **Push** the fix commits: `git push`. After a rebase, use `git push --force-with-lease` (never plain `--force` — it can clobber a commit the reviewer pushed concurrently).
 8. **Escalate to `needs-review`** when the signal isn't agent-addressable:
-   - Non-trivial merge conflict
+   - Merge conflict the agent can't resolve cleanly (tests fail after resolution, binary conflict, or semantically ambiguous)
    - Review thread that's design pushback, ambiguous, or debatable
    - `CHANGES_REQUESTED` with comments you can't translate to a concrete fix
-   To escalate: run `tpm status <slug> needs-review`, then `tpm log <slug> "escalated — <one-line reason, link the thread or run>"`. Surface to the user and stop. Don't try to argue with a reviewer in chat or guess at intent.
+   To escalate: run `tpm status <slug> needs-review`, then `tpm log <slug> "escalated — <one-line reason, link the thread or run>"`. For a rebase escalation, the one-liner should name the conflicting files so the human knows where to look (e.g. `rebase escalation — conflicts in src/foo.ts, src/bar.ts: tests fail after auto-resolve`). Surface to the user and stop. Don't try to argue with a reviewer in chat or guess at intent.
 9. **Log + status** after a successful round:
    - `tpm log <slug> "addressed feedback — <one-line summary of what shipped this round>"`
    - If the task was `needs-feedback`, run `tpm status <slug> in-progress` (the round is done; PR returns to passive-wait until the next signal lands or it merges). If already `in-progress`, this is a no-op.

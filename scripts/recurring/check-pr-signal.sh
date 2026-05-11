@@ -5,10 +5,10 @@
 # CLI (`gh` for GitHub) for each PR, then hands the gathered JSON to
 # `src/pr_signal.ts` for classification:
 #
-#   - any linked PR merged                     -> needs-close    (agent close-out)
-#   - CI red / behind main / reviewer comments -> needs-feedback (agent inbox)
-#   - CHANGES_REQUESTED / merge conflict       -> needs-review   (human inbox)
-#   - otherwise                                -> leave in-progress
+#   - any linked PR merged                                 -> needs-close    (agent close-out)
+#   - merge conflict / CI red / behind main / reviewer cmt -> needs-feedback (agent inbox)
+#   - CHANGES_REQUESTED                                    -> needs-review   (human inbox)
+#   - otherwise                                            -> leave in-progress
 #
 # Idempotent: re-running over an already-flipped task is a no-op (the task is
 # no longer `in-progress` once flipped, so the filter excludes it).
