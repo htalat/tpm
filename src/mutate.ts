@@ -109,10 +109,23 @@ export function addPr(task: Task, url: string): MutateResult {
     return { message: `${task.slug}: PR already linked (${trimmed})` };
   }
   data.prs = [...existing, trimmed];
-  const newBody = appendLog(body, `${now()}: opened PR ${trimmed}`);
+  let newBody = appendLog(body, `${now()}: opened PR ${trimmed}`);
+  // Attaching a PR is the agent's handoff: next move is on the human
+  // (review + merge). Flip in-progress -> needs-review so the task lands in
+  // `tpm inbox`. Other statuses are left alone — needs-feedback means a
+  // round is still in flight, needs-review/blocked are already on the
+  // human side, terminal states shouldn't transition.
+  const current = String(data.status ?? "");
+  let flipped = false;
+  if (current === "in-progress") {
+    data.status = "needs-review";
+    newBody = appendLog(newBody, `${now()}: status -> needs-review (PR opened, awaiting review)`);
+    flipped = true;
+  }
   writeFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
-  return { message: `${task.slug}: linked ${trimmed}` };
+  const suffix = flipped ? " — status -> needs-review" : "";
+  return { message: `${task.slug}: linked ${trimmed}${suffix}` };
 }
 
 // Toggle the autonomous-orchestrator gate on a task. Parents aren't claimable

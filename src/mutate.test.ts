@@ -295,9 +295,80 @@ test("pr: dedupes — same URL is a no-op", () => {
     const t = loadTask(root, "alpha", "001-a");
     addPr(t, "https://github.com/x/y/pull/1");
     const before = readFileSync(t.path, "utf8");
-    const r = addPr(t, "https://github.com/x/y/pull/1");
+    // Reload — the first call mutated the task in place (to needs-review).
+    const t2 = loadTask(root, "alpha", "001-a");
+    const r = addPr(t2, "https://github.com/x/y/pull/1");
     assert.match(r.message, /already linked/);
     assert.equal(readFileSync(t.path, "utf8"), before);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("pr: in-progress task flips to needs-review with a status-flip log line", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    const r = addPr(t, "https://github.com/x/y/pull/1");
+    assert.match(r.message, /-> needs-review/);
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: needs-review/);
+    assert.match(text, /opened PR https:\/\/github\.com\/x\/y\/pull\/1$/m);
+    assert.match(text, /status -> needs-review \(PR opened, awaiting review\)$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("pr: needs-feedback task — addPr links URL but does NOT flip status", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "needs-feedback");
+    const t = loadTask(root, "alpha", "001-a");
+    const r = addPr(t, "https://github.com/x/y/pull/2");
+    assert.doesNotMatch(r.message, /needs-review/);
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: needs-feedback/);
+    assert.match(text, /opened PR https:\/\/github\.com\/x\/y\/pull\/2$/m);
+    assert.doesNotMatch(text, /status -> needs-review/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("pr: ready task — addPr links URL but does NOT flip status (only in-progress flips)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "ready");
+    const t = loadTask(root, "alpha", "001-a");
+    addPr(t, "https://github.com/x/y/pull/3");
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: ready/);
+    assert.doesNotMatch(text, /status -> needs-review/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("pr: duplicate URL on already-flipped task — no extra status flip, no extra log lines", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    addPr(t, "https://github.com/x/y/pull/1");
+    const afterFirst = readFileSync(t.path, "utf8");
+    // Re-attach the same URL — must be a byte-identical no-op.
+    const t2 = loadTask(root, "alpha", "001-a");
+    addPr(t2, "https://github.com/x/y/pull/1");
+    assert.equal(readFileSync(t.path, "utf8"), afterFirst);
+    // Exactly one status-flip log line — re-flipping would append another.
+    const flipCount = (afterFirst.match(/status -> needs-review/g) ?? []).length;
+    assert.equal(flipCount, 1);
   } finally {
     rmTempDir(root);
   }
