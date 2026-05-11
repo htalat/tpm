@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { route, routeMutation, isSameOrigin, isLoopback } from "./serve.ts";
-import type { CliRunner } from "./serve.ts";
+import type { CliRunner, PrCacheReader } from "./serve.ts";
 import type { Project, Task } from "./tree.ts";
 
 function task(slug: string, status: string, extra: Record<string, unknown> = {}): Task {
@@ -497,4 +497,127 @@ test("isSameOrigin: rejects mismatched host", () => {
 
 test("isSameOrigin: rejects malformed Origin", () => {
   assert.equal(isSameOrigin({ host: "127.0.0.1:7777", origin: "not a url" }), false);
+});
+
+// ---- PR panel + chips -----------------------------------------------------
+
+function prCacheOf(map: Record<string, { fetchedAt?: string; pr: Record<string, unknown> }>): PrCacheReader {
+  return (url) => {
+    const e = map[url];
+    if (!e) return null;
+    return { fetchedAt: e.fetchedAt ?? new Date().toISOString(), pr: e.pr as never };
+  };
+}
+
+const PR1 = "https://github.com/htalat/tpm/pull/1";
+const PR2 = "https://github.com/htalat/tpm/pull/2";
+
+test("renderTask: PR panel renders state / CI / review / mergeable badges + GitHub link from cache", () => {
+  const t = task("050-pr", "needs-review", { prs: [PR1] });
+  const p = project("alpha", [t]);
+  const prCache = prCacheOf({
+    [PR1]: { pr: {
+      url: PR1, state: "OPEN", isDraft: false, title: "Add PR panel",
+      reviewDecision: "APPROVED",
+      statusCheckRollup: [{ conclusion: "SUCCESS" }],
+      mergeStateStatus: "CLEAN",
+    } },
+  });
+  const r = route("/t/alpha/050-pr", new URLSearchParams(), [p], { mutationsEnabled: true, prCache });
+  assert.match(r.body, /class="pr-panel"/);
+  assert.match(r.body, /PR #1/);
+  assert.match(r.body, /Add PR panel/);
+  assert.match(r.body, /Open on GitHub/);
+  // The four field labels + their resolved values.
+  assert.match(r.body, /open/);
+  assert.match(r.body, /passing/);
+  assert.match(r.body, /approved/);
+  assert.match(r.body, /clean/);
+  // Freshness hint present.
+  assert.match(r.body, /fetched/);
+  // Panel sits before the Actions section.
+  assert.ok(r.body.indexOf('class="pr-panel"') < r.body.indexOf('class="task-actions"'));
+});
+
+test("renderTask: failing CI / changes-requested / merge-conflict states map to the right labels", () => {
+  const t = task("051-pr", "needs-feedback", { prs: [PR1] });
+  const p = project("alpha", [t]);
+  const prCache = prCacheOf({
+    [PR1]: { pr: {
+      url: PR1, state: "OPEN", isDraft: false,
+      reviewDecision: "CHANGES_REQUESTED",
+      statusCheckRollup: [{ conclusion: "FAILURE" }],
+      mergeStateStatus: "DIRTY",
+    } },
+  });
+  const r = route("/t/alpha/051-pr", new URLSearchParams(), [p], { prCache });
+  assert.match(r.body, /failing/);
+  assert.match(r.body, /changes requested/);
+  assert.match(r.body, /conflict/);
+});
+
+test("renderTask: PR panel shows a placeholder when the cache is missing", () => {
+  const t = task("052-pr", "in-progress", { prs: [PR1] });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/052-pr", new URLSearchParams(), [p], { mutationsEnabled: true, prCache: prCacheOf({}) });
+  assert.match(r.body, /class="pr-panel"/);
+  assert.match(r.body, /pr-card-empty/);
+  assert.match(r.body, /no PR data cached yet/);
+  // Still links out to GitHub.
+  assert.match(r.body, new RegExp("Open on GitHub"));
+  // No badge row when there's no data.
+  assert.doesNotMatch(r.body, /class="pr-badges"/);
+});
+
+test("renderTask: PR panel treats a >1h-old cache entry as no-data (placeholder + last-polled hint)", () => {
+  const t = task("053-pr", "in-progress", { prs: [PR1] });
+  const p = project("alpha", [t]);
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  const prCache = prCacheOf({ [PR1]: { fetchedAt: twoHoursAgo, pr: { url: PR1, state: "OPEN", mergeStateStatus: "CLEAN" } } });
+  const r = route("/t/alpha/053-pr", new URLSearchParams(), [p], { prCache });
+  assert.match(r.body, /pr-card-empty/);
+  assert.match(r.body, /last polled/);
+  assert.match(r.body, /hours ago/);
+  // Stale entry isn't rendered as if it were current.
+  assert.doesNotMatch(r.body, /class="pr-badges"/);
+});
+
+test("renderTask: multiple linked PRs render one card each", () => {
+  const t = task("054-pr", "needs-review", { prs: [PR1, PR2] });
+  const p = project("alpha", [t]);
+  const prCache = prCacheOf({
+    [PR1]: { pr: { url: PR1, state: "MERGED" } },
+    [PR2]: { pr: { url: PR2, state: "OPEN", mergeStateStatus: "BEHIND" } },
+  });
+  const r = route("/t/alpha/054-pr", new URLSearchParams(), [p], { prCache });
+  assert.equal((r.body.match(/class="pr-card"/g) ?? []).length, 2);
+  assert.match(r.body, /PR #1/);
+  assert.match(r.body, /PR #2/);
+  assert.match(r.body, /merged/);
+  assert.match(r.body, /behind main/);
+});
+
+test("renderTask: no PR panel when the task has no linked PRs", () => {
+  const t = task("055-nopr", "in-progress"); // prs: [] by default
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/055-nopr", new URLSearchParams(), [p], { mutationsEnabled: true, prCache: prCacheOf({}) });
+  assert.doesNotMatch(r.body, /class="pr-panel"/);
+});
+
+test("taskRow: queue rows show a [PR #N <state>] chip linking to GitHub when cached", () => {
+  const t = task("056-pr", "needs-review", { prs: [PR1] });
+  const p = project("alpha", [t]);
+  const prCache = prCacheOf({ [PR1]: { pr: { url: PR1, state: "OPEN" } } });
+  const r = route("/", new URLSearchParams(), [p], { prCache });
+  assert.match(r.body, /class="pr-chip[^"]*"[^>]*href="https:\/\/github\.com\/htalat\/tpm\/pull\/1"/);
+  assert.match(r.body, /PR #1 open/);
+});
+
+test("taskRow: PR chip renders without a state label on a cache miss (still a link)", () => {
+  const t = task("057-pr", "needs-review", { prs: [PR1] });
+  const p = project("alpha", [t]);
+  const r = route("/", new URLSearchParams(), [p], { prCache: prCacheOf({}) });
+  assert.match(r.body, /class="pr-chip[^"]*"[^>]*href="https:\/\/github\.com\/htalat\/tpm\/pull\/1"/);
+  // No trailing state word — just "PR #1".
+  assert.match(r.body, />PR #1<\/a>/);
 });

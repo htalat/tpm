@@ -22,6 +22,7 @@
 
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { writePrCache } from "./pr_cache.ts";
 
 // Field set passed to `gh pr view --json`. The shell script reads this list
 // at runtime so the request stays in sync with the classifier's expectations.
@@ -287,6 +288,16 @@ function main(): void {
   const raw = readFileSync(0, "utf8");
   const parsed = JSON.parse(raw) as RawPrJson[];
   for (const pr of parsed) {
+    // Persist the snapshot so `tpm serve`'s task page can render PR state
+    // without a `gh` round-trip. Best-effort — a cache write failure must not
+    // abort the poll, which is the load-bearing part of this tick.
+    if (pr.url) {
+      try {
+        writePrCache(pr.url, pr);
+      } catch {
+        // ignore — stale/missing cache just degrades the dashboard to a placeholder
+      }
+    }
     const d = analyzePr(pr);
     process.stdout.write(
       `DECIDE pr=${d.url} state=${d.state} review=${d.review} ci=${d.ci} mergeable=${d.mergeable} action=${d.action}\n`,

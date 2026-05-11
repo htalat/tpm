@@ -18,6 +18,10 @@
 # `tpm complete` fails the task stays at `needs-close` for the manual
 # `/tpm done <slug>` escape hatch to pick up.
 #
+# Side effect: the classifier also writes each PR's JSON to
+# ~/.tpm/pr-cache/<owner>/<repo>/<number>.json so `tpm serve`'s task page can
+# render PR state (CI / review / mergeable) without its own `gh` round-trip.
+#
 # Idempotent: re-running over an already-flipped task is a no-op (the task is
 # no longer `in-progress` once flipped, so the filter excludes it).
 #
