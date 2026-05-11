@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { route } from "./serve.ts";
+import { route, routeMutation, isSameOrigin, isLoopback } from "./serve.ts";
+import type { CliRunner } from "./serve.ts";
 import type { Project, Task } from "./tree.ts";
 
 function task(slug: string, status: string, extra: Record<string, unknown> = {}): Task {
@@ -211,4 +212,239 @@ test("route: /t/<project>/<slug> resolves an archived task", () => {
   const r = route("/t/alpha/099-old", new URLSearchParams(), [p]);
   assert.equal(r.status, 200);
   assert.match(r.body, /Task 099-old/);
+});
+
+// ---- task action UI (form gating per status) ------------------------------
+
+function captureRunner(): { runner: CliRunner; calls: string[][] } {
+  const calls: string[][] = [];
+  const runner: CliRunner = (args) => {
+    calls.push(args);
+    return { ok: true, stdout: `mock: ${args.join(" ")}`, stderr: "" };
+  };
+  return { runner, calls };
+}
+
+test("renderTask: in-progress task shows Block + Complete + Log + Add PR forms", () => {
+  const t = task("001-a", "in-progress");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /class="task-actions"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/block"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/complete"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/log"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/pr"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/allow-orchestrator"/);
+});
+
+test("renderTask: open task offers Promote + Block + Drop, not Complete", () => {
+  const t = task("001-a", "open");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/ready"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/block"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/status"/);
+  assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/complete"/);
+  assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/pr"/);
+});
+
+test("renderTask: done/dropped tasks render no action forms", () => {
+  for (const status of ["done", "dropped"]) {
+    const t = task(`001-${status}`, status);
+    const p = project("alpha", [t]);
+    const r = route(`/t/alpha/001-${status}`, new URLSearchParams(), [p], { mutationsEnabled: true });
+    assert.doesNotMatch(r.body, /class="task-actions"/, `expected no action forms for status=${status}`);
+  }
+});
+
+test("renderTask: parent container renders no action forms", () => {
+  const child = task("003-child", "ready", { parent: "002-parent" });
+  child.parent = "002-parent";
+  const parent = task("002-parent", "in-progress");
+  parent.children = [child];
+  const p = project("alpha", [parent]);
+  const r = route("/t/alpha/002-parent", new URLSearchParams(), [p], { mutationsEnabled: true });
+  // Parent container is non-actionable.
+  assert.doesNotMatch(r.body, /class="task-actions"[^"]*"/);
+});
+
+test("renderTask: child task forms post to /t/<project>/<parent>/<child>/...", () => {
+  const child = task("003-child", "in-progress", { parent: "002-parent" });
+  child.parent = "002-parent";
+  const parent = task("002-parent", "in-progress");
+  parent.children = [child];
+  const p = project("alpha", [parent]);
+  const r = route("/t/alpha/002-parent/003-child", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /action="\/t\/alpha\/002-parent\/003-child\/log"/);
+  assert.match(r.body, /action="\/t\/alpha\/002-parent\/003-child\/complete"/);
+});
+
+test("renderTask: shows flash banner when ?flash= present", () => {
+  const t = task("001-a", "in-progress");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a", new URLSearchParams("flash=blocked%20%E2%80%94%20waiting"), [p], {
+    flash: "blocked — waiting", mutationsEnabled: true,
+  });
+  assert.match(r.body, /class="flash"/);
+  assert.match(r.body, /blocked — waiting/);
+});
+
+test("renderTask: mutationsEnabled=false renders a disabled-actions notice", () => {
+  const t = task("001-a", "in-progress");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: false });
+  assert.match(r.body, /class="task-actions disabled"/);
+  assert.doesNotMatch(r.body, /<form method="POST"/);
+});
+
+test("renderTask: allow-orchestrator toggle hidden input flips based on current value", () => {
+  const on = task("001-on", "in-progress", { allow_orchestrator: true });
+  const off = task("002-off", "in-progress", { allow_orchestrator: false });
+  const p = project("alpha", [on, off]);
+  const rOn = route("/t/alpha/001-on", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(rOn.body, /name="allow" value="false"/);
+  assert.match(rOn.body, /Disable autonomous/);
+  const rOff = route("/t/alpha/002-off", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(rOff.body, /name="allow" value="true"/);
+  assert.match(rOff.body, /Enable autonomous/);
+});
+
+test("renderTask: flash banner is HTML-escaped (no injection)", () => {
+  const t = task("001-a", "in-progress");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], {
+    flash: '<script>alert("xss")</script>', mutationsEnabled: true,
+  });
+  assert.doesNotMatch(r.body, /<script>alert/);
+  assert.match(r.body, /&lt;script&gt;/);
+});
+
+// ---- routeMutation (POST dispatch) ----------------------------------------
+
+test("routeMutation: /t/<slug>/ready dispatches `tpm ready <slug>` and 303-redirects", () => {
+  const { runner, calls } = captureRunner();
+  const r = routeMutation("/t/alpha/001-a/ready", new URLSearchParams(), runner);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/t\/alpha\/001-a\?flash=/);
+  assert.deepEqual(calls, [["ready", "alpha/001-a"]]);
+});
+
+test("routeMutation: /t/<slug>/block requires reason, redirects with bad-request flash when missing", () => {
+  const { runner, calls } = captureRunner();
+  const r = routeMutation("/t/alpha/001-a/block", new URLSearchParams(), runner);
+  assert.equal(r.status, 303);
+  assert.match(decodeURIComponent(r.location ?? ""), /bad request: missing required field for block/);
+  assert.deepEqual(calls, []);
+});
+
+test("routeMutation: /t/<slug>/block passes the reason to the CLI", () => {
+  const { runner, calls } = captureRunner();
+  const r = routeMutation("/t/alpha/001-a/block", new URLSearchParams("reason=waiting on API key"), runner);
+  assert.equal(r.status, 303);
+  assert.deepEqual(calls, [["block", "alpha/001-a", "waiting on API key"]]);
+});
+
+test("routeMutation: /t/<slug>/complete passes --outcome only when non-empty", () => {
+  const { runner, calls } = captureRunner();
+  routeMutation("/t/alpha/001-a/complete", new URLSearchParams("outcome=shipped"), runner);
+  routeMutation("/t/alpha/001-a/complete", new URLSearchParams("outcome="), runner);
+  assert.deepEqual(calls, [
+    ["complete", "alpha/001-a", "--outcome", "shipped"],
+    ["complete", "alpha/001-a"],
+  ]);
+});
+
+test("routeMutation: /t/<slug>/log requires message", () => {
+  const { runner, calls } = captureRunner();
+  routeMutation("/t/alpha/001-a/log", new URLSearchParams("message=   "), runner);
+  assert.equal(calls.length, 0);
+});
+
+test("routeMutation: /t/<slug>/pr forwards URL", () => {
+  const { runner, calls } = captureRunner();
+  routeMutation("/t/alpha/001-a/pr", new URLSearchParams("url=https://github.com/x/y/pull/1"), runner);
+  assert.deepEqual(calls, [["pr", "alpha/001-a", "https://github.com/x/y/pull/1"]]);
+});
+
+test("routeMutation: /t/<slug>/status forwards new status", () => {
+  const { runner, calls } = captureRunner();
+  routeMutation("/t/alpha/001-a/status", new URLSearchParams("status=dropped"), runner);
+  assert.deepEqual(calls, [["status", "alpha/001-a", "dropped"]]);
+});
+
+test("routeMutation: /t/<slug>/allow-orchestrator maps allow=true|false to allow/disallow", () => {
+  const { runner, calls } = captureRunner();
+  routeMutation("/t/alpha/001-a/allow-orchestrator", new URLSearchParams("allow=true"), runner);
+  routeMutation("/t/alpha/001-a/allow-orchestrator", new URLSearchParams("allow=false"), runner);
+  routeMutation("/t/alpha/001-a/allow-orchestrator", new URLSearchParams("allow=bogus"), runner);
+  assert.deepEqual(calls, [
+    ["allow", "alpha/001-a"],
+    ["disallow", "alpha/001-a"],
+    // bogus value -> no CLI call (bad request)
+  ]);
+});
+
+test("routeMutation: child path /t/<project>/<parent>/<child>/<action> passes full slug", () => {
+  const { runner, calls } = captureRunner();
+  routeMutation("/t/alpha/002-parent/003-child/ready", new URLSearchParams(), runner);
+  assert.deepEqual(calls, [["ready", "alpha/002-parent/003-child"]]);
+});
+
+test("routeMutation: unknown action returns 404", () => {
+  const { runner } = captureRunner();
+  const r = routeMutation("/t/alpha/001-a/teleport", new URLSearchParams(), runner);
+  assert.equal(r.status, 404);
+});
+
+test("routeMutation: non-/t path returns 404", () => {
+  const { runner } = captureRunner();
+  const r = routeMutation("/p/alpha/ready", new URLSearchParams(), runner);
+  assert.equal(r.status, 404);
+});
+
+test("routeMutation: CLI failure surfaces stderr in flash", () => {
+  const runner: CliRunner = () => ({ ok: false, stdout: "", stderr: "tpm: lock held by another agent" });
+  const r = routeMutation("/t/alpha/001-a/ready", new URLSearchParams(), runner);
+  assert.equal(r.status, 303);
+  assert.match(decodeURIComponent(r.location ?? ""), /lock held by another agent/);
+});
+
+test("routeMutation: CLI success surfaces stdout in flash", () => {
+  const runner: CliRunner = () => ({ ok: true, stdout: "alpha/001-a -> ready", stderr: "" });
+  const r = routeMutation("/t/alpha/001-a/ready", new URLSearchParams(), runner);
+  assert.match(decodeURIComponent(r.location ?? ""), /alpha\/001-a -> ready/);
+});
+
+// ---- safety guards --------------------------------------------------------
+
+test("isLoopback: accepts 127.0.0.1, localhost, ::1", () => {
+  assert.equal(isLoopback("127.0.0.1"), true);
+  assert.equal(isLoopback("localhost"), true);
+  assert.equal(isLoopback("::1"), true);
+});
+
+test("isLoopback: rejects 0.0.0.0 and external addresses", () => {
+  assert.equal(isLoopback("0.0.0.0"), false);
+  assert.equal(isLoopback("10.0.0.5"), false);
+  assert.equal(isLoopback("example.com"), false);
+});
+
+test("isSameOrigin: accepts matching Origin", () => {
+  assert.equal(isSameOrigin({ host: "127.0.0.1:7777", origin: "http://127.0.0.1:7777" }), true);
+});
+
+test("isSameOrigin: accepts matching Referer when Origin missing", () => {
+  assert.equal(isSameOrigin({ host: "127.0.0.1:7777", referer: "http://127.0.0.1:7777/t/alpha/001-a" }), true);
+});
+
+test("isSameOrigin: rejects when neither Origin nor Referer present", () => {
+  assert.equal(isSameOrigin({ host: "127.0.0.1:7777" }), false);
+});
+
+test("isSameOrigin: rejects mismatched host", () => {
+  assert.equal(isSameOrigin({ host: "127.0.0.1:7777", origin: "http://evil.example.com" }), false);
+});
+
+test("isSameOrigin: rejects malformed Origin", () => {
+  assert.equal(isSameOrigin({ host: "127.0.0.1:7777", origin: "not a url" }), false);
 });

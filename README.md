@@ -270,7 +270,7 @@ cp ~/Developer/tpm/scripts/recurring/template.sh ~/.tpm/scripts/recurring/intake
 $EDITOR ~/.tpm/scripts/recurring/intake-prs.sh
 ```
 
-By default, tasks created by a recurring script are `ready` but **not** `allow_orchestrator: true`, so manual `tpm next` picks them up but the unattended drain doesn't. Opt a task in for autonomous runs by adding `allow_orchestrator: true` to its frontmatter — or set it inside the recurring script for a class of tasks you trust.
+By default, tasks created by a recurring script are `ready` but **not** `allow_orchestrator: true`, so manual `tpm next` picks them up but the unattended drain doesn't. Opt a task in for autonomous runs with `tpm allow <task>` (or `tpm disallow <task>` to revoke), or set the flag in frontmatter directly inside the recurring script for a class of tasks you trust.
 
 **Portability.** Recurring scripts must run on stock macOS — BSD `awk`, BSD `sed`, no `gawk` / `gnu-sed` / `grep -P`. tpm is zero-deps; a cron-fired script that requires `brew install gawk` violates that. In practice: stick to 2-arg `match()` + `substr` (not gawk's 3-arg capture-array form), `sed -E` (portable on both sides), and `grep -E` instead of `grep -P`.
 
@@ -298,7 +298,7 @@ The pipeline: **scripts populate the queue → loops drain it.** Don't put judgm
 
 ### Live dashboard
 
-`tpm serve` starts a localhost HTTP UI at `http://127.0.0.1:7777` rendering the same tree as a tab you keep open. Read-only — the CLI is the writer.
+`tpm serve` starts a localhost HTTP UI at `http://127.0.0.1:7777` rendering the same tree as a tab you keep open. Read views auto-refresh; the task view also exposes status-gated forms that shell out to the CLI for every mutation (no parallel writer).
 
 ```sh
 tmux new -d -s tpm-web 'tpm serve'
@@ -306,7 +306,9 @@ open http://127.0.0.1:7777
 tmux kill-session -t tpm-web     # stop
 ```
 
-Routes: `/` (Your inbox / Agent queue / In flight, with a project-chip nav across the top to jump into any project; append `?project=<slug>` to filter the queues), `/p/<project>` (project view — sidebar with project frontmatter, rendered Goal / Context / Notes / Log, and tasks grouped by status; archived tasks hidden by default, append `?archived=1` or use the "Show archived" toggle), `/t/<project>/<slug>` (task view with rendered Context / Plan / Log / Outcome; resolves archived tasks too), `/api/refresh` (JSON for client polling). Auto-refreshes every 30s via meta-refresh — no JS framework. The markdown subset rendered in task bodies covers headings, lists, fenced code, links, and basic emphasis; intentionally rejects GFM tables / footnotes (write HTML in the body if you need them).
+Routes: `/` (Your inbox / Agent queue / In flight, with a project-chip nav across the top to jump into any project; append `?project=<slug>` to filter the queues), `/p/<project>` (project view — sidebar with project frontmatter, rendered Goal / Context / Notes / Log, and tasks grouped by status; archived tasks hidden by default, append `?archived=1` or use the "Show archived" toggle), `/t/<project>/<slug>` (task view with rendered Context / Plan / Log / Outcome and an Actions panel; resolves archived tasks too), `/api/refresh` (JSON for client polling). Auto-refreshes every 30s via meta-refresh — no JS framework. The markdown subset rendered in task bodies covers headings, lists, fenced code, links, and basic emphasis; intentionally rejects GFM tables / footnotes (write HTML in the body if you need them).
+
+Mutations are POST endpoints (`/t/<project>/<slug>/<action>`) backing the Actions panel. Each shells out to the matching CLI verb (`ready`, `block`, `reopen`, `complete`, `log`, `pr`, `status`, `allow-orchestrator`) and 303-redirects back to the task view with the CLI's stdout/stderr surfaced as a flash banner. Safety: mutations register only when the server is bound to loopback; explicit `--host 0.0.0.0` disables them with a startup warning. A same-origin check on `Origin`/`Referer` blocks drive-by cross-tab POSTs. No auth, no CSRF token — single-user, localhost-only.
 
 ### Per-repo wiring
 
@@ -392,7 +394,7 @@ tpm lock status [<task>]                  # holder + age (legacy global if no ta
 tpm lock list                             # every claimed task across the tree
 tpm lock release-stale [--ttl <minutes>]  # clear locks past TTL (default: time-bound + 5min)
 tpm notify <start|finish|fail> <task>     # best-effort osascript notification (cascade: task > project > global)
-tpm serve [--port 7777] [--host 127.0.0.1]  # start a localhost HTTP UI for the queues (read-only)
+tpm serve [--port 7777] [--host 127.0.0.1]  # start a localhost HTTP UI (read + status-gated mutation forms)
 tpm report [--md]
 tpm root                                  # print the tree root
 tpm path <project | task | project/task>  # print the local checkout path

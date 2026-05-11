@@ -1,5 +1,7 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { loadProjects, flatTasks, isParent, rollupStatus } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
 import { findRoot } from "./root.ts";
@@ -15,18 +17,30 @@ export interface ServeOpts {
   port?: number;
 }
 
-// `tpm serve`: localhost dashboard for the queues. v0 is read-only — the CLI
-// is the writer. Auto-refresh via meta tag (no JS framework). Personal tool,
-// no auth — never bind to anything but loopback unless the user explicitly
-// passes --host.
+// Whitelisted POST action segments. The CLI verbs they map to are built in
+// `buildCliArgs`. Kept narrow so a stray POST can't shell out to any tpm verb.
+const MUTATION_ACTIONS = new Set([
+  "ready", "block", "reopen", "complete", "log", "pr", "status", "allow-orchestrator",
+]);
+
+const CLI_PATH = fileURLToPath(new URL("./cli.ts", import.meta.url));
+
+// `tpm serve`: localhost dashboard for the queues. POST endpoints shell out to
+// the CLI so the web layer never writes files directly (one writer contract,
+// lock-aware, no parallel implementation). Mutations only register when bound
+// to loopback — see `mutationsEnabled` below.
 export async function runServe(opts: ServeOpts = {}): Promise<void> {
   const host = opts.host ?? "127.0.0.1";
   const port = opts.port ?? 7777;
+  const mutationsEnabled = isLoopback(host);
 
-  const server = createServer((req, res) => handleRequest(req, res));
+  const server = createServer((req, res) => handleRequest(req, res, { host, mutationsEnabled }));
   server.listen(port, host, () => {
     const where = host === "127.0.0.1" ? "localhost" : host;
     console.error(`tpm serve: http://${where}:${port}/  (Ctrl-C to stop)`);
+    if (!mutationsEnabled) {
+      console.error(`tpm serve: WARNING — host ${host} is not loopback; mutation endpoints are DISABLED.`);
+    }
   });
   server.on("error", (err) => {
     console.error(`tpm serve: ${(err as Error).message}`);
@@ -34,7 +48,36 @@ export async function runServe(opts: ServeOpts = {}): Promise<void> {
   });
 }
 
-function handleRequest(req: IncomingMessage, res: ServerResponse): void {
+interface ServeContext {
+  host: string;
+  mutationsEnabled: boolean;
+}
+
+async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: ServeContext): Promise<void> {
+  if (req.method === "POST") {
+    if (!ctx.mutationsEnabled) {
+      res.writeHead(403, { "content-type": "text/plain" });
+      res.end("Mutations disabled: server is not bound to loopback. Restart with --host 127.0.0.1.");
+      return;
+    }
+    if (!isSameOrigin(req.headers)) {
+      res.writeHead(403, { "content-type": "text/plain" });
+      res.end("Refused: same-origin check failed (missing or mismatched Origin/Referer).");
+      return;
+    }
+    const raw = await readBody(req);
+    const body = new URLSearchParams(raw);
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const result = routeMutation(url.pathname, body, runCli);
+    if (result.status === 303 && result.location) {
+      res.writeHead(303, { location: result.location });
+      res.end();
+      return;
+    }
+    res.writeHead(result.status, { "content-type": "text/plain" });
+    res.end(result.body ?? "");
+    return;
+  }
   if (req.method !== "GET" && req.method !== "HEAD") {
     res.writeHead(405, { "content-type": "text/plain" });
     res.end("Method Not Allowed");
@@ -45,9 +88,58 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   // Always load archived so `/t/<project>/<slug>` resolves an archived task and
   // `/p/<slug>?archived=1` has them available. Filtering happens per-route.
   const projects = loadProjects(root, { archived: true });
-  const result = route(url.pathname, url.searchParams, projects);
+  const flash = url.searchParams.get("flash") ?? undefined;
+  const result = route(url.pathname, url.searchParams, projects, {
+    flash,
+    mutationsEnabled: ctx.mutationsEnabled,
+  });
   res.writeHead(result.status, { "content-type": result.contentType });
   res.end(result.body);
+}
+
+export function isLoopback(host: string): boolean {
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+// Reject cross-origin POSTs. On a loopback-only server with no auth this is
+// the only thing keeping a malicious page in another browser tab from issuing
+// mutation requests against the tracker.
+export function isSameOrigin(headers: { origin?: string | string[]; referer?: string | string[]; host?: string | string[] }): boolean {
+  const expectedHost = stringOf(headers.host);
+  if (!expectedHost) return false;
+  const claim = stringOf(headers.origin) || stringOf(headers.referer);
+  if (!claim) return false;
+  try {
+    const u = new URL(claim);
+    return u.host === expectedHost;
+  } catch {
+    return false;
+  }
+}
+
+function stringOf(v: string | string[] | undefined): string {
+  if (typeof v === "string") return v;
+  if (Array.isArray(v) && v.length) return v[0];
+  return "";
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const MAX = 64 * 1024; // 64KB cap; a free-text outcome shouldn't need more.
+    req.on("data", (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > MAX) {
+        req.destroy();
+        reject(new Error("request body too large"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
 }
 
 export interface RouteResult {
@@ -56,9 +148,14 @@ export interface RouteResult {
   body: string;
 }
 
+export interface RouteOpts {
+  flash?: string;
+  mutationsEnabled?: boolean;
+}
+
 // Pure dispatch — returns the response shape, doesn't touch the network.
 // Tests exercise this directly with mocked projects.
-export function route(pathname: string, params: URLSearchParams, projects: Project[]): RouteResult {
+export function route(pathname: string, params: URLSearchParams, projects: Project[], opts: RouteOpts = {}): RouteResult {
   if (pathname === "/" || pathname === "") {
     return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project")));
   }
@@ -78,9 +175,104 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const query = decodeURIComponent(taskMatch[1]);
     const match = findTask(projects, query);
     if (!match) return notFound(`No task: ${query}`);
-    return ok("text/html; charset=utf-8", renderTask(match.project, match.task));
+    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, opts));
   }
   return notFound(pathname);
+}
+
+export interface MutationResult {
+  status: number;
+  location?: string;
+  body?: string;
+}
+
+export type CliRunner = (args: string[]) => { ok: boolean; stdout: string; stderr: string };
+
+// Pure dispatch for POST mutations. Tests pass a stub runner; production passes
+// the real `runCli` that shells out to the local tpm binary.
+export function routeMutation(pathname: string, body: URLSearchParams, runner: CliRunner): MutationResult {
+  // Match /t/<slugPath>/<action>. slugPath is greedy so it captures any
+  // intermediate parent segments; action is the last path segment.
+  const m = pathname.match(/^\/t\/(.+)\/([a-z][a-z0-9-]*)\/?$/);
+  if (!m) return { status: 404, body: "Not Found" };
+  const slugPath = m[1];
+  const action = m[2];
+  if (!MUTATION_ACTIONS.has(action)) return { status: 404, body: `Unknown action: ${action}` };
+
+  const args = buildCliArgs(slugPath, action, body);
+  if (!args) {
+    return flashRedirect(slugPath, `bad request: missing required field for ${action}`);
+  }
+  const result = runner(args);
+  const flash = result.ok
+    ? (result.stdout || `${action}: ok`)
+    : (result.stderr || `${action}: failed`);
+  return flashRedirect(slugPath, flash);
+}
+
+function flashRedirect(slugPath: string, flash: string): MutationResult {
+  const segs = slugPath.split("/").map(encodeURIComponent).join("/");
+  return {
+    status: 303,
+    location: `/t/${segs}?flash=${encodeURIComponent(flash)}`,
+  };
+}
+
+function buildCliArgs(slug: string, action: string, body: URLSearchParams): string[] | null {
+  switch (action) {
+    case "ready":  return ["ready", slug];
+    case "reopen": return ["reopen", slug];
+    case "block": {
+      const reason = body.get("reason")?.trim();
+      if (!reason) return null;
+      return ["block", slug, reason];
+    }
+    case "complete": {
+      const outcome = body.get("outcome")?.trim();
+      const args = ["complete", slug];
+      if (outcome) args.push("--outcome", outcome);
+      return args;
+    }
+    case "log": {
+      const message = body.get("message")?.trim();
+      if (!message) return null;
+      return ["log", slug, message];
+    }
+    case "pr": {
+      const url = body.get("url")?.trim();
+      if (!url) return null;
+      return ["pr", slug, url];
+    }
+    case "status": {
+      const newStatus = body.get("status")?.trim();
+      if (!newStatus) return null;
+      return ["status", slug, newStatus];
+    }
+    case "allow-orchestrator": {
+      const allow = body.get("allow");
+      if (allow === "true") return ["allow", slug];
+      if (allow === "false") return ["disallow", slug];
+      return null;
+    }
+    default: return null;
+  }
+}
+
+function runCli(args: string[]): { ok: boolean; stdout: string; stderr: string } {
+  // Re-invoke the same node binary that's hosting this server, forwarding
+  // execArgv so flags like --experimental-strip-types propagate to the child.
+  try {
+    const stdout = execFileSync(process.execPath, [...process.execArgv, CLI_PATH, ...args], {
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf8",
+    });
+    return { ok: true, stdout: stdout.trim(), stderr: "" };
+  } catch (e: unknown) {
+    const err = e as { stderr?: Buffer | string; stdout?: Buffer | string };
+    const stderr = err.stderr ? String(err.stderr).trim() : (e instanceof Error ? e.message : String(e));
+    const stdout = err.stdout ? String(err.stdout).trim() : "";
+    return { ok: false, stdout, stderr };
+  }
 }
 
 function ok(contentType: string, body: string): RouteResult {
@@ -217,7 +409,7 @@ ${projectChips(allProjects, project.slug)}
   return layout(`tpm · ${projectName}`, body);
 }
 
-function renderTask(project: Project, task: Task): string {
+function renderTask(project: Project, task: Task, opts: RouteOpts = {}): string {
   const repo = resolveRepo(project, task);
   const status = rollupStatus(task);
   const title = strOr(task.data.title, task.slug);
@@ -235,13 +427,24 @@ function renderTask(project: Project, task: Task): string {
     ? `<dt>Parent</dt><dd><a href="/t/${esc(project.slug)}/${esc(task.parent)}">${esc(task.parent)}</a></dd>`
     : "";
   const childrenBlock = childrenList ? `<dt>Children</dt><dd>${childrenList}</dd>` : "";
+  const allowField = task.data.allow_orchestrator === true ? "true" : "false";
+  const allowBlock = isParent(task)
+    ? ""
+    : `<dt>Autonomous</dt><dd>${esc(allowField)}</dd>`;
 
   const crumbsTrail = task.parent
     ? `<a href="/p/${esc(project.slug)}">${esc(project.slug)}</a><a href="/t/${esc(project.slug)}/${esc(task.parent)}">${esc(task.parent)}</a><a href="/t/${esc(project.slug)}/${esc(task.parent)}/${esc(task.slug)}">${esc(task.slug)}</a>`
     : `<a href="/p/${esc(project.slug)}">${esc(project.slug)}</a><a href="/t/${esc(project.slug)}/${esc(task.slug)}">${esc(task.slug)}</a>`;
 
+  const flashBanner = opts.flash
+    ? `<div class="flash">${esc(opts.flash)} <a class="flash-dismiss" href="${esc(taskHref(project, task))}">dismiss</a></div>`
+    : "";
+
+  const actionsSection = renderActions(project, task, status, opts);
+
   const body = `
 <nav class="crumbs"><a href="/">tpm</a>${crumbsTrail}</nav>
+${flashBanner}
 <header>
   <h1>${esc(title)} <span class="badge s-${cls(status)}">${esc(status)}</span></h1>
   <p class="meta"><code>${esc(task.slug)}</code>  ·  type: ${esc(strOr(task.data.type, "?"))}  ·  project: <a href="/p/${esc(project.slug)}">${esc(project.slug)}</a></p>
@@ -258,10 +461,12 @@ function renderTask(project: Project, task: Task): string {
       <dt>PRs</dt><dd>${prList}</dd>
       ${parentBlock}
       ${childrenBlock}
+      ${allowBlock}
     </dl>
   </aside>
   <main class="body">${renderMarkdown(task.body)}</main>
 </div>
+${actionsSection}
 `;
   return layout(`tpm · ${title}`, body);
 }
@@ -276,6 +481,133 @@ function renderRefresh(projects: Project[]): string {
     }
   }
   return JSON.stringify({ generated: now(), counts });
+}
+
+// ---- task actions UI ------------------------------------------------------
+
+function renderActions(project: Project, task: Task, status: string, opts: RouteOpts): string {
+  if (opts.mutationsEnabled === false) {
+    return `<section class="task-actions disabled"><h2>Actions</h2><p class="meta">Mutations disabled (server not bound to loopback). Use the CLI instead.</p></section>`;
+  }
+  if (task.archived) return ""; // archived: not mutable
+  if (isParent(task)) return ""; // containers: not actionable
+  if (status === "done" || status === "dropped") return ""; // terminal: view-only
+
+  const href = taskHref(project, task);
+  const allowOn = task.data.allow_orchestrator === true;
+  const forms: string[] = [];
+
+  // Status -> set of action keys.
+  switch (status) {
+    case "open":
+      forms.push(simpleForm(href, "ready", "Promote to ready"));
+      forms.push(blockForm(href));
+      forms.push(dropForm(href));
+      break;
+    case "ready":
+      forms.push(blockForm(href));
+      forms.push(simpleForm(href, "reopen", "Move back to open"));
+      forms.push(dropForm(href));
+      forms.push(allowForm(href, allowOn));
+      break;
+    case "in-progress":
+      forms.push(blockForm(href));
+      forms.push(completeForm(href));
+      forms.push(logForm(href));
+      forms.push(prForm(href));
+      forms.push(allowForm(href, allowOn));
+      break;
+    case "needs-feedback":
+      forms.push(logForm(href));
+      forms.push(completeForm(href));
+      forms.push(blockForm(href));
+      break;
+    case "needs-review":
+      forms.push(logForm(href));
+      forms.push(blockForm(href));
+      forms.push(statusForm(href, "ready", "Reopen for agent (→ ready)"));
+      break;
+    case "blocked":
+      forms.push(simpleForm(href, "reopen", "Reopen (→ open)"));
+      break;
+    default:
+      // Unknown status: render a fallback log so the user can at least annotate.
+      forms.push(logForm(href));
+  }
+
+  return `<section class="task-actions"><h2>Actions</h2>${forms.join("")}</section>`;
+}
+
+function taskHref(project: Project, task: Task): string {
+  const slug = task.parent
+    ? `${project.slug}/${task.parent}/${task.slug}`
+    : `${project.slug}/${task.slug}`;
+  return `/t/${slug.split("/").map(esc).join("/")}`;
+}
+
+function simpleForm(href: string, action: string, label: string): string {
+  return `<form method="POST" action="${href}/${action}" class="action-form">
+    <button type="submit">${esc(label)}</button>
+  </form>`;
+}
+
+function blockForm(href: string): string {
+  return `<form method="POST" action="${href}/block" class="action-form">
+    <label>Block reason
+      <textarea name="reason" rows="2" required placeholder="why is this blocked?"></textarea>
+    </label>
+    <button type="submit">Block</button>
+  </form>`;
+}
+
+function dropForm(href: string): string {
+  return `<form method="POST" action="${href}/status" class="action-form">
+    <input type="hidden" name="status" value="dropped">
+    <button type="submit">Drop</button>
+  </form>`;
+}
+
+function completeForm(href: string): string {
+  return `<form method="POST" action="${href}/complete" class="action-form">
+    <label>Outcome (optional — fills <code>## Outcome</code>)
+      <textarea name="outcome" rows="3" placeholder="what shipped, what changed"></textarea>
+    </label>
+    <button type="submit">Complete</button>
+  </form>`;
+}
+
+function logForm(href: string): string {
+  return `<form method="POST" action="${href}/log" class="action-form">
+    <label>Log entry
+      <textarea name="message" rows="2" required placeholder="what changed"></textarea>
+    </label>
+    <button type="submit">Add log</button>
+  </form>`;
+}
+
+function prForm(href: string): string {
+  return `<form method="POST" action="${href}/pr" class="action-form">
+    <label>PR URL
+      <input type="url" name="url" required placeholder="https://github.com/...">
+    </label>
+    <button type="submit">Link PR</button>
+  </form>`;
+}
+
+function statusForm(href: string, value: string, label: string): string {
+  return `<form method="POST" action="${href}/status" class="action-form">
+    <input type="hidden" name="status" value="${escAttr(value)}">
+    <button type="submit">${esc(label)}</button>
+  </form>`;
+}
+
+function allowForm(href: string, currentlyOn: boolean): string {
+  const next = currentlyOn ? "false" : "true";
+  const label = currentlyOn ? "Disable autonomous (allow_orchestrator: false)" : "Enable autonomous (allow_orchestrator: true)";
+  return `<form method="POST" action="${href}/allow-orchestrator" class="action-form">
+    <input type="hidden" name="allow" value="${next}">
+    <button type="submit">${esc(label)}</button>
+  </form>`;
 }
 
 // ---- helpers --------------------------------------------------------------

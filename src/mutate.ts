@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { parse, stringify } from "./frontmatter.ts";
 import { now } from "./time.ts";
-import { archiveTask } from "./tree.ts";
+import { archiveTask, isParent } from "./tree.ts";
 import type { Task } from "./tree.ts";
 
 export const VALID_STATUSES = [
@@ -106,6 +106,28 @@ export function addPr(task: Task, url: string): MutateResult {
   writeFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
   return { message: `${task.slug}: linked ${trimmed}` };
+}
+
+// Toggle the autonomous-orchestrator gate on a task. Parents aren't claimable
+// by the orchestrator, so toggling on a container is meaningless — refuse.
+export function setAllowOrchestrator(task: Task, allow: boolean): MutateResult {
+  guardArchived(task);
+  if (isParent(task)) {
+    throw new Error(`Cannot toggle allow_orchestrator on parent ${task.slug}: parents aren't claimable.`);
+  }
+  const { data, body } = readParsed(task);
+  const current = data.allow_orchestrator === true;
+  if (current === allow) {
+    return { message: `${task.slug}: allow_orchestrator already ${allow}` };
+  }
+  data.allow_orchestrator = allow;
+  const verb = allow
+    ? "allow_orchestrator: true (safe for autonomous runs)"
+    : "allow_orchestrator: false";
+  const newBody = appendLog(body, `${now()}: ${verb}`);
+  writeFileSync(task.path, stringify(data, newBody));
+  syncInMemory(task, data, newBody);
+  return { message: `${task.slug}: allow_orchestrator -> ${allow}` };
 }
 
 export function complete(task: Task, opts: CompleteOptions = {}): MutateResult {

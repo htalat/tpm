@@ -204,6 +204,16 @@ try {
       console.log(r.message);
       break;
     }
+    case "allow": {
+      const r = mutate.setAllowOrchestrator(resolveLiveTask(args[1], "tpm allow <task>"), true);
+      console.log(r.message);
+      break;
+    }
+    case "disallow": {
+      const r = mutate.setAllowOrchestrator(resolveLiveTask(args[1], "tpm disallow <task>"), false);
+      console.log(r.message);
+      break;
+    }
     case "complete": {
       if (!args[1]) usage('tpm complete <task> [--outcome "..."] [--no-archive] [--archive]');
       const outcome = parseFlag(args, "--outcome");
@@ -683,6 +693,8 @@ Usage:
   tpm status <task> <new-status>             generic status setter (validated)
   tpm log <task> "<message>"                 append a single timestamped Log line
   tpm pr <task> <url>                        add URL to prs:, log opened PR
+  tpm allow <task>                           set allow_orchestrator: true (safe for autonomous runs)
+  tpm disallow <task>                        set allow_orchestrator: false
   tpm archive <task | project/task>          move a done/dropped task to tasks/archive/
   tpm fold <task | project/task>             promote a file-form task to folder-form (idempotent)
   tpm lock acquire <task> --as <id>          claim a per-task lock (atomic O_CREAT|O_EXCL)
