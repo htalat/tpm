@@ -11,6 +11,18 @@ import { now } from "./time.ts";
 import { inboxItems } from "./queue.ts";
 import { BASE_CSS, SERVE_CSS } from "./css.ts";
 import { renderMarkdown } from "./markdown.ts";
+import { readPrCache, parsePrUrl } from "./pr_cache.ts";
+import type { PrCacheEntry } from "./pr_cache.ts";
+import { analyzePr } from "./pr_signal.ts";
+import type { RawPrJson, PrDecision } from "./pr_signal.ts";
+
+// A PR-cache lookup. Production passes `readPrCache` (reads ~/.tpm/pr-cache);
+// tests pass a stub so `route` stays pure and disk-free.
+export type PrCacheReader = (url: string) => PrCacheEntry | null;
+
+// Older than this, a cached snapshot is treated as no-data: the page renders a
+// placeholder rather than implying the state is current.
+const PR_CACHE_STALE_MS = 60 * 60 * 1000;
 
 export interface ServeOpts {
   host?: string;
@@ -151,13 +163,17 @@ export interface RouteResult {
 export interface RouteOpts {
   flash?: string;
   mutationsEnabled?: boolean;
+  // PR-cache lookup. Defaults to `readPrCache` (reads ~/.tpm/pr-cache) when
+  // omitted; tests inject a stub.
+  prCache?: PrCacheReader;
 }
 
 // Pure dispatch — returns the response shape, doesn't touch the network.
 // Tests exercise this directly with mocked projects.
 export function route(pathname: string, params: URLSearchParams, projects: Project[], opts: RouteOpts = {}): RouteResult {
+  const prCache: PrCacheReader = opts.prCache ?? ((url) => readPrCache(url));
   if (pathname === "/" || pathname === "") {
-    return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project")));
+    return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project"), prCache));
   }
   if (pathname === "/api/refresh") {
     return ok("application/json", renderRefresh(projects));
@@ -168,14 +184,14 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const project = projects.find(p => p.slug === slug);
     if (!project) return notFound(`No project: ${slug}`);
     const showArchived = params.get("archived") === "1";
-    return ok("text/html; charset=utf-8", renderProject(project, projects, showArchived));
+    return ok("text/html; charset=utf-8", renderProject(project, projects, showArchived, prCache));
   }
   const taskMatch = pathname.match(/^\/t\/(.+?)\/?$/);
   if (taskMatch) {
     const query = decodeURIComponent(taskMatch[1]);
     const match = findTask(projects, query);
     if (!match) return notFound(`No task: ${query}`);
-    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, opts));
+    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, opts, prCache));
   }
   return notFound(pathname);
 }
@@ -285,7 +301,7 @@ function notFound(message: string): RouteResult {
 
 // ---- pages ----------------------------------------------------------------
 
-function renderIndex(projects: Project[], projectFilter: string | null): string {
+function renderIndex(projects: Project[], projectFilter: string | null, prCache: PrCacheReader): string {
   const filtered = projectFilter ? projects.filter(p => p.slug === projectFilter) : projects;
 
   // Inbox = needs-review > blocked > open across the filtered set.
@@ -331,21 +347,21 @@ ${projectChips(projects, null)}
 </header>
 <section class="queue">
   <h2>Your inbox <span class="meta">(${inbox.length})</span></h2>
-  ${inbox.length === 0 ? `<p class="queue-empty">Inbox empty.</p>` : inbox.map(it => taskRow(it.project, it.task, it.status)).join("")}
+  ${inbox.length === 0 ? `<p class="queue-empty">Inbox empty.</p>` : inbox.map(it => taskRow(it.project, it.task, it.status, prCache)).join("")}
 </section>
 <section class="queue">
   <h2>Agent queue <span class="meta">(${agentItems.length})</span></h2>
-  ${agentItems.length === 0 ? `<p class="queue-empty">Nothing ready, needing feedback, or awaiting close.</p>` : agentItems.map(it => taskRow(it.project, it.task, it.status)).join("")}
+  ${agentItems.length === 0 ? `<p class="queue-empty">Nothing ready, needing feedback, or awaiting close.</p>` : agentItems.map(it => taskRow(it.project, it.task, it.status, prCache)).join("")}
 </section>
 <section class="queue">
   <h2>In flight <span class="meta">(${inFlight.length})</span></h2>
-  ${inFlight.length === 0 ? `<p class="queue-empty">No in-progress tasks.</p>` : inFlight.map(it => taskRow(it.project, it.task, "in-progress")).join("")}
+  ${inFlight.length === 0 ? `<p class="queue-empty">No in-progress tasks.</p>` : inFlight.map(it => taskRow(it.project, it.task, "in-progress", prCache)).join("")}
 </section>
 `;
   return layout("tpm", body, { autoRefresh: 30 });
 }
 
-function renderProject(project: Project, allProjects: Project[], showArchived: boolean): string {
+function renderProject(project: Project, allProjects: Project[], showArchived: boolean, prCache: PrCacheReader): string {
   const repo = resolveRepo(project);
   const tasks = flatTasks(project.tasks).filter(t => !isParent(t) && (showArchived || !t.archived));
   const byStatus = new Map<string, Task[]>();
@@ -365,7 +381,7 @@ function renderProject(project: Project, allProjects: Project[], showArchived: b
       if (s === "done" || s === "dropped") {
         group.sort((a, b) => String(b.data.closed ?? "").localeCompare(String(a.data.closed ?? "")));
       }
-      const rows = group.map(t => taskRow(project, t, s)).join("");
+      const rows = group.map(t => taskRow(project, t, s, prCache)).join("");
       return `<section class="queue"><h2>${esc(s)} <span class="meta">(${group.length})</span></h2>${rows}</section>`;
     })
     .join("");
@@ -414,7 +430,7 @@ ${projectChips(allProjects, project.slug)}
   return layout(`tpm · ${projectName}`, body);
 }
 
-function renderTask(project: Project, task: Task, opts: RouteOpts = {}): string {
+function renderTask(project: Project, task: Task, opts: RouteOpts = {}, prCache: PrCacheReader = (url) => readPrCache(url)): string {
   const repo = resolveRepo(project, task);
   const status = rollupStatus(task);
   const title = strOr(task.data.title, task.slug);
@@ -445,6 +461,7 @@ function renderTask(project: Project, task: Task, opts: RouteOpts = {}): string 
     ? `<div class="flash">${esc(opts.flash)} <a class="flash-dismiss" href="${esc(taskHref(project, task))}">dismiss</a></div>`
     : "";
 
+  const prPanel = renderPrPanel(prs, prCache);
   const actionsSection = renderActions(project, task, status, opts);
   const settingsSection = renderSettings(project, task, status, opts);
 
@@ -472,6 +489,7 @@ ${flashBanner}
   </aside>
   <main class="body">${renderMarkdown(task.body)}</main>
 </div>
+${prPanel}
 ${actionsSection}
 ${settingsSection}
 `;
@@ -637,7 +655,7 @@ function allowForm(href: string, currentlyOn: boolean): string {
 
 // ---- helpers --------------------------------------------------------------
 
-function taskRow(project: Project, task: Task, status: string): string {
+function taskRow(project: Project, task: Task, status: string, prCache: PrCacheReader): string {
   const slug = task.parent
     ? `${project.slug}/${task.parent}/${task.slug}`
     : `${project.slug}/${task.slug}`;
@@ -653,10 +671,158 @@ function taskRow(project: Project, task: Task, status: string): string {
   return `<div class="${classes.join(" ")}">
     <span class="badge s-${cls(status)}${task.archived ? " s-archived" : ""}">${esc(status)}</span>
     <a class="title" href="${href}">${esc(title)}</a>
+    ${prChipsFor(task, prCache)}
     <span class="slug">${esc(slug)}</span>
     ${archivedTag}
     <span class="when">${esc(when)}</span>
   </div>`;
+}
+
+// ---- PR panel + chips -----------------------------------------------------
+
+// Renders one card per linked PR, before the Actions section. Reads the
+// poller-written snapshot from `~/.tpm/pr-cache/`; cache-miss or a >1h-old
+// snapshot degrades to a placeholder rather than blocking on a live `gh` call.
+function renderPrPanel(prs: string[], prCache: PrCacheReader): string {
+  const urls = prs.map(String).filter(u => u.length > 0);
+  if (urls.length === 0) return "";
+  const nowMs = Date.now();
+  const cards = urls.map(url => renderPrCard(url, prCache(url), nowMs)).join("");
+  return `<section class="pr-panel"><h2>Pull request${urls.length === 1 ? "" : "s"}</h2>${cards}</section>`;
+}
+
+function renderPrCard(url: string, entry: PrCacheEntry | null, nowMs: number): string {
+  const ref = parsePrUrl(url);
+  const headline = ref
+    ? `<a href="${escAttr(url)}">PR #${ref.number}</a>`
+    : `<a href="${escAttr(url)}">${esc(url)}</a>`;
+  const openLink = `<a class="pr-open" href="${escAttr(url)}">Open on GitHub →</a>`;
+
+  const ageMs = entry ? nowMs - Date.parse(entry.fetchedAt) : NaN;
+  const fresh = entry !== null && Number.isFinite(ageMs) && ageMs <= PR_CACHE_STALE_MS;
+
+  if (!entry || !fresh) {
+    const note = entry && Number.isFinite(ageMs)
+      ? `no current data — last polled ${relativeAge(ageMs)}; awaiting the next poll`
+      : `no PR data cached yet — the PR poller will fill this in`;
+    return `<div class="pr-card pr-card-empty">
+    <div class="pr-headline">${headline}${openLink}</div>
+    <p class="pr-nodata">${esc(note)}</p>
+  </div>`;
+  }
+
+  const d = analyzePr(entry.pr);
+  const title = strOr(entry.pr.title, "");
+  const titleHtml = title ? ` <span class="pr-title">${esc(title)}</span>` : "";
+  const badges = [
+    prBadge("state", prStateLabel(entry.pr), prStateClass(entry.pr)),
+    prBadge("CI", ciLabel(d.ci), ciClass(d.ci)),
+    prBadge("review", reviewLabel(d.review), reviewClass(d.review)),
+    prBadge("mergeable", mergeLabel(d.mergeable), mergeClass(d.mergeable)),
+  ].join("");
+  return `<div class="pr-card">
+    <div class="pr-headline">${headline}${titleHtml}${openLink}</div>
+    <div class="pr-badges">${badges}</div>
+    <p class="pr-fetched">fetched ${esc(relativeAge(ageMs))}</p>
+  </div>`;
+}
+
+// A `[PR #N <state>]` chip per linked PR, shown after the title in queue rows.
+// State comes from the cache; on a miss the chip is still useful as a link
+// (`[PR #N]`, no state).
+function prChipsFor(task: Task, prCache: PrCacheReader): string {
+  const urls = (Array.isArray(task.data.prs) ? task.data.prs : []).map(String).filter(u => u.length > 0);
+  if (urls.length === 0) return "";
+  return urls.map(url => {
+    const ref = parsePrUrl(url);
+    const numLabel = ref ? `#${ref.number}` : "";
+    const entry = prCache(url);
+    const stateLabel = entry ? ` ${prStateLabel(entry.pr)}` : "";
+    const stateClass = entry ? prStateClass(entry.pr) : "s-dropped";
+    return `<a class="pr-chip badge ${stateClass}" href="${escAttr(url)}">PR ${esc(numLabel)}${esc(stateLabel)}</a>`;
+  }).join("");
+}
+
+function prBadge(label: string, value: string, cssClass: string): string {
+  return `<span class="pr-badge"><span class="pr-badge-label">${esc(label)}</span><span class="badge ${cssClass}">${esc(value)}</span></span>`;
+}
+
+function prStateLabel(pr: RawPrJson): string {
+  const state = (pr.state ?? "").toUpperCase();
+  if (state === "MERGED") return "merged";
+  if (state === "CLOSED") return "closed (not merged)";
+  if (pr.isDraft === true) return "draft";
+  if (state === "OPEN") return "open";
+  return state.toLowerCase() || "unknown";
+}
+
+function prStateClass(pr: RawPrJson): string {
+  const state = (pr.state ?? "").toUpperCase();
+  if (state === "MERGED") return "s-done";
+  if (state === "CLOSED") return "s-dropped";
+  if (pr.isDraft === true) return "s-in-progress";
+  if (state === "OPEN") return "s-open";
+  return "s-dropped";
+}
+
+function ciLabel(ci: PrDecision["ci"]): string {
+  return ci === "PASS" ? "passing" : ci === "FAIL" ? "failing" : ci === "PENDING" ? "pending" : "no checks";
+}
+function ciClass(ci: PrDecision["ci"]): string {
+  return ci === "PASS" ? "s-done" : ci === "FAIL" ? "s-blocked" : ci === "PENDING" ? "s-in-progress" : "s-dropped";
+}
+
+function reviewLabel(review: string): string {
+  switch (review.toUpperCase()) {
+    case "APPROVED": return "approved";
+    case "CHANGES_REQUESTED": return "changes requested";
+    case "COMMENTED": return "commented";
+    case "REVIEW_REQUIRED": return "review required";
+    case "NONE": return "no review";
+    default: return review.toLowerCase() || "no review";
+  }
+}
+function reviewClass(review: string): string {
+  switch (review.toUpperCase()) {
+    case "APPROVED": return "s-done";
+    case "CHANGES_REQUESTED": return "s-blocked";
+    case "COMMENTED": return "s-needs-feedback";
+    default: return "s-dropped";
+  }
+}
+
+function mergeLabel(m: string): string {
+  switch (m.toUpperCase()) {
+    case "CLEAN": return "clean";
+    case "BEHIND": return "behind main";
+    case "DIRTY": return "conflict";
+    case "BLOCKED": return "blocked";
+    case "UNSTABLE": return "unstable";
+    case "HAS_HOOKS": return "clean (hooks)";
+    default: return "unknown";
+  }
+}
+function mergeClass(m: string): string {
+  switch (m.toUpperCase()) {
+    case "CLEAN": return "s-done";
+    case "HAS_HOOKS": return "s-done";
+    case "BEHIND": return "s-in-progress";
+    case "DIRTY": return "s-blocked";
+    case "BLOCKED": return "s-needs-feedback";
+    case "UNSTABLE": return "s-needs-feedback";
+    default: return "s-dropped";
+  }
+}
+
+// "just now" / "5 min ago" / "3 hours ago" / "2 days ago" from an age in ms.
+function relativeAge(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 60_000) return "just now";
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
 // Inline list of project links shown above the page header. The current

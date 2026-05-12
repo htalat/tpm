@@ -127,6 +127,27 @@ nav.project-chips { display: flex; gap: .4rem; flex-wrap: wrap; margin-bottom: 1
   .action-form button { background: #1f6feb; border-color: #1f6feb; }
   .action-form button:hover { background: #388bfd; }
 }
+.pr-panel { margin-top: 2rem; padding-top: 1rem; border-top: 2px solid #d0d7de; }
+.pr-panel h2 { font-size: 1.05rem; margin-top: 0; padding-bottom: .2rem; border: 0; }
+.pr-card { margin: .75rem 0; padding: .7rem .9rem; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; }
+.pr-card-empty .pr-headline a:first-child { color: #57606a; }
+.pr-headline { display: flex; gap: .6rem; align-items: baseline; flex-wrap: wrap; }
+.pr-headline a:first-child { font-weight: 600; }
+.pr-title { color: #57606a; }
+.pr-open { font-size: .85em; margin-left: auto; white-space: nowrap; }
+.pr-badges { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: .55rem; }
+.pr-badge { display: inline-flex; gap: .35rem; align-items: center; }
+.pr-badge-label { color: #57606a; font-size: .7em; text-transform: uppercase; letter-spacing: .05em; }
+.pr-fetched, .pr-nodata { color: #8d96a0; font-size: .8em; margin: .55rem 0 0; }
+.pr-chip { font-size: .68em; padding: 1px 7px; }
+a.pr-chip:hover { text-decoration: none; opacity: .8; }
+@media (prefers-color-scheme: dark) {
+  .pr-panel { border-color: #30363d; }
+  .pr-card { background: #161b22; border-color: #30363d; }
+  .pr-card-empty .pr-headline a:first-child { color: #8d96a0; }
+  .pr-title { color: #8d96a0; }
+  .pr-badge-label { color: #8d96a0; }
+}
 @media (max-width: 720px) {
   .layout { grid-template-columns: 1fr; }
 }
