@@ -41,6 +41,34 @@ export const PR_JSON_FIELDS = [
   "mergedAt",
 ] as const;
 
+// Frontmatter-ish view of a task — just the fields the watch decision reads.
+export type WatchableTask = { status?: unknown; prs?: unknown };
+
+// Should the PR-signal poller pull `gh pr view` for this task's linked PRs?
+//
+//   - `in-progress`            — work in flight; always watched (a no-PR task
+//     has nothing to classify, but that's the caller's cheap early-out).
+//   - `ready` with a linked PR — the task was bounced back onto the agent
+//     queue (a manual `needs-review -> ready` revert, an agent deciding to
+//     rewrite, a PR left to age) while its PR is still live. The merge state
+//     outlives the status revert: when that PR merges the task must still
+//     auto-close, so we keep watching it (task 049). A `ready` task with no
+//     `prs:` is just queued work — nothing to watch.
+//   - everything else — out. `open` / `blocked` are deliberately parked;
+//     `done` / `dropped` are terminal; `needs-feedback` / `needs-review` /
+//     `needs-close` are already in someone's queue and re-watching them would
+//     re-log the same signal every tick (the poller flips a task *out* of
+//     `in-progress` precisely so it stops re-flagging).
+//
+// Single source of truth for the rule — scripts/recurring/check-pr-signal.sh
+// calls this per candidate task rather than reimplementing the predicate.
+export function shouldWatchForPrSignal(task: WatchableTask): boolean {
+  const status = String(task.status ?? "");
+  if (status === "in-progress") return true;
+  if (status === "ready") return Array.isArray(task.prs) && task.prs.length > 0;
+  return false;
+}
+
 export type RawPrJson = {
   url?: string;
   state?: string;

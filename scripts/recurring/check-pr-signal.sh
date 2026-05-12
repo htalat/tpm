@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 # Poll in-flight PRs and flip task status when a signal lands.
 #
-# For each `in-progress` task with a non-empty `prs:` list, queries the host
-# CLI (`gh` for GitHub) for each PR, then hands the gathered JSON to
-# `src/pr_signal.ts` for classification:
+# For each watched task with a non-empty `prs:` list, queries the host CLI
+# (`gh` for GitHub) for each PR, then hands the gathered JSON to
+# `src/pr_signal.ts` for classification. "Watched" = every `in-progress` task,
+# plus every `ready` task that still carries a linked PR — see
+# `shouldWatchForPrSignal` in src/pr_signal.ts, which this script calls per
+# candidate rather than reimplementing the rule. (Why `ready`: a manual
+# `needs-review -> ready` revert must not strand a task whose PR then merges —
+# task 049.) The classifier returns:
 #
 #   - any linked PR merged                                 -> needs-close    (then auto-close inline)
 #   - merge conflict / CI red / behind main / reviewer cmt -> needs-feedback (agent inbox)
 #   - CHANGES_REQUESTED                                    -> needs-review   (human inbox)
-#   - otherwise                                            -> leave in-progress
+#   - otherwise                                            -> leave the status as-is
 #
 # For the merged case the classifier also emits an OUTCOME block (PR title +
 # stripped body + merge link) which this script feeds straight into
@@ -22,8 +27,10 @@
 # ~/.tpm/pr-cache/<owner>/<repo>/<number>.json so `tpm serve`'s task page can
 # render PR state (CI / review / mergeable) without its own `gh` round-trip.
 #
-# Idempotent: re-running over an already-flipped task is a no-op (the task is
-# no longer `in-progress` once flipped, so the filter excludes it).
+# Idempotent: re-running over an already-flipped task is a no-op — once
+# flipped to needs-feedback / needs-review / needs-close / done the task is no
+# longer in the watch set (`in-progress`, or `ready`-with-a-PR), so it's
+# excluded.
 #
 # v0 limitation: only `host: github` is implemented. ADO projects are skipped
 # with a warning. Filling that in is the obvious follow-up.
@@ -55,10 +62,13 @@ command -v node >/dev/null || { log_error "node not found";    exit 1; }
 GH_FIELDS=$(node -e "import('$CLASSIFIER').then(m => process.stdout.write(m.PR_JSON_FIELDS.join(',')))")
 
 # Enumerate qualified slugs (`<project>/<task>` or `<project>/<parent>/<child>`)
-# of every in-progress task. Parse `tpm ls --status in-progress --flat`:
+# of every candidate task: every `in-progress` task, plus every `ready` task
+# (the `ready` ones still need a linked PR to be in the watch set — that gets
+# checked per task below via shouldWatchForPrSignal, once `tpm context` hands
+# us the `prs:` list). Parse `tpm ls --status <S> --flat`:
 #   <project name>  (<project-slug>)  [<project-status>]
 #     · <status>    <type>           <task-slug>  [prs...]
-slugs=$(tpm ls --status in-progress --flat | awk '
+slugs=$( { tpm ls --status in-progress --flat; tpm ls --status ready --flat; } | awk '
   /^[^ ]/ {
     # 2-arg match() + substr is portable; 3-arg match(..., arr) is gawk-only.
     if (match($0, /\([^)]+\)/)) proj = substr($0, RSTART + 1, RLENGTH - 2)
@@ -76,7 +86,7 @@ gh_failed=0
 checked=0
 
 if [ -z "${slugs:-}" ]; then
-  log_info "no in-progress tasks"
+  log_info "no tasks to watch"
   exit 0
 fi
 
@@ -103,7 +113,33 @@ while IFS= read -r slug; do
     continue
   fi
 
+  status=$(printf '%s\n' "$briefing" | awk '/^- Status: / { print $3; exit }')
   prs_line=$(printf '%s\n' "$briefing" | awk '/^- PRs: / { sub(/^- PRs: /, ""); print; exit }')
+
+  # Is this task in the watch set? shouldWatchForPrSignal() in src/pr_signal.ts
+  # is the single source of truth — pass it the status (read fresh from the
+  # briefing; it may have moved since enumeration) and the comma-joined PR list.
+  # The classifier path goes in the import() literal (not argv) so the module's
+  # `main()` entrypoint guard doesn't fire. rc 0 = watch; 1 = skip (not a
+  # watch-worthy status, or `ready` with no PR); 2 = the check itself errored.
+  watch_rc=0
+  node -e "
+    import('$CLASSIFIER').then(({ shouldWatchForPrSignal }) => {
+      const prs = String(process.argv[1] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+      process.exit(shouldWatchForPrSignal({ status: process.argv[2], prs }) ? 0 : 1);
+    }).catch((e) => { console.error(e); process.exit(2); });
+  " "$prs_line" "$status" || watch_rc=$?
+  if [ "$watch_rc" -eq 1 ]; then
+    no_signal=$((no_signal + 1))
+    continue
+  elif [ "$watch_rc" -ne 0 ]; then
+    log_warn "skip $slug (watch-check exit=$watch_rc)"
+    gh_failed=$((gh_failed + 1))
+    continue
+  fi
+
+  # Watched but no linked PR yet (an `in-progress` task that hasn't opened its
+  # PR) — nothing to classify this tick.
   if [ -z "$prs_line" ]; then
     no_signal=$((no_signal + 1))
     continue

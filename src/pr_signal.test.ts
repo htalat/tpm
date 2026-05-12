@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { analyzePr, classifyPrs, deriveCloseOutcome, stripPrBody, PR_JSON_FIELDS, type RawPrJson } from "./pr_signal.ts";
+import { analyzePr, classifyPrs, deriveCloseOutcome, stripPrBody, shouldWatchForPrSignal, PR_JSON_FIELDS, type RawPrJson } from "./pr_signal.ts";
 
 function pr(url: string, extra: Omit<RawPrJson, "url">): RawPrJson {
   return { url, state: "OPEN", isDraft: false, ...extra };
@@ -390,6 +390,81 @@ test("analyzePr: closed (not merged) -> no-signal regardless of signals", () => 
 test("analyzePr: missing url -> '<unknown>' placeholder", () => {
   const d = analyzePr({ state: "OPEN", isDraft: false });
   assert.equal(d.url, "<unknown>");
+});
+
+// ---- shouldWatchForPrSignal (task 049) ----------------------------------
+
+test("shouldWatchForPrSignal: in-progress is always watched", () => {
+  assert.equal(shouldWatchForPrSignal({ status: "in-progress", prs: ["https://x/1"] }), true);
+  assert.equal(shouldWatchForPrSignal({ status: "in-progress", prs: [] }), true);
+  assert.equal(shouldWatchForPrSignal({ status: "in-progress" }), true);
+});
+
+test("shouldWatchForPrSignal: ready is watched only with a linked PR", () => {
+  // The task-049 case: a manual `needs-review -> ready` revert (or an agent
+  // bouncing the task back) must not strand a task whose PR then merges.
+  assert.equal(shouldWatchForPrSignal({ status: "ready", prs: ["https://x/1"] }), true);
+  // ...but a plain queued task with no PR has nothing to watch.
+  assert.equal(shouldWatchForPrSignal({ status: "ready", prs: [] }), false);
+  assert.equal(shouldWatchForPrSignal({ status: "ready" }), false);
+  assert.equal(shouldWatchForPrSignal({ status: "ready", prs: "not-an-array" }), false);
+});
+
+test("shouldWatchForPrSignal: parked / terminal / already-queued statuses are never watched", () => {
+  // Even if a PR somehow got attached: `open`/`blocked` are deliberately
+  // parked, `done`/`dropped` are terminal, and `needs-*` are already in
+  // someone's queue (re-watching would re-log the same signal every tick).
+  for (const status of ["open", "blocked", "done", "dropped", "needs-feedback", "needs-review", "needs-close"]) {
+    assert.equal(
+      shouldWatchForPrSignal({ status, prs: ["https://x/1"] }),
+      false,
+      `status ${status} with a linked PR should still be skipped`,
+    );
+  }
+});
+
+test("shouldWatchForPrSignal: missing / empty status is not watched", () => {
+  assert.equal(shouldWatchForPrSignal({}), false);
+  assert.equal(shouldWatchForPrSignal({ status: "" }), false);
+  assert.equal(shouldWatchForPrSignal({ status: undefined, prs: ["https://x/1"] }), false);
+});
+
+test("ready task with a merged PR: watched, then classifier closes it (task 049 end-to-end)", () => {
+  // The filter expansion is the whole fix — once the `ready` task is back in
+  // scope, the existing merged-PR path (classifyPrs -> needs-close, plus the
+  // auto-Outcome) takes it the rest of the way without caring what the prior
+  // status was.
+  const prs: RawPrJson[] = [{
+    url: "https://x/1",
+    state: "MERGED",
+    isDraft: false,
+    title: "Did the thing",
+    body: "summary line",
+    mergedAt: "2026-05-10T19:00:00Z",
+  }];
+  assert.equal(shouldWatchForPrSignal({ status: "ready", prs: ["https://x/1"] }), true);
+  assert.deepEqual(classifyPrs(prs), { status: "needs-close", reasons: ["merged https://x/1"] });
+  assert.match(deriveCloseOutcome(prs) ?? "", /^Did the thing\./);
+});
+
+test("ready task with a clean OPEN PR: watched, but classifier leaves it alone", () => {
+  // No churn: only the MERGED (and CHANGES_REQUESTED / CI-red / BEHIND) cases
+  // mutate state — a clean open PR on a `ready` task stays put.
+  assert.equal(shouldWatchForPrSignal({ status: "ready", prs: ["https://x/1"] }), true);
+  assert.equal(
+    classifyPrs([
+      {
+        url: "https://x/1",
+        state: "OPEN",
+        isDraft: false,
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN",
+        statusCheckRollup: [{ conclusion: "SUCCESS" }],
+        latestReviews: [{ state: "APPROVED" }],
+      },
+    ]),
+    null,
+  );
 });
 
 test("PR_JSON_FIELDS: includes only real `gh pr view --json` fields", () => {
