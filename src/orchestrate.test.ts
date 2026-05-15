@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   classifyDisposition,
   formatDispositionLine,
+  noPickLogEntry,
   resolveTimeBound,
 } from "./orchestrate.ts";
 import type { Project, Task } from "./tree.ts";
@@ -209,4 +210,16 @@ test("formatDispositionLine: timeout carries exit=124", () => {
     ),
     "disposition tpm/051-foo timeout exit=124 status=ready->ready prs=0->0",
   );
+});
+
+test("noPickLogEntry: empty queue → INFO with 'no eligible tasks'", () => {
+  const entry = noPickLogEntry(0);
+  assert.equal(entry.level, "INFO");
+  assert.match(entry.message, /no eligible tasks/);
+});
+
+test("noPickLogEntry: candidates exist but all locked → WARN about contention", () => {
+  const entry = noPickLogEntry(3);
+  assert.equal(entry.level, "WARN");
+  assert.match(entry.message, /repos busy or task-locked/);
 });

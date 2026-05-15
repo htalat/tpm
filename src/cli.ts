@@ -513,7 +513,6 @@ try {
       if (claudeArg !== undefined) opts.claudeBin = claudeArg;
       if (taskArg !== undefined) opts.preClaimedTask = taskArg;
       const r = await runOrchestrate(opts);
-      if (r.message) console.error(r.message);
       process.exit(r.exitCode);
     }
     case "agents": {
