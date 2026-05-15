@@ -347,6 +347,59 @@ test("renderTask: mutationsEnabled=false renders a disabled-actions notice", () 
   assert.doesNotMatch(r.body, /<form method="POST"/);
 });
 
+test("renderTask: actionable task wraps PR/Actions/Settings inside a .task-rail next to the body", () => {
+  // Rail sits inside .layout (the grid container), not after it. The PR panel
+  // renders first within the rail, then Actions, then Settings.
+  const t = task("001-a", "in-progress", { prs: ["https://github.com/x/y/pull/1"] });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /class="task-rail"/);
+  const idxLayoutOpen  = r.body.indexOf('class="layout');
+  const idxRail        = r.body.indexOf('class="task-rail"');
+  const idxLayoutClose = r.body.indexOf("</div>", idxRail);
+  // Rail must sit inside the layout grid (between its open and its first close).
+  assert.ok(idxLayoutOpen >= 0 && idxRail > idxLayoutOpen && idxLayoutClose > idxRail);
+  // Order inside the rail: PR panel → Actions → Settings.
+  const idxPr       = r.body.indexOf('class="pr-panel"');
+  const idxActions  = r.body.indexOf('class="task-actions"');
+  const idxSettings = r.body.indexOf('class="task-settings"');
+  assert.ok(idxRail < idxPr && idxPr < idxActions && idxActions < idxSettings);
+  // Layout opts into the rail (no "no-rail" fallback class).
+  assert.doesNotMatch(r.body, /class="layout no-rail"/);
+});
+
+test("renderTask: terminal task with PR history keeps the rail (PR panel only)", () => {
+  const t = task("001-done", "done", { prs: ["https://github.com/x/y/pull/1"] });
+  const p = project("alpha", [t]);
+  const prCache: PrCacheReader = () => null;
+  const r = route("/t/alpha/001-done", new URLSearchParams(), [p], { mutationsEnabled: true, prCache });
+  assert.match(r.body, /class="task-rail"/);
+  assert.match(r.body, /class="pr-panel"/);
+  assert.doesNotMatch(r.body, /class="task-actions"/);
+  assert.doesNotMatch(r.body, /class="task-settings"/);
+  assert.doesNotMatch(r.body, /class="layout no-rail"/);
+});
+
+test("renderTask: terminal task with no PRs collapses layout to 2-col (no-rail fallback)", () => {
+  const t = task("001-done", "done");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-done", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.doesNotMatch(r.body, /class="task-rail"/);
+  assert.match(r.body, /class="layout no-rail"/);
+});
+
+test("renderTask: mutationsEnabled=false still rails the disabled notice + PR panel", () => {
+  // CLI-only mode: the Settings section is hidden, but the disabled Actions
+  // notice (and the PR panel, if any) still live in the rail.
+  const t = task("001-a", "in-progress", { prs: ["https://github.com/x/y/pull/1"] });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: false });
+  assert.match(r.body, /class="task-rail"/);
+  assert.match(r.body, /class="pr-panel"/);
+  assert.match(r.body, /class="task-actions disabled"/);
+  assert.doesNotMatch(r.body, /class="task-settings"/);
+});
+
 test("renderTask: allow-orchestrator toggle hidden input flips based on current value", () => {
   const on = task("001-on", "in-progress", { allow_orchestrator: true });
   const off = task("002-off", "in-progress", { allow_orchestrator: false });

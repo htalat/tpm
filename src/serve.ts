@@ -464,6 +464,8 @@ function renderTask(project: Project, task: Task, opts: RouteOpts = {}, prCache:
   const prPanel = renderPrPanel(prs, prCache);
   const actionsSection = renderActions(project, task, status, opts);
   const settingsSection = renderSettings(project, task, status, opts);
+  const railContent = `${prPanel}${actionsSection}${settingsSection}`;
+  const hasRail = railContent.length > 0;
 
   const body = `
 <nav class="crumbs"><a href="/">tpm</a>${crumbsTrail}</nav>
@@ -472,7 +474,7 @@ ${flashBanner}
   <h1>${esc(title)} <span class="badge s-${cls(status)}">${esc(status)}</span></h1>
   <p class="meta"><code>${esc(task.slug)}</code>  ·  type: ${esc(strOr(task.data.type, "?"))}  ·  project: <a href="/p/${esc(project.slug)}">${esc(project.slug)}</a></p>
 </header>
-<div class="layout">
+<div class="layout${hasRail ? "" : " no-rail"}">
   <aside class="sidebar">
     <dl>
       <dt>Status</dt><dd><span class="badge s-${cls(status)}">${esc(status)}</span></dd>
@@ -488,10 +490,8 @@ ${flashBanner}
     </dl>
   </aside>
   <main class="body">${renderMarkdown(task.body)}</main>
+  ${hasRail ? `<div class="task-rail">${railContent}</div>` : ""}
 </div>
-${prPanel}
-${actionsSection}
-${settingsSection}
 `;
   return layout(`tpm · ${title}`, body);
 }
