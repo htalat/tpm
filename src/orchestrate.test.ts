@@ -111,6 +111,82 @@ test("classifyDisposition: exit 0 with status flipped → shipped", () => {
   );
 });
 
+test("classifyDisposition: ready → in-progress, prs unchanged → stalled (entry flip is not shipped)", () => {
+  // The live bug from task 064: agent ran `tpm start`, flipped status, then
+  // exited without shipping. That's the first step of work, not progress.
+  assert.equal(
+    classifyDisposition({
+      exitCode: 0,
+      before: { status: "ready", prs: 0 },
+      after: { status: "in-progress", prs: 0 },
+    }),
+    "stalled",
+  );
+});
+
+test("classifyDisposition: needs-feedback → in-progress, prs unchanged → stalled (feedback-round entry flip)", () => {
+  // Feedback dispatch flips status to in-progress on entry; exiting without
+  // addressing anything (no commit, no new PR) is the same non-progress case.
+  assert.equal(
+    classifyDisposition({
+      exitCode: 0,
+      before: { status: "needs-feedback", prs: 1 },
+      after: { status: "in-progress", prs: 1 },
+    }),
+    "stalled",
+  );
+});
+
+test("classifyDisposition: in-progress → needs-review with PR opened → shipped", () => {
+  // Canonical ship: agent ran `tpm pr`, status flipped, prs grew.
+  assert.equal(
+    classifyDisposition({
+      exitCode: 0,
+      before: { status: "in-progress", prs: 0 },
+      after: { status: "needs-review", prs: 1 },
+    }),
+    "shipped",
+  );
+});
+
+test("classifyDisposition: in-progress → done → shipped", () => {
+  // `tpm complete` ran (investigation/spike close-out, or direct-push task).
+  assert.equal(
+    classifyDisposition({
+      exitCode: 0,
+      before: { status: "in-progress", prs: 0 },
+      after: { status: "done", prs: 0 },
+    }),
+    "shipped",
+  );
+});
+
+test("classifyDisposition: in-progress → blocked → shipped (legitimate end-state flip)", () => {
+  // Agent escalated via `tpm block`. Surfacing a blocker is a meaningful
+  // action even though no code shipped.
+  assert.equal(
+    classifyDisposition({
+      exitCode: 0,
+      before: { status: "in-progress", prs: 0 },
+      after: { status: "blocked", prs: 0 },
+    }),
+    "shipped",
+  );
+});
+
+test("classifyDisposition: ready → in-progress with PR opened in same run → shipped", () => {
+  // Agent did the full ready → in-progress → PR cycle in one run. The PR
+  // count gain wins over the entry-flip rule.
+  assert.equal(
+    classifyDisposition({
+      exitCode: 0,
+      before: { status: "ready", prs: 0 },
+      after: { status: "in-progress", prs: 1 },
+    }),
+    "shipped",
+  );
+});
+
 test("classifyDisposition: exit 0 with prs gained → shipped", () => {
   assert.equal(
     classifyDisposition({
