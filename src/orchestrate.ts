@@ -251,7 +251,14 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     // Atomic pick + claim: walk candidates, lock the first one we can.
     // Strategy `serialize` also requires the repo lock — falls through to
     // the next candidate if a sibling task is already running in this repo.
-    const candidates = selectCandidates(projects, { autonomous: true });
+    // Pass `hasTaskLock` so stranded in-progress tasks (status didn't flip out
+    // on a prior agent exit; lock since released) get admitted alongside ready
+    // / needs-feedback. The stale-lock sweep above guarantees a lock file we
+    // see at this point is current, not a leftover from a dead pid.
+    const candidates = selectCandidates(projects, {
+      autonomous: true,
+      hasTaskLock: (slug) => lock.hasTaskLock(root, slug),
+    });
     for (const c of candidates) {
       const candSlug = c.task.parent
         ? `${c.project.slug}/${c.task.parent}/${c.task.slug}`

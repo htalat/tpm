@@ -4,6 +4,14 @@ import type { Project, Task } from "./tree.ts";
 export interface SelectNextOpts {
   projectFilter?: string;
   autonomous?: boolean;
+  // Injected so callers (CLI, orchestrator) can let the queue admit stranded
+  // in-progress tasks as recoverable candidates without the queue itself
+  // touching the filesystem. The predicate gets a task's fully-qualified slug
+  // and returns true when a per-task lock file exists.
+  //
+  // When omitted (unit tests, callers that want strict legacy behavior), no
+  // in-progress task is admitted — same as before task 065.
+  hasTaskLock?: (qualifiedSlug: string) => boolean;
 }
 
 export interface QueueItem {
@@ -11,14 +19,16 @@ export interface QueueItem {
   task: Task;
 }
 
-const NEXT_STATUSES = ["needs-feedback", "ready"] as const;
-
-// All eligible leaf candidates in selection order:
-//   needs-feedback (in-flight signal, time-sensitive) >
-//   ready         (new work),
-// then oldest by created within each bucket. Parents and archived excluded.
-// Used by both `selectNext` (head) and `tpm next --claim` (walk until one
-// can be locked).
+// Priority order for `tpm next` (lower rank = higher priority):
+//   needs-feedback        — in-flight PR signal, time-sensitive.
+//   stranded in-progress  — status is `in-progress` but no per-task lock is
+//                           held. The lock is the source of truth for "is
+//                           someone working on this"; if it's free the task is
+//                           reclaimable. Safety net for agents that exit
+//                           without flipping out of `in-progress` (task 063's
+//                           bug; this admission rule is task 065).
+//   ready                 — fresh queue.
+// Within each bucket, oldest by `created` first. Parents and archived excluded.
 //
 // `needs-close` is intentionally absent: task 045 made the poller auto-close
 // inline (`tpm complete` from check-pr-signal.sh) right after the
@@ -27,31 +37,48 @@ const NEXT_STATUSES = ["needs-feedback", "ready"] as const;
 // lock contention, Outcome pre-filled) stay at `needs-close` for the manual
 // `/tpm done <slug>` escape hatch; surface them with `tpm ls --status
 // needs-close` if you want a sweep.
+const RANK_NEEDS_FEEDBACK = 0;
+const RANK_STRANDED       = 1;
+const RANK_READY          = 2;
+const RANK_INELIGIBLE     = 99;
+
+function rankFor(task: Task, qualifiedSlug: string, opts: SelectNextOpts): number {
+  const status = String(task.data.status ?? "");
+  if (status === "needs-feedback") return RANK_NEEDS_FEEDBACK;
+  if (status === "ready") return RANK_READY;
+  if (status === "in-progress" && opts.hasTaskLock && !opts.hasTaskLock(qualifiedSlug)) {
+    return RANK_STRANDED;
+  }
+  return RANK_INELIGIBLE;
+}
+
+export function qualifyTaskSlug(projectSlug: string, task: Task): string {
+  return task.parent ? `${projectSlug}/${task.parent}/${task.slug}` : `${projectSlug}/${task.slug}`;
+}
+
+// All eligible leaf candidates in selection order. Used by both `selectNext`
+// (head) and `tpm next --claim` / orchestrate (walk until one can be locked).
 export function selectCandidates(projects: Project[], opts: SelectNextOpts = {}): QueueItem[] {
-  const candidates: QueueItem[] = [];
+  const ranked: Array<QueueItem & { rank: number }> = [];
   for (const p of projects) {
     if (opts.projectFilter && p.slug !== opts.projectFilter) continue;
     for (const t of flatTasks(p.tasks)) {
       if (t.archived) continue;
       if (isParent(t)) continue;
-      const status = String(t.data.status ?? "");
-      if (!(NEXT_STATUSES as readonly string[]).includes(status)) continue;
       if (opts.autonomous && t.data.allow_orchestrator !== true) continue;
-      candidates.push({ project: p, task: t });
+      const slug = qualifyTaskSlug(p.slug, t);
+      const rank = rankFor(t, slug, opts);
+      if (rank === RANK_INELIGIBLE) continue;
+      ranked.push({ project: p, task: t, rank });
     }
   }
-  const priority = (s: unknown): number => {
-    const i = (NEXT_STATUSES as readonly string[]).indexOf(String(s));
-    return i < 0 ? NEXT_STATUSES.length : i;
-  };
-  candidates.sort((a, b) => {
-    const dp = priority(a.task.data.status) - priority(b.task.data.status);
-    if (dp !== 0) return dp;
+  ranked.sort((a, b) => {
+    if (a.rank !== b.rank) return a.rank - b.rank;
     const ac = String(a.task.data.created ?? "");
     const bc = String(b.task.data.created ?? "");
     return ac.localeCompare(bc);
   });
-  return candidates;
+  return ranked.map(({ project, task }) => ({ project, task }));
 }
 
 // `tpm next` selection: head of the candidate list, or null if empty.

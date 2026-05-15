@@ -398,8 +398,14 @@ try {
       const projectFilter = parseFlag(args, "--project");
       const autonomous = args.includes("--autonomous");
       const claimAgent = parseFlag(args, "--claim") ?? (args.includes("--claim") ? process.env.TPM_AGENT_ID : undefined);
+      // Lock predicate enables the queue's stranded-in-progress admission
+      // (task 065): a task whose status is in-progress but whose per-task lock
+      // is gone is reclaimable. Stale-lock hygiene runs below on the --claim
+      // path; on the non-claim path we accept that a freshly-stale lock will
+      // hide a stranded task until the next claim or the reclaim sweeper runs.
+      const hasTaskLock = (slug: string) => lock.hasTaskLock(root, slug);
       if (!claimAgent) {
-        const pick = selectNext(projects, { projectFilter, autonomous });
+        const pick = selectNext(projects, { projectFilter, autonomous, hasTaskLock });
         if (!pick) {
           const where = projectFilter ? ` in project "${projectFilter}"` : "";
           const gate = autonomous ? " with allow_orchestrator: true" : "";
@@ -415,7 +421,7 @@ try {
       // Skip a stale-lock sweep first as a hygiene step.
       const ttl = staleTtlDefault(root);
       lock.releaseStaleTaskLocks(root, ttl);
-      let candidates = selectCandidates(projects, { projectFilter, autonomous });
+      let candidates = selectCandidates(projects, { projectFilter, autonomous, hasTaskLock });
       // Apply agent affinity: if the agent has prefer_repos configured AND
       // --any-repo is not set, restrict to candidates whose project slug
       // matches. Agents with no entry (or empty prefer_repos) see all.

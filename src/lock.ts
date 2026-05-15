@@ -273,6 +273,15 @@ export function heartbeatTask(
   return { ok: true, message: "heartbeat" };
 }
 
+// Cheap "is anyone holding this lock right now?" — just an existsSync. Used by
+// queue selection to admit stranded in-progress tasks (status didn't flip out
+// on agent exit but the lock did get released). Unlike `statusTask`, no read or
+// parse of the file body. Stale locks aren't filtered out here: callers that
+// care about TTL should run `releaseStaleTaskLocks` first.
+export function hasTaskLock(root: string, qualifiedSlug: string): boolean {
+  return existsSync(taskLockPath(root, qualifiedSlug));
+}
+
 export function statusTask(root: string, qualifiedSlug: string): string {
   const path = taskLockPath(root, qualifiedSlug);
   if (!existsSync(path)) return "no lock";
