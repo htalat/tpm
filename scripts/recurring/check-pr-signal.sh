@@ -13,11 +13,16 @@
 #   - CHANGES_REQUESTED / abandoned                        -> needs-review   (human inbox)
 #   - otherwise                                            -> leave the status as-is
 #
-# "Watched" = every `in-progress` task, plus every `ready` task that still
-# carries a linked PR — see `shouldWatchForPrSignal` in src/pr_signal.ts,
-# which this script calls per candidate rather than reimplementing the rule.
-# (Why `ready`: a manual `needs-review -> ready` revert must not strand a
-# task whose PR then merges — task 049.)
+# "Watched" = every non-terminal task with a linked PR, plus every
+# `in-progress` task (even without a PR yet — round in flight may open one
+# mid-tick) — see `shouldWatchForPrSignal` in src/pr_signal.ts, which this
+# script calls per candidate rather than reimplementing the rule. The
+# enumeration below feeds candidates from each watched status; the per-task
+# predicate is the source of truth on whether to actually fetch. Both ends of
+# the lifecycle matter: a manual `needs-review -> ready` revert mustn't
+# strand a task whose PR then merges (task 049), and a task that has already
+# moved past `in-progress` to `needs-review` / `needs-feedback` /
+# `needs-close` still has a live PR generating events (task 055).
 #
 # For the merged case the classifier also emits an OUTCOME block (PR title +
 # stripped body + merge link) which this script feeds straight into
@@ -37,10 +42,10 @@
 # A misconfigured host on one task is logged per-PR and doesn't poison the
 # rest of the tick.
 #
-# Idempotent: re-running over an already-flipped task is a no-op — once
-# flipped to needs-feedback / needs-review / needs-close / done the task is no
-# longer in the watch set (`in-progress`, or `ready`-with-a-PR), so it's
-# excluded.
+# Idempotent: re-running over an already-correctly-statused task is a no-op
+# — the classifier returns no-signal when the task's status already matches
+# the PR's signal. (Tasks remain in the watch set across non-terminal
+# statuses; idempotency comes from the classifier, not the filter.)
 #
 # Logs use the structured format from scripts/recurring/_log.sh — one line per
 # decision so a `grep 'action=no-signal'` shows everything the classifier
@@ -67,13 +72,20 @@ command -v node >/dev/null || { log_error "node not found";    exit 1; }
 # DECIDE action=error line, not a script-wide abort.
 
 # Enumerate qualified slugs (`<project>/<task>` or `<project>/<parent>/<child>`)
-# of every candidate task: every `in-progress` task, plus every `ready` task
-# (the `ready` ones still need a linked PR to be in the watch set — that gets
-# checked per task below via shouldWatchForPrSignal, once `tpm context` hands
-# us the `prs:` list). Parse `tpm ls --status <S> --flat`:
+# of every candidate task. Pull from each watched status — the per-task
+# predicate (shouldWatchForPrSignal, called below once `tpm context` hands us
+# the `prs:` list) is the source of truth on whether to actually fetch; this
+# enumeration just has to feed it the right candidates. Parse `tpm ls
+# --status <S> --flat`:
 #   <project name>  (<project-slug>)  [<project-status>]
 #     · <status>    <type>           <task-slug>  [prs...]
-slugs=$( { tpm ls --status in-progress --flat; tpm ls --status ready --flat; } | awk '
+slugs=$( {
+  tpm ls --status in-progress    --flat
+  tpm ls --status ready          --flat
+  tpm ls --status needs-review   --flat
+  tpm ls --status needs-feedback --flat
+  tpm ls --status needs-close    --flat
+} | awk '
   /^[^ ]/ {
     # 2-arg match() + substr is portable; 3-arg match(..., arr) is gawk-only.
     if (match($0, /\([^)]+\)/)) proj = substr($0, RSTART + 1, RLENGTH - 2)

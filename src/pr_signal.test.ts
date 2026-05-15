@@ -250,23 +250,38 @@ test("aggregateSignals: merged on one PR + abandoned on another -> needs-close (
   assert.equal(result?.status, "needs-close");
 });
 
-// ---- shouldWatchForPrSignal (task 049) ----------------------------------
+// ---- shouldWatchForPrSignal (tasks 049 + 055) ---------------------------
 
-test("shouldWatchForPrSignal: in-progress is always watched", () => {
-  assert.equal(shouldWatchForPrSignal({ status: "in-progress", prs: ["https://x/1"] }), true);
-  assert.equal(shouldWatchForPrSignal({ status: "in-progress", prs: [] }), true);
-  assert.equal(shouldWatchForPrSignal({ status: "in-progress" }), true);
+test("shouldWatchForPrSignal: every non-terminal status with a linked PR is watched", () => {
+  // Forward-direction (055): linked PRs keep generating signals as the task
+  // moves through needs-review / needs-feedback / needs-close. Backward (049):
+  // a manual needs-review -> ready revert mustn't strand a merge signal.
+  for (const status of ["in-progress", "ready", "needs-review", "needs-feedback", "needs-close"]) {
+    assert.equal(
+      shouldWatchForPrSignal({ status, prs: ["https://x/1"] }),
+      true,
+      `status ${status} with a linked PR should be watched`,
+    );
+  }
 });
 
-test("shouldWatchForPrSignal: ready is watched only with a linked PR", () => {
-  assert.equal(shouldWatchForPrSignal({ status: "ready", prs: ["https://x/1"] }), true);
-  assert.equal(shouldWatchForPrSignal({ status: "ready", prs: [] }), false);
-  assert.equal(shouldWatchForPrSignal({ status: "ready" }), false);
-  assert.equal(shouldWatchForPrSignal({ status: "ready", prs: "not-an-array" }), false);
+test("shouldWatchForPrSignal: non-terminal statuses without a linked PR are skipped", () => {
+  // No URL to fetch means no signal to read — including in-progress before
+  // the agent has opened its PR.
+  for (const status of ["in-progress", "ready", "needs-review", "needs-feedback", "needs-close"]) {
+    assert.equal(shouldWatchForPrSignal({ status, prs: [] }), false, `${status} + empty prs`);
+    assert.equal(shouldWatchForPrSignal({ status }), false, `${status} + missing prs`);
+    assert.equal(
+      shouldWatchForPrSignal({ status, prs: "not-an-array" }),
+      false,
+      `${status} + non-array prs`,
+    );
+  }
 });
 
-test("shouldWatchForPrSignal: parked / terminal / already-queued statuses are never watched", () => {
-  for (const status of ["open", "blocked", "done", "dropped", "needs-feedback", "needs-review", "needs-close"]) {
+test("shouldWatchForPrSignal: parked / terminal statuses are never watched", () => {
+  // open + blocked are deliberately parked; done + dropped are terminal.
+  for (const status of ["open", "blocked", "done", "dropped"]) {
     assert.equal(
       shouldWatchForPrSignal({ status, prs: ["https://x/1"] }),
       false,
