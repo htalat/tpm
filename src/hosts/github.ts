@@ -25,6 +25,11 @@ export const GITHUB_PR_JSON_FIELDS = [
   "title",
   "body",
   "mergedAt",
+  // Used to gate the COMMENTED-as-needs-agent heuristic: a COMMENTED review
+  // only counts as fresh signal if its submittedAt is newer than the most
+  // recent commit on the branch. Otherwise the reviewer hasn't seen the code
+  // they'd be commenting on. See mapGithub.
+  "commits",
 ] as const;
 
 export interface GithubPrJson {
@@ -34,10 +39,11 @@ export interface GithubPrJson {
   reviewDecision?: string | null;
   statusCheckRollup?: Array<{ conclusion?: string | null }>;
   mergeStateStatus?: string;
-  latestReviews?: Array<{ state?: string }>;
+  latestReviews?: Array<{ state?: string; submittedAt?: string }>;
   title?: string;
   body?: string;
   mergedAt?: string;
+  commits?: Array<{ committedDate?: string }>;
 }
 
 const CI_FAILED_CONCLUSIONS = new Set([
@@ -75,7 +81,19 @@ export function mapGithub(pr: GithubPrJson): PrSignal {
     CI_FAILED_CONCLUSIONS.has((c.conclusion ?? "").toUpperCase()),
   );
   const changesRequested = pr.reviewDecision === "CHANGES_REQUESTED";
-  const commented = (pr.latestReviews ?? []).some((r) => r.state === "COMMENTED");
+  // A COMMENTED review is only actionable if the reviewer's comments are
+  // about the *current* code. Once a commit lands after the review, the
+  // COMMENTED state is stale — the reviewer hasn't seen the new code, so
+  // flipping the task to needs-agent each tick just thrashes the agent
+  // against feedback it has already addressed. Defensive case: if either
+  // commits or submittedAt is missing, treat as fresh (= flag) rather than
+  // silently dropping signal.
+  const latestCommitDate = latestCommitTimestamp(pr);
+  const commented = (pr.latestReviews ?? []).some(
+    (r) =>
+      r.state === "COMMENTED" &&
+      (!latestCommitDate || !r.submittedAt || r.submittedAt > latestCommitDate),
+  );
 
   if (changesRequested) return { kind: "needs-human", reason: `CHANGES_REQUESTED on ${url}` };
   if (conflicting) return { kind: "needs-agent", reason: `merge conflict on ${url}` };
@@ -84,6 +102,14 @@ export function mapGithub(pr: GithubPrJson): PrSignal {
   if (commented) return { kind: "needs-agent", reason: `reviewer comments on ${url}` };
 
   return { kind: "no-action" };
+}
+
+function latestCommitTimestamp(pr: GithubPrJson): string | undefined {
+  let max: string | undefined;
+  for (const c of pr.commits ?? []) {
+    if (c.committedDate && (!max || c.committedDate > max)) max = c.committedDate;
+  }
+  return max;
 }
 
 export const github: PrHost = {
