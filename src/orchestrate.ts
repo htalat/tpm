@@ -105,6 +105,36 @@ export function formatDispositionLine(
   return `disposition ${slug} ${disposition} exit=${exitCode} status=${before.status}->${afterStatus} prs=${before.prs}->${afterPrs}`;
 }
 
+export interface AutoRevertInput {
+  exitCode: number;
+  before: DispositionSnapshot;
+  after: DispositionSnapshot | null;
+  terminationReason?: "timeout" | "early-term";
+}
+
+// Should the orchestrator auto-revert a task that the agent stranded at
+// `in-progress`? The skill rule (per task 063) says agents must never exit
+// while a task is in-progress — they should ship (`tpm pr` / `tpm complete`),
+// revert (`tpm revert`), or block (`tpm block`). This predicate is the safety
+// net for agents that don't follow the rule.
+//
+// Only true when:
+//   - the child exited cleanly (exit 0, no orchestrator-initiated SIGTERM)
+//   - the task still exists in the tree (wasn't archived)
+//   - status is `in-progress` after the run
+//   - prs count didn't grow (a PR opened would have flipped to needs-review)
+//   - `before.status` wasn't `needs-feedback` — a feedback round legitimately
+//     ends at `in-progress` with unchanged prs after addressing CI/threads.
+export function shouldAutoRevert(input: AutoRevertInput): boolean {
+  if (input.exitCode !== 0) return false;
+  if (input.terminationReason) return false;
+  if (!input.after) return false;
+  if (input.after.status !== "in-progress") return false;
+  if (input.after.prs !== input.before.prs) return false;
+  if (input.before.status === "needs-feedback") return false;
+  return true;
+}
+
 function snapshotTask(task: Task): DispositionSnapshot {
   return {
     status: String(task.data.status ?? ""),
@@ -330,6 +360,31 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   });
   const level = disposition === "stalled" ? "WARN" : "INFO";
   logLine(level, formatDispositionLine(slug, disposition, result.exitCode, before, after));
+
+  // Strand-on-exit safety net (task 063). If the agent left the task at
+  // in-progress with no shipping signal, revert to ready so the next
+  // orchestrator tick (or a human) can re-pick it. mutate.revert is itself
+  // idempotent — the predicate is the gate that decides intent.
+  if (
+    matchAfter &&
+    shouldAutoRevert({
+      exitCode: result.exitCode,
+      before,
+      after,
+      terminationReason: result.terminationReason,
+    })
+  ) {
+    logLine(
+      "WARN",
+      `${slug}: agent exited cleanly with task still in-progress and no PR; auto-reverting to ready`,
+    );
+    try {
+      const r = mutate.revert(matchAfter.task, "agent exited with no progress (auto-revert)");
+      logLine("INFO", `revert ${slug}: ${r.message}`);
+    } catch (e) {
+      logLine("ERROR", `auto-revert ${slug} failed: ${(e as Error).message}`);
+    }
+  }
 
   return result;
 }

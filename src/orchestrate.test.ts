@@ -7,6 +7,7 @@ import {
   noPickLogEntry,
   resolveTimeBound,
   runWithTimeout,
+  shouldAutoRevert,
 } from "./orchestrate.ts";
 import type { Project, Task } from "./tree.ts";
 
@@ -300,6 +301,130 @@ test("formatDispositionLine: terminal disposition renders cleanly", () => {
       { status: "done", prs: 1 },
     ),
     "disposition tpm/059-foo terminal exit=0 status=in-progress->done prs=1->1",
+  );
+});
+
+test("shouldAutoRevert: ready -> in-progress with no PR opened → true (the 058 strand case)", () => {
+  // The live bug: an investigation task picked up at ready, flipped to
+  // in-progress via `tpm start`, then the agent exited without shipping.
+  assert.equal(
+    shouldAutoRevert({
+      exitCode: 0,
+      before: { status: "ready", prs: 0 },
+      after: { status: "in-progress", prs: 0 },
+    }),
+    true,
+  );
+});
+
+test("shouldAutoRevert: in-progress -> in-progress with no PR opened → true", () => {
+  // Agent resumed an already-in-progress task and exited without shipping.
+  assert.equal(
+    shouldAutoRevert({
+      exitCode: 0,
+      before: { status: "in-progress", prs: 0 },
+      after: { status: "in-progress", prs: 0 },
+    }),
+    true,
+  );
+});
+
+test("shouldAutoRevert: needs-feedback -> in-progress with no PR opened → false", () => {
+  // A feedback round legitimately ends here: the agent addressed CI/threads
+  // and ran `tpm status <slug> in-progress`. Don't revert that.
+  assert.equal(
+    shouldAutoRevert({
+      exitCode: 0,
+      before: { status: "needs-feedback", prs: 1 },
+      after: { status: "in-progress", prs: 1 },
+    }),
+    false,
+  );
+});
+
+test("shouldAutoRevert: after status is needs-review (PR opened) → false", () => {
+  // `tpm pr` flipped status, so this is the shipped path.
+  assert.equal(
+    shouldAutoRevert({
+      exitCode: 0,
+      before: { status: "ready", prs: 0 },
+      after: { status: "needs-review", prs: 1 },
+    }),
+    false,
+  );
+});
+
+test("shouldAutoRevert: after status is ready (agent self-reverted) → false", () => {
+  // The agent already followed the rule and called `tpm revert`.
+  assert.equal(
+    shouldAutoRevert({
+      exitCode: 0,
+      before: { status: "ready", prs: 0 },
+      after: { status: "ready", prs: 0 },
+    }),
+    false,
+  );
+});
+
+test("shouldAutoRevert: prs grew → false", () => {
+  // Defensive: if a PR was added but status didn't flip (shouldn't happen
+  // with `tpm pr` but a direct edit could), still treat it as shipped.
+  assert.equal(
+    shouldAutoRevert({
+      exitCode: 0,
+      before: { status: "in-progress", prs: 0 },
+      after: { status: "in-progress", prs: 1 },
+    }),
+    false,
+  );
+});
+
+test("shouldAutoRevert: non-zero exit → false (failed runs aren't auto-handled here)", () => {
+  // Crashed/failed runs leave the task at in-progress, but the disposition
+  // classifier marks them `failed` and task 065's stranded-reclaim sweeper
+  // handles them. This predicate only catches clean exits.
+  assert.equal(
+    shouldAutoRevert({
+      exitCode: 1,
+      before: { status: "ready", prs: 0 },
+      after: { status: "in-progress", prs: 0 },
+    }),
+    false,
+  );
+});
+
+test("shouldAutoRevert: terminationReason=timeout → false (onTimeout already reverts)", () => {
+  assert.equal(
+    shouldAutoRevert({
+      exitCode: 124,
+      before: { status: "ready", prs: 0 },
+      after: { status: "in-progress", prs: 0 },
+      terminationReason: "timeout",
+    }),
+    false,
+  );
+});
+
+test("shouldAutoRevert: terminationReason=early-term → false (task went terminal externally)", () => {
+  assert.equal(
+    shouldAutoRevert({
+      exitCode: 0,
+      before: { status: "in-progress", prs: 0 },
+      after: { status: "in-progress", prs: 0 },
+      terminationReason: "early-term",
+    }),
+    false,
+  );
+});
+
+test("shouldAutoRevert: after=null (task archived mid-run) → false", () => {
+  assert.equal(
+    shouldAutoRevert({
+      exitCode: 0,
+      before: { status: "in-progress", prs: 1 },
+      after: null,
+    }),
+    false,
   );
 });
 
