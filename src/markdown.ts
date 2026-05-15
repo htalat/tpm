@@ -131,9 +131,13 @@ function renderInline(s: string): string {
   // Inline code.
   let work = s.replace(/`([^`\n]+)`/g, (_m, code) => stash(`<code>${esc(code)}</code>`));
   // Links: [text](url). url may not contain ) or whitespace.
-  work = work.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, text, url) =>
-    stash(`<a href="${escAttr(url)}">${esc(text)}</a>`),
-  );
+  // External links (anything not `/` or `#`-prefixed) open in a new tab with
+  // safe rel — keeps task bodies that link to PRs from blowing away the
+  // dashboard tab on click.
+  work = work.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, text, url) => {
+    const attrs = isExternalHref(url) ? ` target="_blank" rel="noopener noreferrer"` : "";
+    return stash(`<a href="${escAttr(url)}"${attrs}>${esc(text)}</a>`);
+  });
   // Now escape what's left, then re-apply emphasis.
   work = esc(work);
   // Emphasis (bold then italic, on escaped text — placeholders use \x00 so
@@ -153,4 +157,8 @@ function esc(s: string): string {
 function escAttr(s: string): string {
   // Same as esc; kept separate so we can tighten later (e.g. URL whitelist).
   return esc(s);
+}
+
+function isExternalHref(url: string): boolean {
+  return !url.startsWith("/") && !url.startsWith("#");
 }

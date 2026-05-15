@@ -48,7 +48,24 @@ test("markdown: inline code spans", () => {
 
 test("markdown: links", () => {
   const out = renderMarkdown("see [docs](https://example.com)");
-  assert.equal(out, '<p>see <a href="https://example.com">docs</a></p>');
+  assert.equal(out, '<p>see <a href="https://example.com" target="_blank" rel="noopener noreferrer">docs</a></p>');
+});
+
+test("markdown: external links open in a new tab", () => {
+  const out = renderMarkdown("see [PR](https://github.com/x/y/pull/1)");
+  assert.match(out, /href="https:\/\/github\.com\/x\/y\/pull\/1" target="_blank" rel="noopener noreferrer"/);
+});
+
+test("markdown: internal links (root-relative) stay in-tab", () => {
+  const out = renderMarkdown("see [task](/t/alpha/001)");
+  assert.equal(out, '<p>see <a href="/t/alpha/001">task</a></p>');
+  assert.doesNotMatch(out, /target="_blank"/);
+});
+
+test("markdown: anchor links stay in-tab", () => {
+  const out = renderMarkdown("jump to [log](#log)");
+  assert.equal(out, '<p>jump to <a href="#log">log</a></p>');
+  assert.doesNotMatch(out, /target="_blank"/);
 });
 
 test("markdown: bold and italic", () => {
