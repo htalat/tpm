@@ -110,6 +110,85 @@ test("mapGithub: reviewer COMMENTED -> needs-agent", () => {
   if (s.kind === "needs-agent") assert.match(s.reason, /reviewer comments/);
 });
 
+test("mapGithub: stale COMMENTED (review older than latest commit) -> no-action", () => {
+  // Sticky-reviewer thrash: GitHub keeps a COMMENTED entry in latestReviews
+  // until the same author re-reviews. Without a freshness check, every poll
+  // tick re-flags the task even though the reviewer hasn't seen the new code.
+  assert.deepEqual(
+    mapGithub(pr({
+      reviewDecision: "REVIEW_REQUIRED",
+      mergeStateStatus: "BLOCKED",
+      statusCheckRollup: [{ conclusion: "SUCCESS" }],
+      latestReviews: [{ state: "COMMENTED", submittedAt: "2026-05-15T07:20:30Z" }],
+      commits: [{ committedDate: "2026-05-15T08:00:00Z" }],
+    })),
+    { kind: "no-action" },
+  );
+});
+
+test("mapGithub: fresh COMMENTED (review newer than latest commit) -> needs-agent", () => {
+  const s = mapGithub(pr({
+    reviewDecision: "REVIEW_REQUIRED",
+    mergeStateStatus: "BLOCKED",
+    statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    latestReviews: [{ state: "COMMENTED", submittedAt: "2026-05-15T08:30:00Z" }],
+    commits: [{ committedDate: "2026-05-15T08:00:00Z" }],
+  }));
+  assert.equal(s.kind, "needs-agent");
+  if (s.kind === "needs-agent") assert.match(s.reason, /reviewer comments/);
+});
+
+test("mapGithub: mixed COMMENTED (one stale + one fresh) -> needs-agent (any fresh wins)", () => {
+  const s = mapGithub(pr({
+    reviewDecision: "REVIEW_REQUIRED",
+    mergeStateStatus: "BLOCKED",
+    statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    latestReviews: [
+      { state: "COMMENTED", submittedAt: "2026-05-15T07:20:30Z" },
+      { state: "COMMENTED", submittedAt: "2026-05-15T08:30:00Z" },
+    ],
+    commits: [{ committedDate: "2026-05-15T08:00:00Z" }],
+  }));
+  assert.equal(s.kind, "needs-agent");
+});
+
+test("mapGithub: COMMENTED with no commits field -> needs-agent (defensive: treat as fresh)", () => {
+  // Better to over-flag than silently swallow signal when the payload is
+  // incomplete — the agent will re-check and find no-op work to do.
+  const s = mapGithub(pr({
+    reviewDecision: "REVIEW_REQUIRED",
+    mergeStateStatus: "BLOCKED",
+    statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    latestReviews: [{ state: "COMMENTED", submittedAt: "2026-05-15T07:20:30Z" }],
+  }));
+  assert.equal(s.kind, "needs-agent");
+});
+
+test("mapGithub: COMMENTED with no submittedAt -> needs-agent (defensive: treat as fresh)", () => {
+  const s = mapGithub(pr({
+    reviewDecision: "REVIEW_REQUIRED",
+    mergeStateStatus: "BLOCKED",
+    statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    latestReviews: [{ state: "COMMENTED" }],
+    commits: [{ committedDate: "2026-05-15T08:00:00Z" }],
+  }));
+  assert.equal(s.kind, "needs-agent");
+});
+
+test("mapGithub: CHANGES_REQUESTED wins even when review is stale relative to commits", () => {
+  // The freshness check only gates the COMMENTED-as-needs-agent path.
+  // CHANGES_REQUESTED is encoded in reviewDecision and persists by design
+  // until the reviewer downgrades or a new approving review lands.
+  const s = mapGithub(pr({
+    reviewDecision: "CHANGES_REQUESTED",
+    mergeStateStatus: "BLOCKED",
+    statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    latestReviews: [{ state: "CHANGES_REQUESTED", submittedAt: "2026-05-15T07:20:30Z" }],
+    commits: [{ committedDate: "2026-05-15T08:00:00Z" }],
+  }));
+  assert.equal(s.kind, "needs-human");
+});
+
 test("mapGithub: APPROVED + UNSTABLE merge state -> no-action (UNSTABLE = non-required check red)", () => {
   assert.deepEqual(
     mapGithub(pr({
@@ -177,7 +256,7 @@ test("GITHUB_PR_JSON_FIELDS: stable contract for the poller's gh request", () =>
   // The poller no longer invokes `gh` itself (the adapter does), but the
   // constant is still the source-of-truth for which fields mapGithub reads.
   // Any removal here without updating mapGithub would silently miss signal.
-  for (const f of ["url", "state", "isDraft", "reviewDecision", "statusCheckRollup", "mergeStateStatus", "latestReviews", "title", "body", "mergedAt"] as const) {
+  for (const f of ["url", "state", "isDraft", "reviewDecision", "statusCheckRollup", "mergeStateStatus", "latestReviews", "title", "body", "mergedAt", "commits"] as const) {
     assert.ok(GITHUB_PR_JSON_FIELDS.includes(f), `missing field: ${f}`);
   }
 });
