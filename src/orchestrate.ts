@@ -40,13 +40,16 @@ function posInt(v: unknown): number | null {
 // Did the spawned agent move the task forward? Classification happens after
 // the child exits, against a snapshot of the task taken before the spawn.
 //
-//   shipped — exit 0 and (status changed OR prs grew OR task disappeared
-//             from the live tree, which means it was archived mid-run).
-//   stalled — exit 0 but the task didn't move. The case the "ship the
-//             smaller change" rule is meant to eliminate; worth counting.
-//   timeout — exit 124 (the runWithTimeout convention).
-//   failed  — any other non-zero exit.
-export type Disposition = "shipped" | "stalled" | "timeout" | "failed";
+//   shipped  — exit 0 and (status changed OR prs grew OR task disappeared
+//              from the live tree, which means it was archived mid-run).
+//   stalled  — exit 0 but the task didn't move. The case the "ship the
+//              smaller change" rule is meant to eliminate; worth counting.
+//   timeout  — exit 124 (the runWithTimeout convention).
+//   terminal — task hit a terminal state externally (done/dropped/archived)
+//              while the agent was still running; orchestrator SIGTERMed it
+//              early so we don't burn the rest of the time bound.
+//   failed   — any other non-zero exit.
+export type Disposition = "shipped" | "stalled" | "timeout" | "terminal" | "failed";
 
 export interface DispositionSnapshot {
   status: string;
@@ -58,9 +61,13 @@ export interface ClassifyDispositionInput {
   before: DispositionSnapshot;
   // null when the task can't be re-resolved after the run (archived/moved).
   after: DispositionSnapshot | null;
+  // Set when runWithTimeout killed the child early because the task hit a
+  // terminal state mid-run. Distinguishes from a hard time-bound timeout.
+  terminationReason?: "timeout" | "early-term";
 }
 
 export function classifyDisposition(input: ClassifyDispositionInput): Disposition {
+  if (input.terminationReason === "early-term") return "terminal";
   if (input.exitCode === 124) return "timeout";
   if (input.exitCode !== 0) return "failed";
   const after = input.after;
@@ -68,6 +75,21 @@ export function classifyDisposition(input: ClassifyDispositionInput): Dispositio
   if (after.status !== input.before.status) return "shipped";
   if (after.prs > input.before.prs) return "shipped";
   return "stalled";
+}
+
+// Does the task look like it has hit a terminal state externally? Returns the
+// reason string ("archived" / "done" / "dropped") or null if the orchestrator
+// should keep running. `needs-close` is *not* terminal — it's a transient
+// state the poller sets just before its inline auto-close, and killing the
+// agent during that window would race the close-out for no benefit.
+export type TerminalReason = "archived" | "done" | "dropped";
+
+export function evaluateTerminalState(task: Task | null): TerminalReason | null {
+  if (task === null) return "archived";
+  const status = String(task.data.status ?? "");
+  if (status === "done") return "done";
+  if (status === "dropped") return "dropped";
+  return null;
 }
 
 export function formatDispositionLine(
@@ -117,6 +139,9 @@ export interface OrchestrateOpts {
 
 export interface OrchestrateResult {
   exitCode: number;
+  // Set when runWithTimeout killed the child. Absent means the child exited
+  // on its own (normal completion or its own non-zero exit).
+  terminationReason?: "timeout" | "early-term";
 }
 
 // Decide what to log when the orchestrator finds nothing to dispatch. INFO for
@@ -140,6 +165,8 @@ export function noPickLogEntry(candidatesCount: number): { level: "INFO" | "WARN
 //   1. tpm next --autonomous (filters to allow_orchestrator: true)
 //   2. spawn `<claudeBin> -p "/tpm <slug>"` with a hard time bound
 //   3. on timeout, SIGTERM (then SIGKILL after grace), then `tpm revert <slug>`
+//   4. additionally, poll the task every ~5s; if it goes terminal externally
+//      (done/dropped/archived) SIGTERM the child early — disposition: terminal.
 // Exit code mirrors the child's; 124 on timeout (per timeout(1) convention),
 // 127 if the binary couldn't be spawned, 1 if no eligible task.
 export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<OrchestrateResult> {
@@ -236,20 +263,31 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
 
   let result: OrchestrateResult;
   try {
-    result = await runWithTimeout(claudeBin, ["-p", `/tpm ${slug}`], minutes, grace, () => {
-      const projectsAfter = loadProjects(root);
-      const match = findTask(projectsAfter, slug);
-      if (!match) {
-        logLine("WARN", `task ${slug} not found after timeout (was it archived mid-run?)`);
-        return;
-      }
-      try {
-        const r = mutate.revert(match.task, `time bound ${minutes}m exceeded`);
-        logLine("INFO", `revert ${slug}: ${r.message}`);
-      } catch (e) {
-        logLine("ERROR", `revert ${slug} failed: ${(e as Error).message}`);
-      }
-    });
+    result = await runWithTimeout(
+      claudeBin,
+      ["-p", `/tpm ${slug}`],
+      minutes,
+      grace,
+      () => {
+        const projectsAfter = loadProjects(root);
+        const match = findTask(projectsAfter, slug);
+        if (!match) {
+          logLine("WARN", `task ${slug} not found after timeout (was it archived mid-run?)`);
+          return;
+        }
+        try {
+          const r = mutate.revert(match.task, `time bound ${minutes}m exceeded`);
+          logLine("INFO", `revert ${slug}: ${r.message}`);
+        } catch (e) {
+          logLine("ERROR", `revert ${slug} failed: ${(e as Error).message}`);
+        }
+      },
+      () => {
+        const projectsNow = loadProjects(root);
+        const match = findTask(projectsNow, slug);
+        return evaluateTerminalState(match?.task ?? null);
+      },
+    );
   } finally {
     clearInterval(heartbeatTimer);
     // Always release locks on exit (success, timeout, or thrown error).
@@ -281,29 +319,44 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
 
   const before = snapshotTask(pick.task);
   const after = matchAfter ? snapshotTask(matchAfter.task) : null;
-  const disposition = classifyDisposition({ exitCode: result.exitCode, before, after });
+  const disposition = classifyDisposition({
+    exitCode: result.exitCode,
+    before,
+    after,
+    terminationReason: result.terminationReason,
+  });
   const level = disposition === "stalled" ? "WARN" : "INFO";
   logLine(level, formatDispositionLine(slug, disposition, result.exitCode, before, after));
 
   return result;
 }
 
-function runWithTimeout(
+// Poll interval for both the time-bound countdown and the terminal-state
+// check. 5s is the sweet spot: fast enough that an externally-closed task
+// triggers SIGTERM within seconds (the bug 059 is fixing), slow enough that
+// the extra loadProjects() per tick is invisible cost.
+const POLL_INTERVAL_MS = 5_000;
+
+// Exported for tests; production callers go through runOrchestrate.
+export function runWithTimeout(
   bin: string,
   args: string[],
   minutes: number,
   graceMs: number,
   onTimeout: () => void,
+  isTaskTerminal: () => TerminalReason | null,
+  pollIntervalMs: number = POLL_INTERVAL_MS,
 ): Promise<OrchestrateResult> {
   return new Promise((resolve) => {
     const child = spawn(bin, args, { stdio: "inherit" });
-    let timedOut = false;
+    let terminationReason: "timeout" | "early-term" | null = null;
     let exited = false;
+    const deadline = Date.now() + minutes * 60_000;
 
-    const termTimer = setTimeout(() => {
-      if (exited) return;
-      timedOut = true;
-      logLine("WARN", `time bound ${minutes}m reached, sending SIGTERM`);
+    const terminate = (reason: "timeout" | "early-term", message: string) => {
+      if (terminationReason !== null || exited) return;
+      terminationReason = reason;
+      logLine(reason === "timeout" ? "WARN" : "INFO", message);
       try { child.kill("SIGTERM"); } catch { /* already gone */ }
       setTimeout(() => {
         if (!exited) {
@@ -311,21 +364,44 @@ function runWithTimeout(
           try { child.kill("SIGKILL"); } catch { /* already gone */ }
         }
       }, graceMs);
-    }, minutes * 60_000);
+    };
+
+    const poll = setInterval(() => {
+      if (exited || terminationReason !== null) return;
+      if (Date.now() >= deadline) {
+        terminate("timeout", `time bound ${minutes}m reached, sending SIGTERM`);
+        return;
+      }
+      let reason: TerminalReason | null = null;
+      try {
+        reason = isTaskTerminal();
+      } catch (e) {
+        // Don't let a transient tree-read failure kill the agent — log and
+        // try again next tick. The time bound still applies as a backstop.
+        logLine("WARN", `terminal-state check failed: ${(e as Error).message}`);
+        return;
+      }
+      if (reason !== null) {
+        terminate("early-term", `task terminal mid-run (${reason}), sending SIGTERM`);
+      }
+    }, pollIntervalMs);
 
     child.on("error", (err) => {
       exited = true;
-      clearTimeout(termTimer);
+      clearInterval(poll);
       logLine("ERROR", `failed to spawn ${bin}: ${err.message}`);
       resolve({ exitCode: 127 });
     });
     child.on("exit", (code, signal) => {
       exited = true;
-      clearTimeout(termTimer);
-      if (timedOut) {
+      clearInterval(poll);
+      if (terminationReason === "timeout") {
         onTimeout();
         logLine("WARN", `timed out after ${minutes}m (signal=${signal ?? "?"})`);
-        resolve({ exitCode: 124 });
+        resolve({ exitCode: 124, terminationReason: "timeout" });
+      } else if (terminationReason === "early-term") {
+        logLine("INFO", `terminated early after task closed (signal=${signal ?? "?"})`);
+        resolve({ exitCode: 0, terminationReason: "early-term" });
       } else {
         resolve({ exitCode: code ?? 0 });
       }
