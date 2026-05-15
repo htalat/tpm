@@ -283,14 +283,14 @@ By default, tasks created by a recurring script are `ready` but **not** `allow_o
 **Use the structured log helper.** All recurring scripts (and `tpm orchestrate`) emit one line per event in the same format so a single log file greps + sorts cleanly:
 
 ```
-2026-05-10T17:24:33Z  INFO   check-pr-signal  start
-2026-05-10T17:24:34Z  WARN   check-pr-signal  skip tpm/036 (tpm context exit=4) — task missing
-2026-05-10T17:24:35Z  INFO   check-pr-signal  decide tpm/040-serve-mutations pr=https://… host=github action=no-signal reason=no-action
-2026-05-10T17:24:36Z  ERROR  check-pr-signal  classifier exit=1 for tpm/039
-2026-05-10T17:24:37Z  INFO   check-pr-signal  summary checked=6 flipped=0 no-signal=1 fetch-failed=5
+2026-05-15T09:14:33-07:00  INFO   check-pr-signal  start
+2026-05-15T09:14:34-07:00  WARN   check-pr-signal  skip tpm/036 (tpm context exit=4) — task missing
+2026-05-15T09:14:35-07:00  INFO   check-pr-signal  decide tpm/040-serve-mutations pr=https://… host=github action=no-signal reason=no-action
+2026-05-15T09:14:36-07:00  ERROR  check-pr-signal  classifier exit=1 for tpm/039
+2026-05-15T09:14:37-07:00  INFO   check-pr-signal  summary checked=6 flipped=0 no-signal=1 fetch-failed=5
 ```
 
-UTC ISO-8601 second precision; level padded to 5 chars; script padded to 16 chars; free-form single-line message. INFO/WARN write to stdout, ERROR to stderr (cron's `>> log 2>&1` collapses both — the split is for interactive runs that want `2>/dev/null` for warn-free output).
+ISO-8601 second precision in the configured TZ (from `~/.tpm/config.json`, falls back to UTC) with explicit `±HH:MM` offset; level padded to 5 chars; script padded to 16 chars; free-form single-line message. The format is lexicographically sortable within a single TZ (DST transitions stay ordered because the offset is part of the string) and unambiguous if logs are ever shipped cross-host. INFO/WARN write to stdout, ERROR to stderr (cron's `>> log 2>&1` collapses both — the split is for interactive runs that want `2>/dev/null` for warn-free output).
 
 Source `scripts/recurring/_log.sh` from any new recurring script:
 
