@@ -354,6 +354,27 @@ test("pr: ready task — addPr links URL but does NOT flip status (only in-progr
   }
 });
 
+test("pr: flip branch emits a louder terminus line; non-flip branch does not", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    // Flip branch: in-progress -> needs-review carries the terminus.
+    writeTask(dir, "001-a.md", "in-progress");
+    const t1 = loadTask(root, "alpha", "001-a");
+    const r1 = addPr(t1, "https://github.com/x/y/pull/1");
+    assert.match(r1.message, /Your turn is complete — exit/);
+    assert.match(r1.message, /do not poll CI/);
+    // Non-flip branch: ready stays ready and gets just the linked line.
+    writeTask(dir, "002-b.md", "ready");
+    const t2 = loadTask(root, "alpha", "002-b");
+    const r2 = addPr(t2, "https://github.com/x/y/pull/2");
+    assert.doesNotMatch(r2.message, /Your turn is complete/);
+    assert.doesNotMatch(r2.message, /do not poll CI/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 test("pr: duplicate URL on already-flipped task — no extra status flip, no extra log lines", () => {
   const root = mkTempDir();
   try {

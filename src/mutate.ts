@@ -125,7 +125,10 @@ export function addPr(task: Task, url: string): MutateResult {
   writeFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
   const suffix = flipped ? " — status -> needs-review" : "";
-  return { message: `${task.slug}: linked ${trimmed}${suffix}` };
+  const terminus = flipped
+    ? "\n✓ PR opened. Your turn is complete — exit. The poller closes the task when the PR merges; do not poll CI from this run."
+    : "";
+  return { message: `${task.slug}: linked ${trimmed}${suffix}${terminus}` };
 }
 
 // Toggle the autonomous-orchestrator gate on a task. Parents aren't claimable
