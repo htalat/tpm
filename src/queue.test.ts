@@ -158,6 +158,82 @@ test("selectCandidates: empty when no eligible tasks", () => {
   assert.deepEqual(selectCandidates([p]), []);
 });
 
+// ---- task 065: stranded in-progress reclaim --------------------------------
+
+test("selectNext: stranded in-progress (no lock) is admitted, ranked between needs-feedback and ready", () => {
+  const p = project("a", [
+    task("001-ip-stranded", "in-progress",    "2026-05-15 10:00 PDT"),
+    task("002-ready",       "ready",          "2026-01-01 10:00 PDT"),
+    task("003-feedback",    "needs-feedback", "2026-05-01 10:00 PDT"),
+  ]);
+  // No lock for any task → stranded admitted; needs-feedback still wins.
+  const noLocks = () => false;
+  const list = selectCandidates([p], { hasTaskLock: noLocks });
+  assert.deepEqual(list.map(c => c.task.slug), [
+    "003-feedback",
+    "001-ip-stranded", // stranded before ready
+    "002-ready",
+  ]);
+});
+
+test("selectNext: in-progress with lock held is NOT admitted (legitimately claimed)", () => {
+  const p = project("a", [
+    task("001-ip-locked", "in-progress", "2026-05-15 10:00 PDT"),
+    task("002-ready",     "ready",       "2026-05-09 10:00 PDT"),
+  ]);
+  // Lock held only for the in-progress task.
+  const heldFor = new Set<string>(["a/001-ip-locked"]);
+  const pick = selectNext([p], { hasTaskLock: (slug) => heldFor.has(slug) });
+  assert.equal(pick?.task.slug, "002-ready");
+});
+
+test("selectNext: omitting hasTaskLock keeps legacy behavior (no in-progress admitted)", () => {
+  // Regression guard — callers that don't pass the predicate must see the
+  // same selection as before task 065 (in-progress fully excluded).
+  const p = project("a", [
+    task("001-ip",    "in-progress", "2026-01-01 10:00 PDT"),
+    task("002-ready", "ready",       "2026-05-09 10:00 PDT"),
+  ]);
+  const pick = selectNext([p]);
+  assert.equal(pick?.task.slug, "002-ready");
+});
+
+test("selectNext: within stranded bucket, oldest first", () => {
+  const p = project("a", [
+    task("001-newer", "in-progress", "2026-05-15 10:00 PDT"),
+    task("002-older", "in-progress", "2026-05-01 10:00 PDT"),
+  ]);
+  const pick = selectNext([p], { hasTaskLock: () => false });
+  assert.equal(pick?.task.slug, "002-older");
+});
+
+test("selectCandidates: stranded admission respects --autonomous gate", () => {
+  // Without allow_orchestrator: true, --autonomous must skip a stranded task
+  // just like it skips a ready one.
+  const p = project("a", [
+    task("001-no-flag",   "in-progress", "2026-05-01 10:00 PDT"),
+    task("002-with-flag", "in-progress", "2026-05-02 10:00 PDT", { allow_orchestrator: true }),
+  ]);
+  const list = selectCandidates([p], { autonomous: true, hasTaskLock: () => false });
+  assert.deepEqual(list.map(c => c.task.slug), ["002-with-flag"]);
+});
+
+test("selectCandidates: hasTaskLock receives qualified slug (child under parent)", () => {
+  const seen: string[] = [];
+  const parent = task("002-parent", "ready", "2026-05-01 10:00 PDT");
+  const child = task("003-child", "in-progress", "2026-05-02 10:00 PDT");
+  child.parent = "002-parent";
+  parent.children = [child];
+  const p = project("a", [parent]);
+  selectCandidates([p], {
+    hasTaskLock: (slug) => { seen.push(slug); return false; },
+  });
+  // Parent is a container (skipped); child gets the predicate call with the
+  // qualified slug. The parent itself (ready, no in-progress) won't invoke
+  // the lock check at all — rankFor only consults it for in-progress.
+  assert.deepEqual(seen, ["a/002-parent/003-child"]);
+});
+
 test("inboxItems: empty when nothing in human queue", () => {
   const p = project("a", [
     task("001", "ready", "2026-01-01 10:00 PDT"),
