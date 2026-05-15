@@ -265,7 +265,7 @@ Tasks don't have to be human-authored. A recurring script harvests state on a cl
 Two ship in this repo:
 
 - **`scripts/recurring/template.sh`** — copy this, fill in the four TODO blocks (source command, slug derivation, optional Context/Plan population, summary line). Idempotent on re-run via the `tpm context "$PROJECT/$slug" >/dev/null 2>&1` existence check.
-- **`scripts/recurring/check-pr-signal.sh`** — the PR-signal poller. Walks every watched task with non-empty `prs:` — that's every `in-progress` task, plus every `ready` task that still carries a linked PR (so a manual `needs-review → ready` revert can't strand a task whose PR then merges; the rule lives in `shouldWatchForPrSignal` in `src/pr_signal.ts`) — queries `gh` (v0 supports `host: github` only; ado projects skipped with a warning), and flips status to `needs-feedback` (merge conflict / CI red / branch behind / open threads — agent attempts the rebase and other fixes via `/tpm feedback`), `needs-review` (`CHANGES_REQUESTED` — only signal that needs a human up front), or **auto-closes inline** when any linked PR merged: flips to `needs-close`, derives an Outcome from PR title + body (Test plan + Claude Code footer stripped), and calls `tpm complete --outcome "<derived>"` in the same tick. No claude session spawned, no orchestrator wait. If the inline auto-close fails (body empty, Outcome already filled, lock contention) the task stays at `needs-close` for manual `/tpm done <slug>`.
+- **`scripts/recurring/check-pr-signal.sh`** — the PR-signal poller. Walks every watched task with non-empty `prs:` — that's every `in-progress` task, plus every `ready` task that still carries a linked PR (so a manual `needs-review → ready` revert can't strand a task whose PR then merges; the rule lives in `shouldWatchForPrSignal` in `src/pr_signal.ts`) — and dispatches to a host adapter per linked PR URL. Adapters ship for GitHub (`gh pr view`) and Azure DevOps (`az repos pr show` + `az pipelines runs list`); adding a new host is one file under `src/hosts/<name>.ts` plus an entry in the `HOSTS` array in `src/pr_signal.ts`. Each adapter answers the same coarse question in its own dialect — `merged` / `needs-agent` / `needs-human` / `abandoned` / `no-action` — so the harness never carries `if host === 'ado'` branches. Per-host CLI presence is checked inside the adapter (an ADO-only user doesn't need `gh` installed). Aggregated signal flips status to `needs-feedback` (merge conflict / CI red / branch behind / open threads — agent attempts the rebase and other fixes via `/tpm feedback`), `needs-review` (`CHANGES_REQUESTED`, ADO vote ≤ -5, or a PR closed-without-merge — the human decides whether to reopen or drop), or **auto-closes inline** when any linked PR merged: flips to `needs-close`, derives an Outcome from PR title + body (Test plan + Claude Code footer stripped), and calls `tpm complete --outcome "<derived>"` in the same tick. No claude session spawned, no orchestrator wait. If the inline auto-close fails (body empty, Outcome already filled, lock contention) the task stays at `needs-close` for manual `/tpm done <slug>`.
 
 Customize the template for your own intake (review my open PRs, sweep stale dependency reports, file an alert-driven task, etc.):
 
@@ -284,10 +284,10 @@ By default, tasks created by a recurring script are `ready` but **not** `allow_o
 
 ```
 2026-05-10T17:24:33Z  INFO   check-pr-signal  start
-2026-05-10T17:24:34Z  WARN   check-pr-signal  skip tpm/036 (gh exit=4) — failed to query PR
-2026-05-10T17:24:35Z  INFO   check-pr-signal  decide tpm/040-serve-mutations pr=https://… state=OPEN review=APPROVED ci=PASS mergeable=CLEAN action=no-signal
+2026-05-10T17:24:34Z  WARN   check-pr-signal  skip tpm/036 (tpm context exit=4) — task missing
+2026-05-10T17:24:35Z  INFO   check-pr-signal  decide tpm/040-serve-mutations pr=https://… host=github action=no-signal reason=no-action
 2026-05-10T17:24:36Z  ERROR  check-pr-signal  classifier exit=1 for tpm/039
-2026-05-10T17:24:37Z  INFO   check-pr-signal  summary checked=6 flipped=0 no-signal=1 gh-failed=5
+2026-05-10T17:24:37Z  INFO   check-pr-signal  summary checked=6 flipped=0 no-signal=1 fetch-failed=5
 ```
 
 UTC ISO-8601 second precision; level padded to 5 chars; script padded to 16 chars; free-form single-line message. INFO/WARN write to stdout, ERROR to stderr (cron's `>> log 2>&1` collapses both — the split is for interactive runs that want `2>/dev/null` for warn-free output).
@@ -302,7 +302,7 @@ log_warn  "skip foo (gh exit=4)"
 log_error "classifier exited 1 for tpm/041"
 ```
 
-`grep -E '^\d{4}.*ERROR' ~/.tpm/*.log` returns only the actual errors. `grep 'action=no-signal'` shows everything the PR-signal classifier passed on (was previously invisible — silent no-signal skips were lumped into the same `skipped=N` bucket as gh-failures). The poller's summary line splits that bucket into honest counters: `checked=N flipped=N no-signal=N gh-failed=N` add up to `checked`.
+`grep -E '^\d{4}.*ERROR' ~/.tpm/*.log` returns only the actual errors. `grep 'action=no-signal'` shows everything the PR-signal classifier passed on (was previously invisible — silent no-signal skips were lumped into the same `skipped=N` bucket as fetch-failures). The poller's summary line splits that bucket into honest counters: `checked=N flipped=N no-signal=N fetch-failed=N` add up to `checked`.
 
 Cron pattern combining intake, signal poller, and drain:
 
@@ -336,7 +336,7 @@ tmux kill-session -t tpm-web     # stop
 
 Routes: `/` (Your inbox / Agent queue / In flight, with a project-chip nav across the top to jump into any project; append `?project=<slug>` to filter the queues; rows for tasks with linked PRs carry a `[PR #N <state>]` chip linking out to GitHub), `/p/<project>` (project view — sidebar with project frontmatter, rendered Goal / Context / Notes / Log, and tasks grouped by status; archived tasks hidden by default, append `?archived=1` or use the "Show archived" toggle), `/t/<project>/<slug>` (task view with rendered Context / Plan / Log / Outcome, a PR panel — one card per linked PR with state / CI / review / mergeable badges + a GitHub link — and an Actions panel; resolves archived tasks too), `/api/refresh` (JSON for client polling). Auto-refreshes every 30s via meta-refresh — no JS framework. The markdown subset rendered in task bodies covers headings, lists, fenced code, links, and basic emphasis; intentionally rejects GFM tables / footnotes (write HTML in the body if you need them).
 
-The PR panel reads `gh pr view --json` snapshots cached at `~/.tpm/pr-cache/<owner>/<repo>/<number>.json`, written by the PR-signal poller (`scripts/recurring/check-pr-signal.sh`) on each tick — stale-while-revalidate, so the page renders instantly and the badges are at most one poll interval old (the "fetched X ago" hint says when). A cache miss or a snapshot older than an hour renders a placeholder instead of blocking on a live `gh` call; it fills in on the next poll.
+The PR panel reads host-native PR snapshots cached at `~/.tpm/pr-cache/<host-namespaced-path>.json` (GitHub: `<owner>/<repo>/<number>.json`; Azure DevOps: `ado/<org>/<project>/<repo>/<id>.json`), written by the PR-signal poller (`scripts/recurring/check-pr-signal.sh`) on each tick — stale-while-revalidate, so the page renders instantly and the badges are at most one poll interval old (the "fetched X ago" hint says when). A cache miss or a snapshot older than an hour renders a placeholder instead of blocking on a live `gh` / `az` call; it fills in on the next poll. The rich badge set (CI rollup / mergeable / review decision) is GitHub-only today; ADO entries currently render a minimal card with the host label — host-idiomatic ADO rendering (vote scores, policy state) is a follow-up.
 
 Mutations are POST endpoints (`/t/<project>/<slug>/<action>`) backing the Actions panel. Each shells out to the matching CLI verb (`ready`, `block`, `reopen`, `complete`, `log`, `pr`, `status`, `allow-orchestrator`) and 303-redirects back to the task view with the CLI's stdout/stderr surfaced as a flash banner. Safety: mutations register only when the server is bound to loopback; explicit `--host 0.0.0.0` disables them with a startup warning. A same-origin check on `Origin`/`Referer` blocks drive-by cross-tab POSTs. No auth, no CSRF token — single-user, localhost-only.
 
@@ -346,7 +346,7 @@ For each project the harness touches, the agent needs a couple of fields in `pro
 
 - **`repo.local`** — absolute path to the working tree. `tpm context` surfaces it; `tpm path <task>` prints it. Without it, `tpm orchestrate` and `/tpm <task>` can't `cd` into the repo. The one field that's effectively required for harness use.
 - **`repo.remote`** — URL. Used by `tpm report` and the live dashboard to link out.
-- **`host: github | ado`** *(optional, default `github`)* — selects which CLI agents use for PR ops (`gh` vs `az repos pr`). The PR-signal poller is github-only in v0; the agent's `/tpm feedback` mode handles either at invocation time.
+- **`host: github | ado`** *(optional, default `github`)* — informational. Used by the agent's `/tpm feedback` mode to pick which CLI to run (`gh` vs `az repos pr`). The PR-signal poller doesn't gate on this field — it routes per linked PR URL via the host registry in `src/pr_signal.ts`, so a task that links both a GitHub and an ADO PR (rare but valid) gets both adapters dispatched on the same tick.
 - **`workflow: <path>`** *(optional)* — relative path inside the repo to the doc agents follow when shipping (commit style, validation, PR conventions, when to close). If unset, the agent looks for `AGENTS.md` then `CLAUDE.md` in the repo root, then asks before each shipping step. See [Per-repo workflow](#per-repo-workflow).
 
 For agents that read `AGENTS.md` (Claude Code, Codex CLI, Copilot via symlink), drop a tpm-aware `AGENTS.md` at the repo root — the [tpm CLI repo's own `AGENTS.md`](AGENTS.md) is a working example. Per-agent setup details: [Using tpm with an AI coding agent](#using-tpm-with-an-ai-coding-agent).
@@ -483,7 +483,7 @@ created: 2026-04-25 09:30 PDT
 repo:
   remote: https://github.com/owner/repo
   local:  /Users/you/code/repo
-host: github          # github | ado — selects the CLI agents use for PR ops (gh / az repos pr). Default github.
+host: github          # github | ado — informational; agents read it to pick gh vs az repos pr. The PR-signal poller routes per URL via the host registry and ignores this field. Default github.
 tags: []
 workflow: AGENTS.md   # optional: path (relative to repo root) to the doc agents follow when shipping work
 time_bound_minutes: 45  # optional: per-project override for `tpm orchestrate` hard time bound (positive int)

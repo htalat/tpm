@@ -694,9 +694,10 @@ function renderPrPanel(prs: string[], prCache: PrCacheReader): string {
 function renderPrCard(url: string, entry: PrCacheEntry | null, nowMs: number): string {
   const ref = parsePrUrl(url);
   const headline = ref
-    ? `<a href="${escAttr(url)}">PR #${ref.number}</a>`
+    ? `<a href="${escAttr(url)}">PR ${esc(ref.displayId)}</a>`
     : `<a href="${escAttr(url)}">${esc(url)}</a>`;
-  const openLink = `<a class="pr-open" href="${escAttr(url)}">Open on GitHub →</a>`;
+  const openLabel = openLinkLabel(ref?.host);
+  const openLink = `<a class="pr-open" href="${escAttr(url)}">${esc(openLabel)} →</a>`;
 
   const ageMs = entry ? nowMs - Date.parse(entry.fetchedAt) : NaN;
   const fresh = entry !== null && Number.isFinite(ageMs) && ageMs <= PR_CACHE_STALE_MS;
@@ -711,20 +712,38 @@ function renderPrCard(url: string, entry: PrCacheEntry | null, nowMs: number): s
   </div>`;
   }
 
-  const d = analyzePr(entry.pr);
-  const title = strOr(entry.pr.title, "");
-  const titleHtml = title ? ` <span class="pr-title">${esc(title)}</span>` : "";
-  const badges = [
-    prBadge("state", prStateLabel(entry.pr), prStateClass(entry.pr)),
-    prBadge("CI", ciLabel(d.ci), ciClass(d.ci)),
-    prBadge("review", reviewLabel(d.review), reviewClass(d.review)),
-    prBadge("mergeable", mergeLabel(d.mergeable), mergeClass(d.mergeable)),
-  ].join("");
-  return `<div class="pr-card">
+  // Rich GitHub-shape rendering (CI rollup, mergeable, review decision).
+  // Other hosts get a minimal card until they grow their own badge set —
+  // wiring up vote scores / pipeline state is out of scope for task 052.
+  if (entry.host === "github") {
+    const pr = entry.pr as RawPrJson;
+    const d = analyzePr(pr);
+    const title = strOr(pr.title, "");
+    const titleHtml = title ? ` <span class="pr-title">${esc(title)}</span>` : "";
+    const badges = [
+      prBadge("state", prStateLabel(pr), prStateClass(pr)),
+      prBadge("CI", ciLabel(d.ci), ciClass(d.ci)),
+      prBadge("review", reviewLabel(d.review), reviewClass(d.review)),
+      prBadge("mergeable", mergeLabel(d.mergeable), mergeClass(d.mergeable)),
+    ].join("");
+    return `<div class="pr-card">
     <div class="pr-headline">${headline}${titleHtml}${openLink}</div>
     <div class="pr-badges">${badges}</div>
     <p class="pr-fetched">fetched ${esc(relativeAge(ageMs))}</p>
   </div>`;
+  }
+
+  const hostLabel = entry.host.toUpperCase();
+  return `<div class="pr-card">
+    <div class="pr-headline">${headline}${openLink}</div>
+    <div class="pr-badges">${prBadge("host", hostLabel, "s-in-progress")}</div>
+    <p class="pr-fetched">fetched ${esc(relativeAge(ageMs))}</p>
+  </div>`;
+}
+
+function openLinkLabel(host: string | undefined): string {
+  if (host === "ado") return "Open on Azure DevOps";
+  return "Open on GitHub";
 }
 
 // A `[PR #N <state>]` chip per linked PR, shown after the title in queue rows.
@@ -735,11 +754,14 @@ function prChipsFor(task: Task, prCache: PrCacheReader): string {
   if (urls.length === 0) return "";
   return urls.map(url => {
     const ref = parsePrUrl(url);
-    const numLabel = ref ? `#${ref.number}` : "";
+    const idLabel = ref ? ref.displayId : "";
     const entry = prCache(url);
-    const stateLabel = entry ? ` ${prStateLabel(entry.pr)}` : "";
-    const stateClass = entry ? prStateClass(entry.pr) : "s-dropped";
-    return `<a class="pr-chip badge ${stateClass}" href="${escAttr(url)}">PR ${esc(numLabel)}${esc(stateLabel)}</a>`;
+    // Only GitHub entries have a `state` we know how to label — ADO state
+    // lives in a different field. Until ADO chip rendering ships, ADO chips
+    // are link-only.
+    const stateLabel = entry && entry.host === "github" ? ` ${prStateLabel(entry.pr as RawPrJson)}` : "";
+    const stateClass = entry && entry.host === "github" ? prStateClass(entry.pr as RawPrJson) : "s-dropped";
+    return `<a class="pr-chip badge ${stateClass}" href="${escAttr(url)}">PR ${esc(idLabel)}${esc(stateLabel)}</a>`;
   }).join("");
 }
 
