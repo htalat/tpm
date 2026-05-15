@@ -2,9 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   classifyDisposition,
+  evaluateTerminalState,
   formatDispositionLine,
   noPickLogEntry,
   resolveTimeBound,
+  runWithTimeout,
 } from "./orchestrate.ts";
 import type { Project, Task } from "./tree.ts";
 
@@ -222,4 +224,151 @@ test("noPickLogEntry: candidates exist but all locked → WARN about contention"
   const entry = noPickLogEntry(3);
   assert.equal(entry.level, "WARN");
   assert.match(entry.message, /repos busy or task-locked/);
+});
+
+test("evaluateTerminalState: null task (archived/missing) → 'archived'", () => {
+  assert.equal(evaluateTerminalState(null), "archived");
+});
+
+test("evaluateTerminalState: status=done → 'done'", () => {
+  assert.equal(evaluateTerminalState(task({ status: "done" })), "done");
+});
+
+test("evaluateTerminalState: status=dropped → 'dropped'", () => {
+  assert.equal(evaluateTerminalState(task({ status: "dropped" })), "dropped");
+});
+
+test("evaluateTerminalState: status=in-progress → null (still running)", () => {
+  assert.equal(evaluateTerminalState(task({ status: "in-progress" })), null);
+});
+
+test("evaluateTerminalState: status=needs-close → null (transient, don't kill)", () => {
+  // needs-close is the poller's transient state right before its inline
+  // auto-close; SIGTERMing here would race the close-out for no benefit.
+  assert.equal(evaluateTerminalState(task({ status: "needs-close" })), null);
+});
+
+test("evaluateTerminalState: status=needs-feedback → null (agent should react, not be killed)", () => {
+  assert.equal(evaluateTerminalState(task({ status: "needs-feedback" })), null);
+});
+
+test("classifyDisposition: terminationReason=early-term → terminal (wins over exit code)", () => {
+  // Early-term resolves with exit 0 because the work shipped externally; the
+  // termination reason is what tells classify it wasn't a normal completion.
+  assert.equal(
+    classifyDisposition({
+      exitCode: 0,
+      before: { status: "in-progress", prs: 0 },
+      after: { status: "done", prs: 0 },
+      terminationReason: "early-term",
+    }),
+    "terminal",
+  );
+});
+
+test("classifyDisposition: terminationReason=early-term with archived after → terminal", () => {
+  assert.equal(
+    classifyDisposition({
+      exitCode: 0,
+      before: { status: "in-progress", prs: 1 },
+      after: null,
+      terminationReason: "early-term",
+    }),
+    "terminal",
+  );
+});
+
+test("classifyDisposition: terminationReason=timeout still classifies as timeout via exit 124", () => {
+  assert.equal(
+    classifyDisposition({
+      exitCode: 124,
+      before: { status: "in-progress", prs: 0 },
+      after: { status: "in-progress", prs: 0 },
+      terminationReason: "timeout",
+    }),
+    "timeout",
+  );
+});
+
+test("formatDispositionLine: terminal disposition renders cleanly", () => {
+  assert.equal(
+    formatDispositionLine(
+      "tpm/059-foo",
+      "terminal",
+      0,
+      { status: "in-progress", prs: 1 },
+      { status: "done", prs: 1 },
+    ),
+    "disposition tpm/059-foo terminal exit=0 status=in-progress->done prs=1->1",
+  );
+});
+
+// runWithTimeout integration: spawn a real (short-lived) child and verify the
+// terminal-state poll fires SIGTERM ahead of the time bound. We use `sleep`
+// because Node's `node -e` adds startup overhead that makes these tests slow.
+test("runWithTimeout: SIGTERMs early when isTaskTerminal returns a reason", async () => {
+  let callCount = 0;
+  const result = await runWithTimeout(
+    "sleep",
+    ["30"],
+    5, // 5 minute time bound — well outside the test window
+    100, // 100ms grace
+    () => { throw new Error("onTimeout should not fire — task went terminal"); },
+    () => {
+      callCount++;
+      // First poll: still running. Second poll: task went done.
+      return callCount >= 2 ? "done" : null;
+    },
+    50, // poll every 50ms
+  );
+  assert.equal(result.terminationReason, "early-term");
+  assert.equal(result.exitCode, 0);
+  assert.ok(callCount >= 2, `expected at least 2 polls, got ${callCount}`);
+});
+
+test("runWithTimeout: early-term fires immediately when task already archived", async () => {
+  const result = await runWithTimeout(
+    "sleep",
+    ["30"],
+    5,
+    100,
+    () => { throw new Error("onTimeout should not fire"); },
+    () => "archived",
+    50,
+  );
+  assert.equal(result.terminationReason, "early-term");
+  assert.equal(result.exitCode, 0);
+});
+
+test("runWithTimeout: does not SIGTERM when task stays at needs-close (transient)", async () => {
+  // Mimic the poller window: status is needs-close, but evaluateTerminalState
+  // returns null for that. The child should exit on its own.
+  const result = await runWithTimeout(
+    "sleep",
+    ["0.3"], // exit on its own after 300ms
+    5,
+    100,
+    () => { throw new Error("onTimeout should not fire"); },
+    () => null, // task never goes terminal
+    50,
+  );
+  assert.equal(result.terminationReason, undefined);
+  assert.equal(result.exitCode, 0);
+});
+
+test("runWithTimeout: ignores isTaskTerminal exceptions and keeps running", async () => {
+  // Tree read failures shouldn't kill the agent — time bound is the backstop.
+  let attempts = 0;
+  const result = await runWithTimeout(
+    "sleep",
+    ["0.3"],
+    5,
+    100,
+    () => { throw new Error("onTimeout should not fire"); },
+    () => { attempts++; throw new Error("synthetic tree read failure"); },
+    50,
+  );
+  assert.equal(result.terminationReason, undefined);
+  assert.equal(result.exitCode, 0);
+  assert.ok(attempts >= 1, "isTaskTerminal should have been called at least once");
 });
