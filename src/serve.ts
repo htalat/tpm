@@ -1,6 +1,8 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjects, flatTasks, isParent, rollupStatus } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
@@ -15,10 +17,31 @@ import { readPrCache, parsePrUrl } from "./pr_cache.ts";
 import type { PrCacheEntry } from "./pr_cache.ts";
 import { analyzePr } from "./pr_signal.ts";
 import type { RawPrJson, PrDecision } from "./pr_signal.ts";
+import {
+  isValidRunLogName,
+  latestRunLog,
+  parseEvents,
+  runsDir,
+} from "./run_log.ts";
+import type { RunEvent } from "./run_log.ts";
 
 // A PR-cache lookup. Production passes `readPrCache` (reads ~/.tpm/pr-cache);
 // tests pass a stub so `route` stays pure and disk-free.
 export type PrCacheReader = (url: string) => PrCacheEntry | null;
+
+// A run-log reader for the task page's "Current/Last run" panel. Returns the
+// most recent log for a slug, or null if none exist. Production reads
+// `~/.tpm/runs/`; tests inject a stub.
+export interface RunLogSnapshot {
+  name: string;
+  text: string;
+}
+export type RunLogReader = (slug: string) => RunLogSnapshot | null;
+
+// A direct read by basename for the `/runs/<file>` raw route. Returns the raw
+// file contents, or null if the file is missing or the name is rejected by the
+// path-traversal guard.
+export type RunLogRawReader = (name: string) => string | null;
 
 // Older than this, a cached snapshot is treated as no-data: the page renders a
 // placeholder rather than implying the state is current.
@@ -166,17 +189,32 @@ export interface RouteOpts {
   // PR-cache lookup. Defaults to `readPrCache` (reads ~/.tpm/pr-cache) when
   // omitted; tests inject a stub.
   prCache?: PrCacheReader;
+  // Run-log lookups. Defaults read `~/.tpm/runs/`; tests inject stubs to keep
+  // `route` pure and disk-free.
+  runLog?: RunLogReader;
+  runLogRaw?: RunLogRawReader;
 }
 
 // Pure dispatch — returns the response shape, doesn't touch the network.
 // Tests exercise this directly with mocked projects.
 export function route(pathname: string, params: URLSearchParams, projects: Project[], opts: RouteOpts = {}): RouteResult {
   const prCache: PrCacheReader = opts.prCache ?? ((url) => readPrCache(url));
+  const runLog: RunLogReader = opts.runLog ?? defaultRunLogReader;
+  const runLogRaw: RunLogRawReader = opts.runLogRaw ?? defaultRunLogRawReader;
   if (pathname === "/" || pathname === "") {
     return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project"), prCache));
   }
   if (pathname === "/api/refresh") {
     return ok("application/json", renderRefresh(projects));
+  }
+  const runsMatch = pathname.match(/^\/runs\/([^/]+)\/?$/);
+  if (runsMatch) {
+    const name = decodeURIComponent(runsMatch[1]);
+    // Path-traversal guard: only allow the canonical `<slug>--<utc>.log` shape.
+    if (!isValidRunLogName(name)) return notFound(`bad run log name: ${name}`);
+    const text = runLogRaw(name);
+    if (text === null) return notFound(`No run log: ${name}`);
+    return { status: 200, contentType: "text/plain; charset=utf-8", body: text };
   }
   const projectMatch = pathname.match(/^\/p\/([^/]+)\/?$/);
   if (projectMatch) {
@@ -191,9 +229,34 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const query = decodeURIComponent(taskMatch[1]);
     const match = findTask(projects, query);
     if (!match) return notFound(`No task: ${query}`);
-    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, opts, prCache));
+    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, opts, prCache, runLog));
   }
   return notFound(pathname);
+}
+
+// Read the most recent run log for a slug from `~/.tpm/runs/`. Returns null
+// if the file doesn't exist or can't be read — the panel renders a placeholder.
+function defaultRunLogReader(slug: string): RunLogSnapshot | null {
+  const path = latestRunLog(slug);
+  if (!path) return null;
+  try {
+    return { name: basename(path), text: readFileSync(path, "utf8") };
+  } catch {
+    return null;
+  }
+}
+
+// Read the raw bytes of a run log by basename. The route layer already ran the
+// `isValidRunLogName` guard, so the join below can't escape the runs dir.
+function defaultRunLogRawReader(name: string): string | null {
+  if (!isValidRunLogName(name)) return null;
+  const path = resolve(runsDir(), name);
+  if (!existsSync(path)) return null;
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
 }
 
 export interface MutationResult {
@@ -430,7 +493,13 @@ ${projectChips(allProjects, project.slug)}
   return layout(`tpm · ${projectName}`, body);
 }
 
-function renderTask(project: Project, task: Task, opts: RouteOpts = {}, prCache: PrCacheReader = (url) => readPrCache(url)): string {
+function renderTask(
+  project: Project,
+  task: Task,
+  opts: RouteOpts = {},
+  prCache: PrCacheReader = (url) => readPrCache(url),
+  runLog: RunLogReader = defaultRunLogReader,
+): string {
   const repo = resolveRepo(project, task);
   const status = rollupStatus(task);
   const title = strOr(task.data.title, task.slug);
@@ -467,6 +536,15 @@ function renderTask(project: Project, task: Task, opts: RouteOpts = {}, prCache:
   const railContent = `${prPanel}${actionsSection}${settingsSection}`;
   const hasRail = railContent.length > 0;
 
+  const slug = task.parent
+    ? `${project.slug}/${task.parent}/${task.slug}`
+    : `${project.slug}/${task.slug}`;
+  const runPanel = renderRunPanel(slug, status, runLog);
+  // Auto-refresh the page while the agent is running so the run panel stays
+  // current. Costs page flicker; SSE would be smoother but task 057's v0 ships
+  // poll-refresh. 10s matches the lower bound in the task body's suggestion.
+  const autoRefresh = status === "in-progress" ? 10 : undefined;
+
   const body = `
 <nav class="crumbs"><a href="/">tpm</a>${crumbsTrail}</nav>
 ${flashBanner}
@@ -489,11 +567,77 @@ ${flashBanner}
       ${allowBlock}
     </dl>
   </aside>
-  <main class="body">${renderMarkdown(task.body)}</main>
+  <main>
+    <div class="body">${renderMarkdown(task.body)}</div>
+    ${runPanel}
+  </main>
   ${hasRail ? `<div class="task-rail">${railContent}</div>` : ""}
 </div>
 `;
-  return layout(`tpm · ${title}`, body);
+  return layout(`tpm · ${title}`, body, { autoRefresh });
+}
+
+// ---- run panel ------------------------------------------------------------
+
+// How many events of the parsed transcript to render. The file itself can be
+// huge for a long run, but the panel is a tail — older events fall off. The
+// raw file is one click away via the "View raw log" link.
+const RUN_PANEL_EVENTS = 60;
+
+function renderRunPanel(slug: string, status: string, runLog: RunLogReader): string {
+  const snapshot = runLog(slug);
+  const label = status === "in-progress" ? "Current run" : "Last run";
+  if (!snapshot) {
+    // No run on disk yet. For an in-progress task this is a transient state
+    // (orchestrator just spawned, no events yet); for any other status it
+    // means the task has never been orchestrator-dispatched.
+    const note = status === "in-progress"
+      ? "Waiting for the agent to emit its first event…"
+      : "No run log on disk yet — this task hasn't been dispatched by `tpm orchestrate`.";
+    return `<section class="run-panel run-panel-empty">
+  <h2>${esc(label)}</h2>
+  <p class="run-empty">${esc(note)}</p>
+</section>`;
+  }
+  const events = parseEvents(snapshot.text);
+  const tail = events.slice(-RUN_PANEL_EVENTS);
+  const rendered = tail.length === 0
+    ? `<p class="run-empty">Log file is empty — the agent hasn't written anything yet.</p>`
+    : `<ol class="run-events">${tail.map(renderRunEvent).join("")}</ol>`;
+  const truncated = events.length > tail.length
+    ? `<p class="run-meta">Showing the last ${tail.length} of ${events.length} events.</p>`
+    : "";
+  const rawLink = `<p class="run-meta"><a href="/runs/${esc(snapshot.name)}">View raw log →</a></p>`;
+  return `<section class="run-panel">
+  <h2>${esc(label)} <span class="meta">${esc(snapshot.name)}</span></h2>
+  ${rendered}
+  ${truncated}
+  ${rawLink}
+</section>`;
+}
+
+function renderRunEvent(ev: RunEvent): string {
+  switch (ev.kind) {
+    case "system":
+      return `<li class="ev ev-system"><span class="ev-tag">system</span><span class="ev-body">${esc(ev.subtype)}${ev.model ? ` · ${esc(ev.model)}` : ""}</span></li>`;
+    case "text":
+      return `<li class="ev ev-text"><span class="ev-tag">say</span><span class="ev-body">${esc(ev.text)}</span></li>`;
+    case "tool_use":
+      return `<li class="ev ev-tool"><span class="ev-tag">→ ${esc(ev.name)}</span><span class="ev-body">${esc(ev.inputPreview)}</span></li>`;
+    case "tool_result": {
+      const cls = ev.isError ? "ev ev-result ev-error" : "ev ev-result";
+      const tag = ev.isError ? "← error" : "←";
+      return `<li class="${cls}"><span class="ev-tag">${esc(tag)}</span><span class="ev-body">${esc(ev.preview)}</span></li>`;
+    }
+    case "result": {
+      const cls = ev.isError ? "ev ev-final ev-error" : "ev ev-final";
+      const cost = typeof ev.totalCostUsd === "number" ? ` · $${ev.totalCostUsd.toFixed(3)}` : "";
+      const dur = typeof ev.durationMs === "number" ? ` · ${Math.round(ev.durationMs / 1000)}s` : "";
+      return `<li class="${cls}"><span class="ev-tag">result ${esc(ev.subtype || "?")}${esc(dur)}${esc(cost)}</span><span class="ev-body">${esc(ev.preview)}</span></li>`;
+    }
+    case "raw":
+      return `<li class="ev ev-raw"><span class="ev-tag">raw</span><span class="ev-body">${esc(ev.line)}</span></li>`;
+  }
 }
 
 function renderRefresh(projects: Project[]): string {

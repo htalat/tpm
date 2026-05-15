@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import {
   classifyDisposition,
   evaluateTerminalState,
@@ -555,6 +558,77 @@ test("runWithTimeout: does not SIGTERM when task stays at needs-close (transient
   );
   assert.equal(result.terminationReason, undefined);
   assert.equal(result.exitCode, 0);
+});
+
+test("runWithTimeout: captures child stdout to logFile when provided", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "tpm-orch-log-"));
+  const logFile = resolve(dir, "run.log");
+  try {
+    const result = await runWithTimeout(
+      "sh",
+      ["-c", "echo hello-from-child; echo bye-from-child"],
+      5,
+      100,
+      () => { throw new Error("onTimeout should not fire"); },
+      () => null,
+      50,
+      logFile,
+    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.terminationReason, undefined);
+    const captured = readFileSync(logFile, "utf8");
+    assert.match(captured, /hello-from-child/);
+    assert.match(captured, /bye-from-child/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runWithTimeout: captures child stderr to the same logFile", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "tpm-orch-log-"));
+  const logFile = resolve(dir, "run.log");
+  try {
+    const result = await runWithTimeout(
+      "sh",
+      ["-c", "echo on-stdout; echo on-stderr 1>&2"],
+      5,
+      100,
+      () => { throw new Error("onTimeout should not fire"); },
+      () => null,
+      50,
+      logFile,
+    );
+    assert.equal(result.exitCode, 0);
+    const captured = readFileSync(logFile, "utf8");
+    assert.match(captured, /on-stdout/);
+    assert.match(captured, /on-stderr/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runWithTimeout: creates parent directories for the logFile path", async () => {
+  // The orchestrator passes `~/.tpm/runs/<file>` — on a fresh machine that
+  // directory may not exist yet. The lazy mkdirSync must handle that.
+  const dir = mkdtempSync(resolve(tmpdir(), "tpm-orch-log-"));
+  const logFile = resolve(dir, "nested", "deeper", "run.log");
+  try {
+    const result = await runWithTimeout(
+      "sh",
+      ["-c", "echo nested-write"],
+      5,
+      100,
+      () => { throw new Error("onTimeout should not fire"); },
+      () => null,
+      50,
+      logFile,
+    );
+    assert.equal(result.exitCode, 0);
+    const captured = readFileSync(logFile, "utf8");
+    assert.match(captured, /nested-write/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("runWithTimeout: ignores isTaskTerminal exceptions and keeps running", async () => {
