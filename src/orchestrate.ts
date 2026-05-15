@@ -41,10 +41,15 @@ function posInt(v: unknown): number | null {
 // Did the spawned agent move the task forward? Classification happens after
 // the child exits, against a snapshot of the task taken before the spawn.
 //
-//   shipped  — exit 0 and (status changed OR prs grew OR task disappeared
-//              from the live tree, which means it was archived mid-run).
-//   stalled  — exit 0 but the task didn't move. The case the "ship the
-//              smaller change" rule is meant to eliminate; worth counting.
+//   shipped  — exit 0 and (status advanced past the start-of-work flip OR
+//              prs grew OR task disappeared from the live tree, which means
+//              it was archived mid-run).
+//   stalled  — exit 0 but the task didn't make meaningful progress. Includes
+//              the case where the agent flipped to `in-progress` from `ready`
+//              or `needs-feedback` and exited without opening a PR or further
+//              advancing — that flip is `tpm start`'s entry, not progress.
+//              The case the "ship the smaller change" rule is meant to
+//              eliminate; worth counting.
 //   timeout  — exit 124 (the runWithTimeout convention).
 //   terminal — task hit a terminal state externally (done/dropped/archived)
 //              while the agent was still running; orchestrator SIGTERMed it
@@ -73,9 +78,20 @@ export function classifyDisposition(input: ClassifyDispositionInput): Dispositio
   if (input.exitCode !== 0) return "failed";
   const after = input.after;
   if (!after) return "shipped";
-  if (after.status !== input.before.status) return "shipped";
   if (after.prs > input.before.prs) return "shipped";
-  return "stalled";
+  if (after.status === input.before.status) return "stalled";
+  // Entry-flip: `ready -> in-progress` and `needs-feedback -> in-progress`
+  // are what `tpm start` does on entry — the agent claimed the task but
+  // didn't ship anything else (prs unchanged, status didn't advance past
+  // in-progress). That's the start of work, not progress, so don't credit
+  // it as shipped.
+  if (
+    after.status === "in-progress" &&
+    (input.before.status === "ready" || input.before.status === "needs-feedback")
+  ) {
+    return "stalled";
+  }
+  return "shipped";
 }
 
 // Does the task look like it has hit a terminal state externally? Returns the
