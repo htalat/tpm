@@ -1,91 +1,64 @@
-// Classifier for the PR-signal poller (scripts/recurring/check-pr-signal.sh).
+// PR signal registry + classifier shim for the poller (scripts/recurring/check-pr-signal.sh).
 //
-// Decides whether a task's in-flight PRs warrant a status flip
-// (`needs-close` once any PR has merged, `needs-feedback` for the agent,
-// `needs-review` for the human). The shell script gathers `gh pr view --json`
-// payloads per PR, pipes them in as JSON on stdin, and reads structured
-// decision lines from stdout.
+// The classifier itself lives in src/hosts/<name>.ts now — each host adapter
+// answers the same coarse question in its own dialect (mapGithub, mapAdo).
+// This module is the registry: it picks the adapter that matches a PR URL,
+// dispatches the fetch, and aggregates per-PR signals into the single
+// status flip the poller acts on.
 //
-// Output protocol — one DECIDE line per PR, then optionally one FLIP line:
+// Why the abstraction shifted down a level: normalizing host data into a
+// shared wire schema would grow with every new host (ADO vote=-5 has no
+// faithful GitHub equivalent; pipeline state is a separate call). The
+// poller's actual decision space is tiny — merged / needs-agent / needs-human
+// / no-action / abandoned — so each adapter answers in its own dialect and
+// the harness only sees the verdict.
 //
-//   DECIDE pr=<url> state=OPEN review=APPROVED ci=PASS mergeable=CLEAN action=no-signal
-//   DECIDE pr=<url> state=OPEN review=COMMENTED ci=FAIL mergeable=BLOCKED action=flip-to-needs-feedback
-//   FLIP needs-feedback CI failed on <url>
+// CLI protocol (consumed by check-pr-signal.sh) — same as before:
+//   DECIDE pr=<url> host=<h> action=<a> reason=<r>
+//   FLIP <new-status> <reason1>; <reason2>; ...
+//   OUTCOME_BEGIN / OUTCOME_END   (for needs-close + derivable outcome only)
 //
-// DECIDE lines let the poller log a per-PR verdict (no more silent
-// no-signal skips). The FLIP line, when present, tells the bash which
-// `tpm status` mutation to dispatch.
-//
-// Why a TS module instead of jq+bash: the `gh pr view --json` field set is a
-// drift hazard (we shipped a poller asking for `reviewThreads`, which doesn't
-// exist). Keeping the classifier here makes it testable from `node --test`.
+// Input is now a list of PR URLs on stdin (one per line) instead of a JSON
+// array of `gh pr view` payloads — fetch responsibility moved into the
+// adapters so the shell no longer needs to know how each host talks.
 
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { writePrCache } from "./pr_cache.ts";
+import { github, mapGithub, GITHUB_PR_JSON_FIELDS } from "./hosts/github.ts";
+import type { GithubPrJson } from "./hosts/github.ts";
+import { ado } from "./hosts/ado.ts";
+import type { FetchedSignal, PrHost, PrSignal } from "./hosts/types.ts";
 
-// Field set passed to `gh pr view --json`. The shell script reads this list
-// at runtime so the request stays in sync with the classifier's expectations.
-// `title`, `body`, `mergedAt` feed deriveCloseOutcome so the poller can write
-// an auto-Outcome inline without a second gh round-trip.
-export const PR_JSON_FIELDS = [
-  "url",
-  "state",
-  "isDraft",
-  "reviewDecision",
-  "statusCheckRollup",
-  "mergeStateStatus",
-  "latestReviews",
-  "title",
-  "body",
-  "mergedAt",
-] as const;
+export type { PrSignal, PrHost, PrRef, FetchedSignal } from "./hosts/types.ts";
 
-// Frontmatter-ish view of a task — just the fields the watch decision reads.
-export type WatchableTask = { status?: unknown; prs?: unknown };
+// Open-ended registry. Adding a new host = append an entry here plus a
+// src/hosts/<name>.ts file. No abstract base class to extend.
+export const HOSTS: PrHost[] = [github, ado];
 
-// Should the PR-signal poller pull `gh pr view` for this task's linked PRs?
-//
-//   - `in-progress`            — work in flight; always watched (a no-PR task
-//     has nothing to classify, but that's the caller's cheap early-out).
-//   - `ready` with a linked PR — the task was bounced back onto the agent
-//     queue (a manual `needs-review -> ready` revert, an agent deciding to
-//     rewrite, a PR left to age) while its PR is still live. The merge state
-//     outlives the status revert: when that PR merges the task must still
-//     auto-close, so we keep watching it (task 049). A `ready` task with no
-//     `prs:` is just queued work — nothing to watch.
-//   - everything else — out. `open` / `blocked` are deliberately parked;
-//     `done` / `dropped` are terminal; `needs-feedback` / `needs-review` /
-//     `needs-close` are already in someone's queue and re-watching them would
-//     re-log the same signal every tick (the poller flips a task *out* of
-//     `in-progress` precisely so it stops re-flagging).
-//
-// Single source of truth for the rule — scripts/recurring/check-pr-signal.sh
-// calls this per candidate task rather than reimplementing the predicate.
-export function shouldWatchForPrSignal(task: WatchableTask): boolean {
-  const status = String(task.status ?? "");
-  if (status === "in-progress") return true;
-  if (status === "ready") return Array.isArray(task.prs) && task.prs.length > 0;
-  return false;
+export function hostFor(url: string): PrHost | null {
+  return HOSTS.find((h) => h.matches(url)) ?? null;
 }
 
-export type RawPrJson = {
-  url?: string;
-  state?: string;
-  isDraft?: boolean;
-  reviewDecision?: string | null;
-  statusCheckRollup?: Array<{ conclusion?: string | null }>;
-  mergeStateStatus?: string;
-  latestReviews?: Array<{ state?: string }>;
-  title?: string;
-  body?: string;
-  mergedAt?: string;
-};
+// Dispatch a fetch for one PR URL. Throws if no host claims the URL or if
+// the host's CLI is missing — the poller catches both as per-PR errors so a
+// single misconfigured host doesn't poison the whole tick.
+export async function fetchSignal(url: string): Promise<FetchedSignal> {
+  const host = hostFor(url);
+  if (!host) throw new Error(`no PR host matches URL: ${url}`);
+  return host.fetchSignal(url);
+}
 
-export type Classification = {
-  status: "needs-review" | "needs-feedback" | "needs-close";
-  reasons: string[];
-};
+// ---- Backward-compatible exports for src/serve.ts (PR panel rendering) ---
+//
+// The serve UI renders GitHub-specific badges (CI rollup, mergeable=CLEAN/...,
+// reviewDecision); it needs the richer per-field view, not the coarse signal.
+// analyzePr stays as the GitHub-only renderer surface. ADO panel rendering is
+// out of scope for this task — serve.ts gates rich rendering on host=github.
+
+export const PR_JSON_FIELDS = GITHUB_PR_JSON_FIELDS;
+
+export type RawPrJson = GithubPrJson;
 
 export type PrAction =
   | "no-signal"
@@ -118,10 +91,9 @@ const CI_PENDING_CONCLUSIONS = new Set([
   "REQUESTED",
 ]);
 
-// Per-PR analysis: independent verdict for one PR. Exposed so the poller can
-// log a `decide` line per PR (no more invisible no-signal skips). The
-// aggregation precedence (needs-close > needs-review > needs-feedback) lives
-// in classifyPrs.
+// Per-PR analysis: GitHub-only, used by serve.ts to render the PR panel
+// (state / CI / review / mergeable badges). The poller's verdict comes from
+// mapGithub / mapAdo via fetchSignal — this function is just for the UI.
 export function analyzePr(pr: RawPrJson): PrDecision {
   const url = pr.url ?? "<unknown>";
   const state = (pr.state ?? "UNKNOWN").toUpperCase();
@@ -129,41 +101,13 @@ export function analyzePr(pr: RawPrJson): PrDecision {
   const review = pickReview(pr);
   const ci = pickCi(pr);
 
-  // Merged PR — the work shipped, task should close out.
-  if (state === "MERGED") {
-    return { url, state, review, ci, mergeable, action: "flip-to-needs-close" };
-  }
-
-  // Drafts and closed-not-merged PRs cast no vote.
-  if (pr.isDraft === true || state !== "OPEN") {
-    return { url, state, review, ci, mergeable, action: "no-signal" };
-  }
-
-  const conflicting = mergeable === "DIRTY";
-  const changesRequested = pr.reviewDecision === "CHANGES_REQUESTED";
-  const ciFailed = ci === "FAIL";
-  const behind = mergeable === "BEHIND";
-  const commented = (pr.latestReviews ?? []).some((r) => r.state === "COMMENTED");
-
-  // DIRTY is the agent's problem first — /tpm feedback attempts the rebase,
-  // resolves conflicts where tests still pass, and only escalates if the
-  // resolution is genuinely ambiguous. Only CHANGES_REQUESTED is unconditional
-  // human queue: a reviewer's "no" needs a human to translate it to a fix.
-  let action: PrAction = "no-signal";
-  if (changesRequested) {
-    action = "flip-to-needs-review";
-  } else if (conflicting || ciFailed || behind || commented) {
-    action = "flip-to-needs-feedback";
-  }
-
+  const action = actionFor(mapGithub(pr));
   return { url, state, review, ci, mergeable, action };
 }
 
 function pickReview(pr: RawPrJson): string {
   const decision = (pr.reviewDecision ?? "").toUpperCase();
   if (decision) return decision;
-  // Fall back to surfacing a COMMENTED review (reviewDecision stays
-  // REVIEW_REQUIRED in that case, which hides the comment from the operator).
   if ((pr.latestReviews ?? []).some((r) => r.state === "COMMENTED")) {
     return "COMMENTED";
   }
@@ -182,92 +126,92 @@ function pickCi(pr: RawPrJson): PrDecision["ci"] {
   return sawPending ? "PENDING" : "PASS";
 }
 
-// Returns null when no signal warrants a flip.
+// ---- Aggregation: PR signals → status flip ------------------------------
+
+export type Classification = {
+  status: "needs-review" | "needs-feedback" | "needs-close";
+  reasons: string[];
+};
+
+export interface ClassifiedSignal {
+  url: string;
+  signal: PrSignal;
+}
+
+// Aggregate per-PR signals into the single flip the poller acts on.
 //
-// Precedence:
+// Precedence (unchanged from the prior GitHub-only classifier):
 //   needs-close (any PR merged — work shipped, close the task) >
-//   needs-review (CHANGES_REQUESTED only) >
-//   needs-feedback (merge conflict, CI red, behind main, reviewer comments).
-// Once any PR triggers needs-review, subsequent needs-feedback signals are
-// suppressed; needs-review reasons accumulate across PRs. needs-close
-// supersedes everything — if the work shipped on any linked PR, that's the
-// signal that matters and the task should close. Follow-up work for a
-// secondary PR belongs in a separate task.
+//   needs-review (any needs-human OR abandoned PR) >
+//   needs-feedback (any needs-agent).
 //
-// Merge conflicts (mergeStateStatus=DIRTY) route to needs-feedback, not
-// needs-review: the agent attempts the rebase via /tpm feedback and only
-// escalates if the conflict can't be resolved cleanly (test-as-arbiter).
-// Routing every conflict to the human inbox defeats the harness's promise.
+// Once a needs-review trigger fires, subsequent needs-agent reasons are
+// suppressed (the human reviews first; the agent doesn't churn). needs-agent
+// only records the first reason — within one tick we want the agent to pick
+// the most urgent fix, not be told about every problem. needs-review reasons
+// accumulate so the operator sees every blocking issue at once.
 //
-// Closed-not-merged PRs and draft PRs are ignored.
-export function classifyPrs(prs: RawPrJson[]): Classification | null {
-  const merged = prs.filter((pr) => pr.state === "MERGED");
+// abandoned (closed-without-merge) routes to needs-review rather than being
+// ignored: a PR that died without merging means the task needs human triage —
+// reopen the PR, drop the task, or something in between. The previous
+// behaviour silently swallowed the signal and stranded the task.
+export function aggregateSignals(items: ClassifiedSignal[]): Classification | null {
+  const merged = items.filter((i) => i.signal.kind === "merged");
   if (merged.length > 0) {
     return {
       status: "needs-close",
-      reasons: merged.map((pr) => `merged ${pr.url ?? "<unknown>"}`),
+      reasons: merged.map((i) => `merged ${i.url || "<unknown>"}`),
     };
   }
 
   const reasons: string[] = [];
   let status: Classification["status"] | null = null;
 
-  for (const pr of prs) {
-    if (pr.state !== "OPEN") continue;
-    if (pr.isDraft === true) continue;
-
-    const url = pr.url ?? "<unknown>";
-    const ciFailed = (pr.statusCheckRollup ?? []).some((c) =>
-      CI_FAILED_CONCLUSIONS.has((c.conclusion ?? "").toUpperCase()),
-    );
-    const behind = pr.mergeStateStatus === "BEHIND";
-    const conflicting = pr.mergeStateStatus === "DIRTY";
-    const commented = (pr.latestReviews ?? []).some(
-      (r) => r.state === "COMMENTED",
-    );
-    const changesRequested = pr.reviewDecision === "CHANGES_REQUESTED";
-
-    if (changesRequested) {
+  for (const { url, signal } of items) {
+    if (signal.kind === "needs-human") {
       status = "needs-review";
-      reasons.push(`CHANGES_REQUESTED on ${url}`);
-    } else if (!status && conflicting) {
+      reasons.push(signal.reason);
+    } else if (signal.kind === "abandoned") {
+      status = "needs-review";
+      reasons.push(`PR abandoned: ${url || "<unknown>"}`);
+    } else if (!status && signal.kind === "needs-agent") {
       status = "needs-feedback";
-      reasons.push(`merge conflict on ${url}`);
-    } else if (!status && ciFailed) {
-      status = "needs-feedback";
-      reasons.push(`CI failed on ${url}`);
-    } else if (!status && behind) {
-      status = "needs-feedback";
-      reasons.push(`branch behind main on ${url}`);
-    } else if (!status && commented) {
-      status = "needs-feedback";
-      reasons.push(`reviewer comments on ${url}`);
+      reasons.push(signal.reason);
     }
   }
 
   return status ? { status, reasons } : null;
 }
 
-// Build the auto-Outcome string for a merged PR so the poller can call
-// `tpm complete --outcome "<derived>"` inline instead of handing off to a
-// model-driven /tpm done round. Returns null when there's nothing useful to
-// derive (no merged PR, or title+body both empty) — caller then leaves the
-// task at `needs-close` for the manual escape hatch.
-//
-// Shape: PR title as the headline, body trimmed to everything before
-// "## Test plan" (case-insensitive) and minus the "🤖 Generated with Claude
-// Code" footer, followed by `Merged via <url> at <mergedAt>.` when those
-// fields are present.
-export function deriveCloseOutcome(prs: RawPrJson[]): string | null {
-  const merged = prs.find((p) => (p.state ?? "").toUpperCase() === "MERGED");
-  if (!merged) return null;
+// Build the auto-Outcome string for a merged PR. Pulls from the first
+// `merged` signal it finds — multiple merged PRs on one task are rare; the
+// canonical case is one PR shipping the work. Returns null when there's
+// nothing useful to derive (no merged signal, or both title and body empty
+// after stripping) — caller leaves the task at needs-close for the manual
+// /tpm done escape hatch.
+export function deriveOutcomeFromSignals(items: ClassifiedSignal[]): string | null {
+  const merged = items.find((i) => i.signal.kind === "merged");
+  if (!merged || merged.signal.kind !== "merged") return null;
+  return formatMergedOutcome(
+    merged.signal.title,
+    merged.signal.body,
+    merged.signal.url,
+    merged.signal.mergedAt,
+  );
+}
 
-  const title = (merged.title ?? "").trim();
-  const body = stripPrBody(merged.body ?? "");
+function formatMergedOutcome(
+  rawTitle: string,
+  rawBody: string,
+  rawUrl: string,
+  rawMergedAt: string,
+): string | null {
+  const title = (rawTitle ?? "").trim();
+  const body = stripPrBody(rawBody ?? "");
   if (!title && !body) return null;
 
-  const url = (merged.url ?? "").trim();
-  const mergedAt = (merged.mergedAt ?? "").trim();
+  const url = (rawUrl ?? "").trim();
+  const mergedAt = (rawMergedAt ?? "").trim();
 
   const parts: string[] = [];
   if (title) parts.push(title.endsWith(".") ? title : `${title}.`);
@@ -279,9 +223,6 @@ export function deriveCloseOutcome(prs: RawPrJson[]): string | null {
 }
 
 // Strip the "## Test plan" tail and the Claude Code footer from a PR body.
-// Keeps everything before "## Test plan" (case-insensitive) and drops any
-// trailing line containing "Generated with Claude Code" (with or without the
-// 🤖 prefix or markdown link wrapping). Exposed for unit tests.
 export function stripPrBody(body: string): string {
   if (!body) return "";
   let result = body.replace(/\r\n/g, "\n");
@@ -299,43 +240,93 @@ export function stripPrBody(body: string): string {
   return result.trim();
 }
 
-// CLI entry: reads a JSON array of `gh pr view --json <PR_JSON_FIELDS>`
-// objects from stdin and writes:
-//
-//   DECIDE pr=<url> state=<S> review=<R> ci=<C> mergeable=<M> action=<A>
-//   ...one per PR...
-//   FLIP <new-status> <reason1>; <reason2>; ...
-//   OUTCOME_BEGIN
-//   <auto-Outcome lines>
-//   OUTCOME_END
-//
-// The FLIP line is omitted when no flip is warranted. The OUTCOME block is
-// emitted only when the flip is `needs-close` AND deriveCloseOutcome returns
-// non-null — the shell script then calls `tpm complete --outcome` inline.
-function main(): void {
-  const raw = readFileSync(0, "utf8");
-  const parsed = JSON.parse(raw) as RawPrJson[];
-  for (const pr of parsed) {
-    // Persist the snapshot so `tpm serve`'s task page can render PR state
-    // without a `gh` round-trip. Best-effort — a cache write failure must not
-    // abort the poll, which is the load-bearing part of this tick.
-    if (pr.url) {
-      try {
-        writePrCache(pr.url, pr);
-      } catch {
-        // ignore — stale/missing cache just degrades the dashboard to a placeholder
-      }
-    }
-    const d = analyzePr(pr);
-    process.stdout.write(
-      `DECIDE pr=${d.url} state=${d.state} review=${d.review} ci=${d.ci} mergeable=${d.mergeable} action=${d.action}\n`,
-    );
+// ---- WatchableTask filter (unchanged from task 049) ---------------------
+
+export type WatchableTask = { status?: unknown; prs?: unknown };
+
+export function shouldWatchForPrSignal(task: WatchableTask): boolean {
+  const status = String(task.status ?? "");
+  if (status === "in-progress") return true;
+  if (status === "ready") return Array.isArray(task.prs) && task.prs.length > 0;
+  return false;
+}
+
+// ---- CLI entrypoint ----------------------------------------------------
+
+// Map a PrSignal to the action string the shell script consumes.
+function actionFor(signal: PrSignal): PrAction {
+  switch (signal.kind) {
+    case "merged":
+      return "flip-to-needs-close";
+    case "needs-human":
+      return "flip-to-needs-review";
+    case "abandoned":
+      return "flip-to-needs-review";
+    case "needs-agent":
+      return "flip-to-needs-feedback";
+    case "no-action":
+      return "no-signal";
   }
-  const decision = classifyPrs(parsed);
+}
+
+function reasonFor(signal: PrSignal, url: string): string {
+  switch (signal.kind) {
+    case "merged":
+      return `merged ${url || "<unknown>"}`;
+    case "needs-human":
+    case "needs-agent":
+      return signal.reason;
+    case "abandoned":
+      return `PR abandoned: ${url || "<unknown>"}`;
+    case "no-action":
+      return "no-action";
+  }
+}
+
+async function main(): Promise<void> {
+  const raw = readFileSync(0, "utf8");
+  const urls = raw
+    .split("\n")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  const items: ClassifiedSignal[] = [];
+
+  for (const url of urls) {
+    const host = hostFor(url);
+    if (!host) {
+      process.stdout.write(
+        `DECIDE pr=${url} host=unknown action=error reason=no-host-matches\n`,
+      );
+      continue;
+    }
+    try {
+      const { signal, raw: payload } = await host.fetchSignal(url);
+      try {
+        writePrCache(url, payload, { host: host.name });
+      } catch {
+        // best-effort — cache write failure must not abort the poll
+      }
+      const reason = reasonFor(signal, url);
+      const action = actionFor(signal);
+      process.stdout.write(
+        `DECIDE pr=${url} host=${host.name} action=${action} reason=${flatten(reason)}\n`,
+      );
+      items.push({ url, signal });
+    } catch (e) {
+      const msg = (e as Error).message ?? String(e);
+      process.stdout.write(
+        `DECIDE pr=${url} host=${host.name} action=error reason=${flatten(msg)}\n`,
+      );
+    }
+  }
+
+  const decision = aggregateSignals(items);
   if (!decision) return;
   process.stdout.write(`FLIP ${decision.status} ${decision.reasons.join("; ")}\n`);
+
   if (decision.status === "needs-close") {
-    const outcome = deriveCloseOutcome(parsed);
+    const outcome = deriveOutcomeFromSignals(items);
     if (outcome !== null) {
       process.stdout.write("OUTCOME_BEGIN\n");
       process.stdout.write(outcome);
@@ -345,6 +336,14 @@ function main(): void {
   }
 }
 
+// Collapse newlines/extra whitespace so DECIDE/FLIP stay one-line.
+function flatten(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main();
+  main().catch((e) => {
+    process.stderr.write(`pr_signal: ${(e as Error).message ?? e}\n`);
+    process.exit(2);
+  });
 }

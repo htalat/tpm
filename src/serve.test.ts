@@ -501,11 +501,15 @@ test("isSameOrigin: rejects malformed Origin", () => {
 
 // ---- PR panel + chips -----------------------------------------------------
 
-function prCacheOf(map: Record<string, { fetchedAt?: string; pr: Record<string, unknown> }>): PrCacheReader {
+function prCacheOf(map: Record<string, { fetchedAt?: string; host?: string; pr: Record<string, unknown> }>): PrCacheReader {
   return (url) => {
     const e = map[url];
     if (!e) return null;
-    return { fetchedAt: e.fetchedAt ?? new Date().toISOString(), pr: e.pr as never };
+    return {
+      fetchedAt: e.fetchedAt ?? new Date().toISOString(),
+      host: e.host ?? "github",
+      pr: e.pr as never,
+    };
   };
 }
 

@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # Poll in-flight PRs and flip task status when a signal lands.
 #
-# For each watched task with a non-empty `prs:` list, queries the host CLI
-# (`gh` for GitHub) for each PR, then hands the gathered JSON to
-# `src/pr_signal.ts` for classification. "Watched" = every `in-progress` task,
-# plus every `ready` task that still carries a linked PR — see
-# `shouldWatchForPrSignal` in src/pr_signal.ts, which this script calls per
-# candidate rather than reimplementing the rule. (Why `ready`: a manual
-# `needs-review -> ready` revert must not strand a task whose PR then merges —
-# task 049.) The classifier returns:
+# For each watched task with a non-empty `prs:` list, hands the PR URLs to
+# `src/pr_signal.ts`. That module dispatches to a host adapter per URL
+# (src/hosts/github.ts → `gh`, src/hosts/ado.ts → `az repos pr`, ...) which
+# fetches the wire JSON, maps it to the coarse PrSignal vocabulary, and
+# writes the raw payload to the cache. The classifier then aggregates signals
+# across all linked PRs and emits:
 #
 #   - any linked PR merged                                 -> needs-close    (then auto-close inline)
 #   - merge conflict / CI red / behind main / reviewer cmt -> needs-feedback (agent inbox)
-#   - CHANGES_REQUESTED                                    -> needs-review   (human inbox)
+#   - CHANGES_REQUESTED / abandoned                        -> needs-review   (human inbox)
 #   - otherwise                                            -> leave the status as-is
+#
+# "Watched" = every `in-progress` task, plus every `ready` task that still
+# carries a linked PR — see `shouldWatchForPrSignal` in src/pr_signal.ts,
+# which this script calls per candidate rather than reimplementing the rule.
+# (Why `ready`: a manual `needs-review -> ready` revert must not strand a
+# task whose PR then merges — task 049.)
 #
 # For the merged case the classifier also emits an OUTCOME block (PR title +
 # stripped body + merge link) which this script feeds straight into
@@ -23,21 +27,24 @@
 # `tpm complete` fails the task stays at `needs-close` for the manual
 # `/tpm done <slug>` escape hatch to pick up.
 #
-# Side effect: the classifier also writes each PR's JSON to
-# ~/.tpm/pr-cache/<owner>/<repo>/<number>.json so `tpm serve`'s task page can
-# render PR state (CI / review / mergeable) without its own `gh` round-trip.
+# Side effect: each PR's raw payload is written to
+# ~/.tpm/pr-cache/<host-namespaced-path>.json so `tpm serve`'s task page can
+# render PR state without its own network round-trip.
+#
+# Host coverage (task 052): github (via `gh`) and ado (via `az repos pr` +
+# `az pipelines runs list`). Per-host CLI presence is checked inside the
+# adapter — an ADO-only user doesn't need `gh` installed, and vice versa.
+# A misconfigured host on one task is logged per-PR and doesn't poison the
+# rest of the tick.
 #
 # Idempotent: re-running over an already-flipped task is a no-op — once
 # flipped to needs-feedback / needs-review / needs-close / done the task is no
 # longer in the watch set (`in-progress`, or `ready`-with-a-PR), so it's
 # excluded.
 #
-# v0 limitation: only `host: github` is implemented. ADO projects are skipped
-# with a warning. Filling that in is the obvious follow-up.
-#
 # Logs use the structured format from scripts/recurring/_log.sh — one line per
 # decision so a `grep 'action=no-signal'` shows everything the classifier
-# passed on, not just the gh-failed skips.
+# passed on, not just the fetch-failed skips.
 #
 # Usage: check-pr-signal.sh [--dry-run]
 
@@ -53,13 +60,11 @@ CLASSIFIER="$SCRIPT_DIR/../../src/pr_signal.ts"
 . "$SCRIPT_DIR/_log.sh"
 
 command -v tpm  >/dev/null || { log_error "tpm CLI not found"; exit 1; }
-command -v gh   >/dev/null || { log_error "gh CLI not found";  exit 1; }
 command -v node >/dev/null || { log_error "node not found";    exit 1; }
 [ -f "$CLASSIFIER" ] || { log_error "classifier missing at $CLASSIFIER"; exit 1; }
-
-# `gh pr view --json` fields requested per PR — sourced from the classifier
-# so the request always matches what `classifyPrs` consumes.
-GH_FIELDS=$(node -e "import('$CLASSIFIER').then(m => process.stdout.write(m.PR_JSON_FIELDS.join(',')))")
+# Host CLIs (gh / az) are checked per-task inside their adapter — an ADO-only
+# user shouldn't need `gh`, and vice versa. Misconfig surfaces as a per-PR
+# DECIDE action=error line, not a script-wide abort.
 
 # Enumerate qualified slugs (`<project>/<task>` or `<project>/<parent>/<child>`)
 # of every candidate task: every `in-progress` task, plus every `ready` task
@@ -82,7 +87,7 @@ slugs=$( { tpm ls --status in-progress --flat; tpm ls --status ready --flat; } |
 
 flipped=0
 no_signal=0
-gh_failed=0
+fetch_failed=0
 checked=0
 
 if [ -z "${slugs:-}" ]; then
@@ -99,19 +104,10 @@ while IFS= read -r slug; do
     rc=$?
     log_warn "skip $slug (tpm context exit=$rc) — $(head -2 "$err_tmp" | tr '\n' ' ')"
     rm -f "$err_tmp"
-    gh_failed=$((gh_failed + 1))
+    fetch_failed=$((fetch_failed + 1))
     continue
   }
   rm -f "$err_tmp"
-
-  host=$(printf '%s\n' "$briefing" | awk '/^- Host: / { print $3; exit }')
-  host=${host:-github}
-
-  if [ "$host" != "github" ]; then
-    log_warn "skip $slug (host=$host, not yet implemented)"
-    gh_failed=$((gh_failed + 1))
-    continue
-  fi
 
   status=$(printf '%s\n' "$briefing" | awk '/^- Status: / { print $3; exit }')
   prs_line=$(printf '%s\n' "$briefing" | awk '/^- PRs: / { sub(/^- PRs: /, ""); print; exit }')
@@ -134,7 +130,7 @@ while IFS= read -r slug; do
     continue
   elif [ "$watch_rc" -ne 0 ]; then
     log_warn "skip $slug (watch-check exit=$watch_rc)"
-    gh_failed=$((gh_failed + 1))
+    fetch_failed=$((fetch_failed + 1))
     continue
   fi
 
@@ -145,44 +141,25 @@ while IFS= read -r slug; do
     continue
   fi
 
-  # PRs may be comma-separated.
+  # PRs may be comma-separated. Newline-separated list is what the classifier
+  # reads from stdin (one URL per line); host dispatch + fetch happens there.
   IFS=',' read -ra urls <<< "$prs_line"
-
-  # Collect per-PR JSON into a single array fed to the classifier. Each
-  # element is the raw `gh pr view --json ...` payload (which already
-  # includes `url`).
-  payload="["
-  first=1
-  gh_error=0
-
+  url_input=""
   for raw in "${urls[@]}"; do
     url=$(printf '%s' "$raw" | awk '{$1=$1; print}')
     [ -n "$url" ] || continue
-
-    err_tmp=$(mktemp)
-    pr_json=$(gh pr view "$url" --json "$GH_FIELDS" 2>"$err_tmp") || {
-      rc=$?
-      log_warn "skip $slug (gh exit=$rc for $url) — $(head -2 "$err_tmp" | tr '\n' ' ')"
-      rm -f "$err_tmp"
-      gh_error=1
-      break
-    }
-    rm -f "$err_tmp"
-
-    if [ "$first" -eq 1 ]; then first=0; else payload+=","; fi
-    payload+="$pr_json"
+    url_input+="$url"$'\n'
   done
-  payload+="]"
 
-  if [ "$gh_error" -eq 1 ]; then
-    gh_failed=$((gh_failed + 1))
+  if [ -z "$url_input" ]; then
+    no_signal=$((no_signal + 1))
     continue
   fi
 
-  classifier_out=$(printf '%s' "$payload" | node "$CLASSIFIER") || {
+  classifier_out=$(printf '%s' "$url_input" | node "$CLASSIFIER") || {
     rc=$?
     log_error "classifier exit=$rc for $slug"
-    gh_failed=$((gh_failed + 1))
+    fetch_failed=$((fetch_failed + 1))
     continue
   }
 
@@ -261,4 +238,4 @@ done <<< "$slugs"
 
 dry_suffix=""
 [ "$DRY_RUN" = "1" ] && dry_suffix=" (dry-run)"
-log_info "summary checked=$checked flipped=$flipped no-signal=$no_signal gh-failed=$gh_failed$dry_suffix"
+log_info "summary checked=$checked flipped=$flipped no-signal=$no_signal fetch-failed=$fetch_failed$dry_suffix"
