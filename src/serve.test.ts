@@ -110,6 +110,52 @@ test("route: /t/<project>/<slug> renders task view (sidebar + body)", () => {
   assert.match(r.body, /github\.com\/x\/y\/pull\/1/);
 });
 
+test("route: external links (PR, repo) open in a new tab; internal links stay in-tab", () => {
+  const child = task("002-child", "ready", { parent: "001-parent" });
+  child.parent = "001-parent";
+  const parent = task(
+    "001-parent",
+    "in-progress",
+    { prs: ["https://github.com/x/y/pull/1"], repo: { remote: "https://github.com/x/y.git" } },
+  );
+  parent.children = [child];
+  const p = project("alpha", [parent], { repo: { remote: "https://github.com/x/y.git" } });
+  const r = route("/t/alpha/001-parent", new URLSearchParams(), [p]);
+  assert.equal(r.status, 200);
+  // External: PR link in the task detail list carries target/rel.
+  assert.match(
+    r.body,
+    /<a href="https:\/\/github\.com\/x\/y\/pull\/1" target="_blank" rel="noopener noreferrer">/,
+  );
+  // External: repo remote in the sidebar carries target/rel.
+  assert.match(
+    r.body,
+    /<a href="https:\/\/github\.com\/x\/y\.git" target="_blank" rel="noopener noreferrer">/,
+  );
+  // Internal: children link to /t/... has no target="_blank".
+  const childAnchor = r.body.match(/<a href="\/t\/alpha\/001-parent\/002-child">[^<]*<\/a>/);
+  assert.ok(childAnchor, "expected internal child link to render");
+  assert.doesNotMatch(childAnchor![0], /target="_blank"/);
+  // Internal: breadcrumb / project link doesn't carry target="_blank".
+  const projAnchor = r.body.match(/<a href="\/p\/alpha">[^<]*<\/a>/);
+  assert.ok(projAnchor, "expected internal project link to render");
+  assert.doesNotMatch(projAnchor![0], /target="_blank"/);
+});
+
+test("route: task body markdown external links open in a new tab; anchor links don't", () => {
+  const t = task("001-foo", "in-progress");
+  t.body = "## Context\nsee [PR](https://github.com/x/y/pull/42) and [log](#log).\n";
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p]);
+  assert.match(
+    r.body,
+    /<a href="https:\/\/github\.com\/x\/y\/pull\/42" target="_blank" rel="noopener noreferrer">PR<\/a>/,
+  );
+  const anchor = r.body.match(/<a href="#log">[^<]*<\/a>/);
+  assert.ok(anchor, "expected anchor link to render");
+  assert.doesNotMatch(anchor![0], /target="_blank"/);
+});
+
 test("route: /t/<project>/<parent>/<child> resolves child task", () => {
   const child = task("003-child", "ready", { parent: "002-parent" });
   child.parent = "002-parent";

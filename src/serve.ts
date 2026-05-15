@@ -386,7 +386,7 @@ function renderProject(project: Project, allProjects: Project[], showArchived: b
     })
     .join("");
 
-  const repoLink = repo.remote ? `<a href="${escAttr(repo.remote)}">${esc(repo.remote)}</a>` : "<em>no remote</em>";
+  const repoLink = repo.remote ? extLink(repo.remote, esc(repo.remote)) : "<em>no remote</em>";
   const projectName = strOr(project.data.name, project.slug);
   const status = strOr(project.data.status, "?");
   const host = strOr(project.data.host, "");
@@ -436,13 +436,13 @@ function renderTask(project: Project, task: Task, opts: RouteOpts = {}, prCache:
   const title = strOr(task.data.title, task.slug);
   const prs = (Array.isArray(task.data.prs) ? task.data.prs : []).map(String);
   const prList = prs.length
-    ? `<ul>${prs.map(u => `<li><a href="${escAttr(u)}">${esc(u)}</a></li>`).join("")}</ul>`
+    ? `<ul>${prs.map(u => `<li>${extLink(u, esc(u))}</li>`).join("")}</ul>`
     : "<em>none</em>";
   const childrenList = task.children?.length
     ? `<ul>${task.children.map(c => `<li><a href="/t/${esc(project.slug)}/${esc(task.slug)}/${esc(c.slug)}">${esc(strOr(c.data.title, c.slug))}</a> <span class="badge s-${cls(rollupStatus(c))}">${esc(rollupStatus(c))}</span></li>`).join("")}</ul>`
     : "";
 
-  const repoBlock = repo.remote ? `<dt>Repo</dt><dd><a href="${escAttr(repo.remote)}">${esc(repo.remote)}</a></dd>` : "";
+  const repoBlock = repo.remote ? `<dt>Repo</dt><dd>${extLink(repo.remote, esc(repo.remote))}</dd>` : "";
   const localBlock = repo.local ? `<dt>Local</dt><dd><code>${esc(repo.local)}</code></dd>` : "";
   const parentBlock = task.parent
     ? `<dt>Parent</dt><dd><a href="/t/${esc(project.slug)}/${esc(task.parent)}">${esc(task.parent)}</a></dd>`
@@ -694,10 +694,10 @@ function renderPrPanel(prs: string[], prCache: PrCacheReader): string {
 function renderPrCard(url: string, entry: PrCacheEntry | null, nowMs: number): string {
   const ref = parsePrUrl(url);
   const headline = ref
-    ? `<a href="${escAttr(url)}">PR ${esc(ref.displayId)}</a>`
-    : `<a href="${escAttr(url)}">${esc(url)}</a>`;
+    ? extLink(url, `PR ${esc(ref.displayId)}`)
+    : extLink(url, esc(url));
   const openLabel = openLinkLabel(ref?.host);
-  const openLink = `<a class="pr-open" href="${escAttr(url)}">${esc(openLabel)} →</a>`;
+  const openLink = extLink(url, `${esc(openLabel)} →`, "pr-open");
 
   const ageMs = entry ? nowMs - Date.parse(entry.fetchedAt) : NaN;
   const fresh = entry !== null && Number.isFinite(ageMs) && ageMs <= PR_CACHE_STALE_MS;
@@ -761,7 +761,7 @@ function prChipsFor(task: Task, prCache: PrCacheReader): string {
     // are link-only.
     const stateLabel = entry && entry.host === "github" ? ` ${prStateLabel(entry.pr as RawPrJson)}` : "";
     const stateClass = entry && entry.host === "github" ? prStateClass(entry.pr as RawPrJson) : "s-dropped";
-    return `<a class="pr-chip badge ${stateClass}" href="${escAttr(url)}">PR ${esc(idLabel)}${esc(stateLabel)}</a>`;
+    return extLink(url, `PR ${esc(idLabel)}${esc(stateLabel)}`, `pr-chip badge ${stateClass}`);
   }).join("");
 }
 
@@ -906,4 +906,11 @@ function esc(s: unknown): string {
 }
 function escAttr(s: unknown): string {
   return esc(s);
+}
+// External (off-host) links: open in a new tab. `noopener` blocks the new tab
+// from reaching `window.opener` (security); `noreferrer` strips the Referer
+// header (privacy). Standard pair for `target="_blank"`.
+function extLink(url: string, label: string, classes = ""): string {
+  const cls = classes ? ` class="${escAttr(classes)}"` : "";
+  return `<a${cls} href="${escAttr(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
 }
