@@ -1,5 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { hostname } from "node:os";
 import { findRoot } from "./root.ts";
 import { loadProjects } from "./tree.ts";
@@ -118,7 +117,23 @@ export interface OrchestrateOpts {
 
 export interface OrchestrateResult {
   exitCode: number;
-  message?: string;
+}
+
+// Decide what to log when the orchestrator finds nothing to dispatch. INFO for
+// the routine empty-queue case (fires whenever the orchestrator wakes up with
+// nothing to do); WARN when candidates existed but were all blocked by lock or
+// repo contention — rarer and worth the higher level so it's grep-able.
+export function noPickLogEntry(candidatesCount: number): { level: "INFO" | "WARN"; message: string } {
+  if (candidatesCount === 0) {
+    return {
+      level: "INFO",
+      message: "no eligible tasks (no ready/needs-feedback with allow_orchestrator: true)",
+    };
+  }
+  return {
+    level: "WARN",
+    message: "all eligible tasks claimable but repos busy or task-locked",
+  };
 }
 
 // Run one orchestrator turn:
@@ -146,16 +161,15 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     slug = opts.preClaimedTask;
     const match = findTask(projects, slug);
     if (!match) {
-      return { exitCode: 1, message: `pre-claimed task not found: ${slug}` };
+      logLine("ERROR", `pre-claimed task not found: ${slug}`);
+      return { exitCode: 1 };
     }
     pick = match;
     // Sanity-check the lock is ours; refuse to run a task we don't own.
     const status = lock.statusTask(root, slug);
     if (!status.includes(`agent-id=${agentId}`)) {
-      return {
-        exitCode: 1,
-        message: `pre-claimed task ${slug} is not held by ${agentId} (status: ${status})`,
-      };
+      logLine("ERROR", `pre-claimed task ${slug} is not held by ${agentId} (status: ${status})`);
+      return { exitCode: 1 };
     }
   } else {
     // Atomic pick + claim: walk candidates, lock the first one we can.
@@ -175,10 +189,11 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
         // 035/003). Refuse to dispatch rather than silently colliding on
         // the working tree.
         lock.releaseTask(root, candSlug, agentId);
-        return {
-          exitCode: 1,
-          message: `${candSlug}: same_repo_strategy: worktree is declared but not yet implemented in tpm orchestrate. Switch to serialize or run the task manually.`,
-        };
+        logLine(
+          "ERROR",
+          `${candSlug}: same_repo_strategy: worktree is declared but not yet implemented in tpm orchestrate. Switch to serialize or run the task manually.`,
+        );
+        return { exitCode: 1 };
       }
       if (strategy === "serialize") {
         const repoR = lock.acquireRepo(root, c.project.slug, agentId);
@@ -194,12 +209,9 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
       break;
     }
     if (!pick) {
-      return {
-        exitCode: 1,
-        message: candidates.length === 0
-          ? "No ready or needs-feedback tasks with allow_orchestrator: true."
-          : "All eligible tasks are claimable but their repos are busy or already locked.",
-      };
+      const entry = noPickLogEntry(candidates.length);
+      logLine(entry.level, entry.message);
+      return { exitCode: 1 };
     }
   }
 
@@ -304,14 +316,16 @@ function runWithTimeout(
     child.on("error", (err) => {
       exited = true;
       clearTimeout(termTimer);
-      resolve({ exitCode: 127, message: `failed to spawn ${bin}: ${err.message}` });
+      logLine("ERROR", `failed to spawn ${bin}: ${err.message}`);
+      resolve({ exitCode: 127 });
     });
     child.on("exit", (code, signal) => {
       exited = true;
       clearTimeout(termTimer);
       if (timedOut) {
         onTimeout();
-        resolve({ exitCode: 124, message: `timed out after ${minutes}m (signal=${signal ?? "?"})` });
+        logLine("WARN", `timed out after ${minutes}m (signal=${signal ?? "?"})`);
+        resolve({ exitCode: 124 });
       } else {
         resolve({ exitCode: code ?? 0 });
       }
