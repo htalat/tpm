@@ -240,15 +240,36 @@ export function stripPrBody(body: string): string {
   return result.trim();
 }
 
-// ---- WatchableTask filter (unchanged from task 049) ---------------------
+// ---- WatchableTask filter -----------------------------------------------
+//
+// The watch set is "any non-terminal task whose linked PR's state could
+// plausibly change in a way that matters." Status indicates which inbox the
+// task is parked in right now, but the PR is alive across statuses — review
+// states, CI runs, and merges all keep landing after a task moves past
+// in-progress. Stranding the task at needs-review / needs-feedback /
+// needs-close (the post-049 forward-direction gap) made the poller blind to
+// reviewer comments on PRs the agent had already handed off.
+//
+// Excluded statuses: `open` (not yet shaped), `blocked` (deliberately parked
+// — flip back to ready/in-progress to resume watching), `done` / `dropped`
+// (terminal). `in-progress` without a linked PR also returns false here:
+// the shell skips it the same way either way (no URL to fetch), and folding
+// the hasPrs gate into one rule keeps the predicate small.
+
+const WATCHED_STATUSES = new Set([
+  "in-progress",
+  "ready",
+  "needs-review",
+  "needs-feedback",
+  "needs-close",
+]);
 
 export type WatchableTask = { status?: unknown; prs?: unknown };
 
 export function shouldWatchForPrSignal(task: WatchableTask): boolean {
   const status = String(task.status ?? "");
-  if (status === "in-progress") return true;
-  if (status === "ready") return Array.isArray(task.prs) && task.prs.length > 0;
-  return false;
+  if (!WATCHED_STATUSES.has(status)) return false;
+  return Array.isArray(task.prs) && task.prs.length > 0;
 }
 
 // ---- CLI entrypoint ----------------------------------------------------
