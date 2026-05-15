@@ -90,6 +90,8 @@ This is the primary mode.
 
     If you find yourself about to exit while the task is still `in-progress`, stop and pick one of the above first. `tpm revert` is the safe default if you can't make a confident classification.
 
+**After `tpm pr` on a `type: pr` task, your turn is over.** Don't poll CI, don't re-read the task body, don't run extra checks. Exit. The PR-signal poller closes the task inline when the PR merges and re-flags it to `needs-feedback` if CI fails or a reviewer requests changes — that's the poller's job, not yours. Manual `/tpm done <task>` is only the escape hatch for stragglers. Burning your time bound waiting for CI is the canonical 050/053 failure mode.
+
 **Default for unanticipated decisions.** When a fork comes up during implementation that the task body didn't pre-answer, pick the smaller / more local change, ship it, and note the deferred consideration in the Outcome (or file a follow-up task). Don't stop to ask — the user reviews the PR; redirection happens there. The canonical anti-pattern: task 046 (2026-05-10) — the agent finished correct in-scope work, then halted to ask about a related-but-out-of-scope extension; the work sat uncommitted until the user picked it up manually.
 
 Exceptions — halt and surface instead of shipping:
