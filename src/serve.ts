@@ -411,7 +411,7 @@ ${projectChips(allProjects, project.slug)}
   <p class="meta"><code>${esc(project.slug)}</code>  ·  ${repoLink}  ·  ${tasks.length} task${tasks.length === 1 ? "" : "s"}${showArchived ? " (incl. archived)" : ""}</p>
   <p class="archive-toggle"><a href="${toggleHref}">${showArchived ? "[x]" : "[ ]"} ${toggleLabel}</a></p>
 </header>
-<div class="layout">
+<div class="layout no-rail">
   <aside class="sidebar">
     <dl>
       <dt>Status</dt><dd><span class="badge s-${cls(status)}">${esc(status)}</span></dd>

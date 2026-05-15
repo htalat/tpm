@@ -83,6 +83,15 @@ test("route: /p/<project> renders project view with tasks grouped by status", ()
   }
 });
 
+test("renderProject: layout opts out of the rail column (no-rail)", () => {
+  // Project pages never render a right rail — they should collapse the .layout
+  // grid back to 2-col so the main content fills the space the rail reserved.
+  const p = project("alpha", [task("001-ready", "ready")]);
+  const r = route("/p/alpha", new URLSearchParams(), [p]);
+  assert.match(r.body, /class="layout no-rail"/);
+  assert.doesNotMatch(r.body, /class="task-rail"/);
+});
+
 test("route: /p/<unknown> returns 404", () => {
   const r = route("/p/nope", new URLSearchParams(), []);
   assert.equal(r.status, 404);
