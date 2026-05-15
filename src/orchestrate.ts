@@ -38,6 +38,58 @@ function posInt(v: unknown): number | null {
   return null;
 }
 
+// Did the spawned agent move the task forward? Classification happens after
+// the child exits, against a snapshot of the task taken before the spawn.
+//
+//   shipped — exit 0 and (status changed OR prs grew OR task disappeared
+//             from the live tree, which means it was archived mid-run).
+//   stalled — exit 0 but the task didn't move. The case the "ship the
+//             smaller change" rule is meant to eliminate; worth counting.
+//   timeout — exit 124 (the runWithTimeout convention).
+//   failed  — any other non-zero exit.
+export type Disposition = "shipped" | "stalled" | "timeout" | "failed";
+
+export interface DispositionSnapshot {
+  status: string;
+  prs: number;
+}
+
+export interface ClassifyDispositionInput {
+  exitCode: number;
+  before: DispositionSnapshot;
+  // null when the task can't be re-resolved after the run (archived/moved).
+  after: DispositionSnapshot | null;
+}
+
+export function classifyDisposition(input: ClassifyDispositionInput): Disposition {
+  if (input.exitCode === 124) return "timeout";
+  if (input.exitCode !== 0) return "failed";
+  const after = input.after;
+  if (!after) return "shipped";
+  if (after.status !== input.before.status) return "shipped";
+  if (after.prs > input.before.prs) return "shipped";
+  return "stalled";
+}
+
+export function formatDispositionLine(
+  slug: string,
+  disposition: Disposition,
+  exitCode: number,
+  before: DispositionSnapshot,
+  after: DispositionSnapshot | null,
+): string {
+  const afterStatus = after?.status ?? "?";
+  const afterPrs = after?.prs ?? before.prs;
+  return `disposition ${slug} ${disposition} exit=${exitCode} status=${before.status}->${afterStatus} prs=${before.prs}->${afterPrs}`;
+}
+
+function snapshotTask(task: Task): DispositionSnapshot {
+  return {
+    status: String(task.data.status ?? ""),
+    prs: Array.isArray(task.data.prs) ? (task.data.prs as unknown[]).length : 0,
+  };
+}
+
 // Structured log line — matches scripts/recurring/_log.sh format so a tail of
 // any tpm log file (recurring scripts, orchestrator runs) sorts/greps cleanly.
 //
@@ -214,6 +266,12 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     const verb = event === "finish" ? "finished" : "failed";
     fireNotification("tpm", `${agentId} ${verb} ${pick.task.slug}`);
   }
+
+  const before = snapshotTask(pick.task);
+  const after = matchAfter ? snapshotTask(matchAfter.task) : null;
+  const disposition = classifyDisposition({ exitCode: result.exitCode, before, after });
+  const level = disposition === "stalled" ? "WARN" : "INFO";
+  logLine(level, formatDispositionLine(slug, disposition, result.exitCode, before, after));
 
   return result;
 }
