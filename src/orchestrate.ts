@@ -44,16 +44,19 @@ function posInt(v: unknown): number | null {
 // Did the spawned agent move the task forward? Classification happens after
 // the child exits, against a snapshot of the task taken before the spawn.
 //
-//   shipped  — exit 0 and (status advanced past the start-of-work flip OR
-//              prs grew OR task disappeared from the live tree, which means
-//              it was archived mid-run).
+//   shipped  — the agent delivered: prs grew, status reached a delivery state
+//              (needs-review, needs-close, done, dropped, blocked), or the task
+//              disappeared from the live tree (archived mid-run by the poller).
+//              Credited regardless of exit code — a SIGTERM at the time bound
+//              after `tpm pr` is a *timing* signal, not a *delivery* signal.
 //   stalled  — exit 0 but the task didn't make meaningful progress. Includes
 //              the case where the agent flipped to `in-progress` from `ready`
 //              or `needs-feedback` and exited without opening a PR or further
 //              advancing — that flip is `tpm start`'s entry, not progress.
 //              The case the "ship the smaller change" rule is meant to
 //              eliminate; worth counting.
-//   timeout  — exit 124 (the runWithTimeout convention).
+//   timeout  — exit 124 (the runWithTimeout convention) without a shipped flip.
+//              Real "the agent ran out the clock without delivering".
 //   terminal — task hit a terminal state externally (done/dropped/archived)
 //              while the agent was still running; orchestrator SIGTERMed it
 //              early so we don't burn the rest of the time bound.
@@ -75,25 +78,50 @@ export interface ClassifyDispositionInput {
   terminationReason?: "timeout" | "early-term";
 }
 
+// Statuses that signal the agent delivered something this run. Excludes
+// `in-progress` (still mid-work), `ready` (self-revert handing back to the
+// queue), `needs-feedback` (round incomplete — more agent work needed), and
+// `open` (pre-shaping).
+const DELIVERY_STATES = new Set([
+  "needs-review",
+  "needs-close",
+  "done",
+  "dropped",
+  "blocked",
+]);
+
 export function classifyDisposition(input: ClassifyDispositionInput): Disposition {
   if (input.terminationReason === "early-term") return "terminal";
-  if (input.exitCode === 124) return "timeout";
-  if (input.exitCode !== 0) return "failed";
+  if (input.exitCode !== 0 && input.exitCode !== 124) return "failed";
+
   const after = input.after;
+  // Task gone from the tree — poller archived it mid-run. Definitively shipped
+  // externally, regardless of exit code.
   if (!after) return "shipped";
-  if (after.prs > input.before.prs) return "shipped";
-  if (after.status === input.before.status) return "stalled";
-  // Entry-flip: `ready -> in-progress` and `needs-feedback -> in-progress`
-  // are what `tpm start` does on entry — the agent claimed the task but
-  // didn't ship anything else (prs unchanged, status didn't advance past
-  // in-progress). That's the start of work, not progress, so don't credit
-  // it as shipped.
-  if (
+
+  const prsGrew = after.prs > input.before.prs;
+  const statusChanged = after.status !== input.before.status;
+  // `tpm start` flips `ready -> in-progress` or `needs-feedback -> in-progress`
+  // on entry. Without further progress (no PR, no delivery-state advance),
+  // that's claim-not-progress — per task 064.
+  const entryFlip =
     after.status === "in-progress" &&
-    (input.before.status === "ready" || input.before.status === "needs-feedback")
-  ) {
-    return "stalled";
-  }
+    (input.before.status === "ready" || input.before.status === "needs-feedback") &&
+    !prsGrew;
+  // Did the agent ship? PR opened, or status reached a delivery state.
+  const shippedFlip =
+    !entryFlip && (prsGrew || (statusChanged && DELIVERY_STATES.has(after.status)));
+
+  // Delivery wins over timeout: the 057 trace was `status=ready->needs-review
+  // prs=0->1 exit=124` and got reported as `timeout`. Per task 068, that's the
+  // symmetric inverse of 064 — the agent shipped, then lingered past the time
+  // bound. Headline disposition should track what landed, not the SIGTERM.
+  if (shippedFlip) return "shipped";
+  if (input.exitCode === 124) return "timeout";
+  // Exit 0 with no shipped flip. Entry-flip and no-change collapse to stalled;
+  // non-delivery status changes (e.g., `in-progress -> ready` self-revert) keep
+  // the prior "any movement counts" behavior.
+  if (entryFlip || !statusChanged) return "stalled";
   return "shipped";
 }
 
