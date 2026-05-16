@@ -186,6 +186,38 @@ a.pr-chip:hover { text-decoration: none; opacity: .8; }
   .run-events .ev-tag { min-width: 0; }
 }
 .chip-config { font-style: italic; }
+.chip-logs { font-style: italic; }
+.log-panel { margin-bottom: 2rem; padding: .75rem .9rem; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; }
+.log-panel h2 { font-size: 1rem; margin: 0 0 .25rem; padding: 0; border: 0; }
+.log-panel h2 .meta { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .7em; font-weight: 400; color: #8d96a0; word-break: break-all; }
+.log-meta { color: #8d96a0; font-size: .8em; margin: .15rem 0 .5rem; }
+.log-empty { color: #8d96a0; font-size: .9em; font-style: italic; margin: .35rem 0; }
+.log-lines { list-style: none; padding: 0; margin: .5rem 0 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .8em; line-height: 1.45; }
+.log-line { display: flex; gap: .65rem; padding: .1rem 0; border-top: 1px solid #eaeef2; align-items: baseline; }
+.log-line:first-child { border-top: 0; }
+.log-ts { flex: 0 0 auto; color: #8d96a0; min-width: 13em; }
+.log-line .log-level { flex: 0 0 auto; display: inline-block; min-width: 3.5em; text-align: center; padding: 0 6px; border-radius: 3px; font-size: .85em; font-weight: 600; }
+.log-script { flex: 0 0 auto; color: #57606a; min-width: 10em; }
+.log-msg { flex: 1 1 auto; color: #1f2328; word-break: break-word; white-space: pre-wrap; }
+.log-raw { flex: 1 1 auto; color: #57606a; white-space: pre-wrap; word-break: break-word; }
+.log-line-raw { padding-left: 13.5em; }
+.log-level-info { background: #dafbe1; color: #1a7f37; }
+.log-level-warn { background: #fff8c5; color: #9a6700; }
+.log-level-error { background: #ffebe9; color: #cf222e; }
+@media (prefers-color-scheme: dark) {
+  .log-panel { background: #161b22; border-color: #30363d; }
+  .log-line { border-color: #21262d; }
+  .log-msg { color: #e6edf3; }
+  .log-ts, .log-script, .log-raw { color: #8d96a0; }
+  .log-level-info { background: #0f3d1f; color: #56d364; }
+  .log-level-warn { background: #4d3a00; color: #e3b341; }
+  .log-level-error { background: #5d1a1a; color: #ff7b72; }
+}
+@media (max-width: 900px) {
+  .log-line { flex-direction: column; gap: .1rem; }
+  .log-ts, .log-script, .log-line .log-level { min-width: 0; }
+  .log-line-raw { padding-left: 0; }
+}
 .config-section { margin-bottom: 2rem; }
 .config-section h2 { font-size: 1.15rem; }
 .config-interp { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; margin: .75rem 0; font-size: .9em; }

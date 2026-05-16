@@ -34,6 +34,8 @@ import {
 import type { Config } from "./config.ts";
 import { AGENTS_PATH } from "./agents.ts";
 import type { AgentEntry } from "./agents.ts";
+import { defaultHarnessLogReader } from "./harness_log.ts";
+import type { HarnessLogReader, HarnessLogSource, HarnessLogLine } from "./harness_log.ts";
 
 // A PR-cache lookup. Production passes `readPrCache` (reads ~/.tpm/pr-cache);
 // tests pass a stub so `route` stays pure and disk-free.
@@ -222,7 +224,16 @@ export interface RouteOpts {
   // tests inject in-memory stubs.
   configSnapshot?: ConfigSnapshotReader;
   agentsSnapshot?: ConfigSnapshotReader;
+  // Harness-log reader for the `/logs` page. Default reads `~/.tpm/`; tests
+  // inject in-memory stubs.
+  harnessLog?: HarnessLogReader;
 }
+
+// Default tail size for the `/logs` page. Big enough that the operator can
+// reconstruct an incident without paging; small enough that the page renders
+// fast even when poller summaries have been accumulating for weeks.
+const LOGS_DEFAULT_TAIL = 200;
+const LOGS_MAX_TAIL = 2000;
 
 // Pure dispatch — returns the response shape, doesn't touch the network.
 // Tests exercise this directly with mocked projects.
@@ -240,6 +251,16 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const cfg = (opts.configSnapshot ?? defaultConfigSnapshot)();
     const agents = (opts.agentsSnapshot ?? defaultAgentsSnapshot)();
     return ok("text/html; charset=utf-8", renderConfig(projects, cfg, agents));
+  }
+  if (pathname === "/logs") {
+    const reader = opts.harnessLog ?? defaultHarnessLogReader;
+    const taskFilter = params.get("task")?.trim() || undefined;
+    const linesParam = parseTailParam(params.get("lines"));
+    const sources = reader({ lines: linesParam, filter: taskFilter });
+    return ok("text/html; charset=utf-8", renderLogs(projects, sources, {
+      taskFilter,
+      tail: linesParam,
+    }));
   }
   const runsMatch = pathname.match(/^\/runs\/([^/]+)\/?$/);
   if (runsMatch) {
@@ -752,6 +773,82 @@ function isPlainObject(v: unknown): boolean {
   return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
+// ---- /logs page -----------------------------------------------------------
+
+interface LogsViewOpts {
+  taskFilter?: string;
+  tail: number;
+}
+
+// Clamp `?lines=N` to [1, LOGS_MAX_TAIL]. Falls back to the default for any
+// non-numeric / out-of-range value — the param is for ad-hoc deeper digs, not
+// a security boundary, but unbounded N would let a curl pull arbitrarily much
+// memory.
+function parseTailParam(raw: string | null): number {
+  if (raw === null) return LOGS_DEFAULT_TAIL;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) return LOGS_DEFAULT_TAIL;
+  return Math.min(n, LOGS_MAX_TAIL);
+}
+
+function renderLogs(projects: Project[], sources: HarnessLogSource[], opts: LogsViewOpts): string {
+  const filterChip = opts.taskFilter
+    ? `<p class="meta">Filtered to lines containing <code>${esc(opts.taskFilter)}</code> · <a href="/logs">clear filter</a></p>`
+    : "";
+  const panels = sources.length === 0
+    ? `<p class="config-empty">No harness log files found under <code>~/.tpm/</code>. Logs appear once <code>tpm orchestrate</code> or a recurring script has run.</p>`
+    : sources.map(s => renderLogPanel(s, opts)).join("");
+  const body = `
+${projectChips(projects, null, "logs")}
+<nav class="crumbs"><a href="/">tpm</a><a href="/logs">logs</a></nav>
+<header>
+  <h1>Harness logs</h1>
+  <p class="meta">Tail of the orchestrator + recurring-script envelope logs from <code>~/.tpm/</code>. Auto-refreshes every 5s.</p>
+  ${filterChip}
+</header>
+${panels}
+`;
+  // 5s refresh matches a live `tail -f` cadence. Same trade-off as the PR
+  // panel's poll: flicker over fanciness.
+  return layout("tpm · logs", body, { autoRefresh: 5 });
+}
+
+function renderLogPanel(source: HarnessLogSource, opts: LogsViewOpts): string {
+  const truncated = source.totalLines > source.lines.length
+    ? `<p class="log-meta">Showing the last ${source.lines.length} of ${source.totalLines} line${source.totalLines === 1 ? "" : "s"}${opts.taskFilter ? " matching the filter" : ""}.</p>`
+    : "";
+  let inner: string;
+  if (!source.exists) {
+    inner = `<p class="log-empty">No log file at <code>${esc(source.path)}</code>.</p>`;
+  } else if (source.lines.length === 0) {
+    const note = opts.taskFilter
+      ? `No lines match <code>${esc(opts.taskFilter)}</code> in this file.`
+      : "Log file is empty.";
+    inner = `<p class="log-empty">${note}</p>`;
+  } else {
+    inner = `<ol class="log-lines">${source.lines.map(renderLogLine).join("")}</ol>`;
+  }
+  return `<section class="log-panel">
+  <h2>${esc(source.name)} <span class="meta">${esc(source.path)}</span></h2>
+  ${truncated}
+  ${inner}
+</section>`;
+}
+
+function renderLogLine(line: HarnessLogLine): string {
+  if (!line.level) {
+    // Free-form / pre-task-042 output. Surface verbatim, no level chip.
+    return `<li class="log-line log-line-raw"><span class="log-raw">${esc(line.raw)}</span></li>`;
+  }
+  const levelClass = `log-level-${line.level.toLowerCase()}`;
+  return `<li class="log-line">
+    <span class="log-ts">${esc(line.timestamp ?? "")}</span>
+    <span class="log-level ${levelClass}">${esc(line.level)}</span>
+    <span class="log-script">${esc(line.script ?? "")}</span>
+    <span class="log-msg">${esc(line.message ?? "")}</span>
+  </li>`;
+}
+
 // ---- run panel ------------------------------------------------------------
 
 // How many events of the parsed transcript to render. The file itself can be
@@ -762,6 +859,11 @@ const RUN_PANEL_EVENTS = 60;
 function renderRunPanel(slug: string, status: string, runLog: RunLogReader): string {
   const snapshot = runLog(slug);
   const label = status === "in-progress" ? "Current run" : "Last run";
+  // Always offer the cross-link to the envelope logs scoped to this slug — the
+  // run panel shows the inner claude session; the harness-logs page shows what
+  // the orchestrator + poller decided about the task. Different question, same
+  // entry point.
+  const harnessLink = `<p class="run-meta"><a href="/logs?task=${esc(slug)}">View harness logs for this task →</a></p>`;
   if (!snapshot) {
     // No run on disk yet. For an in-progress task this is a transient state
     // (orchestrator just spawned, no events yet); for any other status it
@@ -772,6 +874,7 @@ function renderRunPanel(slug: string, status: string, runLog: RunLogReader): str
     return `<section class="run-panel run-panel-empty">
   <h2>${esc(label)}</h2>
   <p class="run-empty">${esc(note)}</p>
+  ${harnessLink}
 </section>`;
   }
   const events = parseEvents(snapshot.text);
@@ -788,6 +891,7 @@ function renderRunPanel(slug: string, status: string, runLog: RunLogReader): str
   ${rendered}
   ${truncated}
   ${rawLink}
+  ${harnessLink}
 </section>`;
 }
 
@@ -1168,18 +1272,22 @@ function relativeAge(ms: number): string {
 
 // Inline list of project links shown above the page header. The current
 // project (if any) is rendered as a non-link "active" chip. Always trailed by
-// a site-wide "config" chip so /config is one click from every page.
-function projectChips(projects: Project[], activeSlug: string | null, activeView?: "config"): string {
+// site-wide "logs" + "config" chips so the operator pages are one click from
+// every view.
+function projectChips(projects: Project[], activeSlug: string | null, activeView?: "config" | "logs"): string {
   const chips = projects.map(p => {
     if (p.slug === activeSlug) {
       return `<span class="chip active">${esc(strOr(p.data.name, p.slug))}</span>`;
     }
     return `<a class="chip" href="/p/${esc(p.slug)}">${esc(strOr(p.data.name, p.slug))}</a>`;
   });
+  const logsChip = activeView === "logs"
+    ? `<span class="chip chip-logs active">logs</span>`
+    : `<a class="chip chip-logs" href="/logs">logs</a>`;
   const configChip = activeView === "config"
     ? `<span class="chip chip-config active">config</span>`
     : `<a class="chip chip-config" href="/config">config</a>`;
-  return `<nav class="project-chips">${chips.join("")}${configChip}</nav>`;
+  return `<nav class="project-chips">${chips.join("")}${logsChip}${configChip}</nav>`;
 }
 
 function extractProjectBody(body: string): string {
