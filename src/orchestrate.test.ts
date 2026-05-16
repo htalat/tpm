@@ -212,7 +212,7 @@ test("classifyDisposition: exit 0 with task gone (archived mid-run) → shipped"
   );
 });
 
-test("classifyDisposition: exit 124 → timeout regardless of state", () => {
+test("classifyDisposition: exit 124 with no shipped flip → timeout", () => {
   assert.equal(
     classifyDisposition({
       exitCode: 124,
@@ -223,7 +223,102 @@ test("classifyDisposition: exit 124 → timeout regardless of state", () => {
   );
 });
 
-test("classifyDisposition: non-zero non-124 exit → failed", () => {
+test("classifyDisposition: exit 124 with in-progress -> in-progress, no PR → timeout", () => {
+  // Agent claimed the task, churned, and ran out the clock without delivering.
+  assert.equal(
+    classifyDisposition({
+      exitCode: 124,
+      before: { status: "in-progress", prs: 0 },
+      after: { status: "in-progress", prs: 0 },
+    }),
+    "timeout",
+  );
+});
+
+test("classifyDisposition: exit 124 with ready -> in-progress entry flip only → timeout", () => {
+  // Entry flip is claim-not-progress (per 064). SIGTERM on top of that is a
+  // real "agent didn't deliver" run, not a shipped one.
+  assert.equal(
+    classifyDisposition({
+      exitCode: 124,
+      before: { status: "ready", prs: 0 },
+      after: { status: "in-progress", prs: 0 },
+    }),
+    "timeout",
+  );
+});
+
+test("classifyDisposition: exit 124 with ready -> needs-review and prs +1 → shipped (the 057 trace)", () => {
+  // The canonical 068 case: agent ran `tpm pr` then lingered past the time
+  // bound and got SIGTERM'd. The PR exists; the headline should report that.
+  assert.equal(
+    classifyDisposition({
+      exitCode: 124,
+      before: { status: "ready", prs: 0 },
+      after: { status: "needs-review", prs: 1 },
+    }),
+    "shipped",
+  );
+});
+
+test("classifyDisposition: exit 124 with in-progress -> needs-review and prs +1 → shipped", () => {
+  // Same shape as the 057 trace but starting from in-progress (agent resumed
+  // an already-claimed task before opening the PR).
+  assert.equal(
+    classifyDisposition({
+      exitCode: 124,
+      before: { status: "in-progress", prs: 0 },
+      after: { status: "needs-review", prs: 1 },
+    }),
+    "shipped",
+  );
+});
+
+test("classifyDisposition: exit 124 with in-progress -> done → shipped (delivery state)", () => {
+  // Investigation/spike close-out (`tpm complete`) lands here. The agent
+  // closed the task; SIGTERM after that is just cleanup noise.
+  assert.equal(
+    classifyDisposition({
+      exitCode: 124,
+      before: { status: "in-progress", prs: 0 },
+      after: { status: "done", prs: 0 },
+    }),
+    "shipped",
+  );
+});
+
+test("classifyDisposition: exit 124 with in-progress -> blocked → shipped (blocker surfaced)", () => {
+  // `tpm block` is a delivery action even though no code shipped — the agent
+  // surfaced what's in the way. SIGTERM afterward doesn't undo that.
+  assert.equal(
+    classifyDisposition({
+      exitCode: 124,
+      before: { status: "in-progress", prs: 0 },
+      after: { status: "blocked", prs: 0 },
+    }),
+    "shipped",
+  );
+});
+
+test("classifyDisposition: exit 124 with after=null (archived mid-run) → shipped", () => {
+  // Poller closed the task while the agent was running and the time bound hit
+  // around the same window. Archived = definitively shipped externally.
+  assert.equal(
+    classifyDisposition({
+      exitCode: 124,
+      before: { status: "in-progress", prs: 1 },
+      after: null,
+    }),
+    "shipped",
+  );
+});
+
+test("classifyDisposition: non-zero non-124 exit → failed regardless of progress", () => {
+  // A crashed/externally-killed run can leave half-written state; even if the
+  // before/after diff looks like shipping, we don't trust it. exit=124 is the
+  // only SIGTERM the orchestrator's runWithTimeout produces — anything else is
+  // either a crash (1) or an external kill (137 from OOM/`kill -9`), and both
+  // are closer to "failed" than "shipped".
   assert.equal(
     classifyDisposition({
       exitCode: 1,
@@ -237,6 +332,14 @@ test("classifyDisposition: non-zero non-124 exit → failed", () => {
       exitCode: 127,
       before: { status: "ready", prs: 0 },
       after: null,
+    }),
+    "failed",
+  );
+  assert.equal(
+    classifyDisposition({
+      exitCode: 137,
+      before: { status: "ready", prs: 0 },
+      after: { status: "needs-review", prs: 1 },
     }),
     "failed",
   );
