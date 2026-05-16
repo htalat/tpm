@@ -92,6 +92,19 @@ test("renderProject: layout opts out of the rail column (no-rail)", () => {
   assert.doesNotMatch(r.body, /class="task-rail"/);
 });
 
+test("serve CSS: body widens to 1600px and grid columns use minmax(0, 1fr)", () => {
+  // Regression guard for task 070: the dashboard pages need a wider body cap
+  // than the 980px reading column BASE_CSS sets for `tpm report`, and the
+  // grid's middle column needs `minmax(0, 1fr)` so a long <pre> line in a
+  // task body can't blow the grid past the body box and shove the right rail
+  // toward the viewport edge.
+  const p = project("alpha", [task("001-ready", "ready")]);
+  const r = route("/p/alpha", new URLSearchParams(), [p]);
+  assert.match(r.body, /body\s*\{[^}]*max-width:\s*1600px/);
+  assert.match(r.body, /\.layout\s*\{[^}]*grid-template-columns:\s*220px\s+minmax\(0,\s*1fr\)\s+260px/);
+  assert.match(r.body, /\.layout\.no-rail\s*\{[^}]*grid-template-columns:\s*220px\s+minmax\(0,\s*1fr\)/);
+});
+
 test("route: /p/<unknown> returns 404", () => {
   const r = route("/p/nope", new URLSearchParams(), []);
   assert.equal(r.status, 404);

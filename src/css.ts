@@ -84,8 +84,9 @@ nav.project-chips { display: flex; gap: .4rem; flex-wrap: wrap; margin-bottom: 1
 .task-row.archived { opacity: .65; }
 .task-row.archived a.title { font-weight: 400; }
 .archived-tag { font-size: .7em; text-transform: uppercase; letter-spacing: .04em; color: #8d96a0; padding: 1px 6px; border-radius: 4px; background: #eaeef2; }
-.layout { display: grid; grid-template-columns: 220px 1fr 260px; gap: 1.5rem; align-items: start; }
-.layout.no-rail { grid-template-columns: 220px 1fr; }
+body { max-width: 1600px; }
+.layout { display: grid; grid-template-columns: 220px minmax(0, 1fr) 260px; gap: 1.5rem; align-items: start; }
+.layout.no-rail { grid-template-columns: 220px minmax(0, 1fr); }
 .task-rail { position: sticky; top: 1rem; display: flex; flex-direction: column; gap: 1rem; }
 .task-rail section { margin: 0; padding-top: 0; border-top: 0; }
 .sidebar { font-size: .9em; }
