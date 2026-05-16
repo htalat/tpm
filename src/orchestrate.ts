@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { createWriteStream, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { hostname } from "node:os";
 import { findRoot } from "./root.ts";
 import { loadProjects } from "./tree.ts";
@@ -11,6 +13,7 @@ import { isoWithOffset } from "./time.ts";
 import { shouldNotify, fireNotification } from "./notify.ts";
 import { resolveRepo } from "./context.ts";
 import { resolveSameRepoStrategy, worktreePath, worktreeBranch } from "./strategy.ts";
+import { newRunLogPath } from "./run_log.ts";
 import type { Project, Task } from "./tree.ts";
 
 export interface ResolveTimeBoundInput {
@@ -305,7 +308,13 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   const grace = (opts.graceSeconds ?? 10) * 1000;
   const claudeBin = opts.claudeBin ?? process.env.CLAUDE_BIN ?? "claude";
 
+  // Per-run log: capture the claude session output so `tpm serve` can show
+  // what the agent is doing live, and so a post-mortem after a failed run has
+  // more than just the start/finish envelope to work from. The orchestrator's
+  // own log stays clean — start/finish/disposition lines only.
+  const logFile = newRunLogPath(slug);
   logLine("INFO", `start ${slug} as ${agentId} time-bound=${minutes}m claude=${claudeBin}`);
+  logLine("INFO", `run log: ${logFile}`);
 
   // Heartbeat the lock every 60s so a long-running agent doesn't get
   // reclaimed by a sibling's stale-lock sweep.
@@ -321,7 +330,10 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   try {
     result = await runWithTimeout(
       claudeBin,
-      ["-p", `/tpm ${slug}`],
+      // --output-format stream-json --verbose emits NDJSON events as they
+      // happen (tool calls, text deltas, results) — that's what makes the
+      // per-run log a live transcript instead of just the final message.
+      ["-p", "--output-format", "stream-json", "--verbose", `/tpm ${slug}`],
       minutes,
       grace,
       () => {
@@ -343,6 +355,8 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
         const match = findTask(projectsNow, slug);
         return evaluateTerminalState(match?.task ?? null);
       },
+      undefined,
+      logFile,
     );
   } finally {
     clearInterval(heartbeatTimer);
@@ -419,6 +433,13 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
 const POLL_INTERVAL_MS = 5_000;
 
 // Exported for tests; production callers go through runOrchestrate.
+//
+// When `logFile` is set, the child's stdout and stderr are captured to that
+// file (NDJSON if the caller passed claude's stream-json flags). The parent's
+// stdout/stderr stay clean — the orchestrator's start/finish/disposition
+// envelope is the only thing on the parent stream. Without a log file the
+// child inherits stdio, preserving the pre-task-057 behavior for any caller
+// that doesn't want a transcript.
 export function runWithTimeout(
   bin: string,
   args: string[],
@@ -427,9 +448,29 @@ export function runWithTimeout(
   onTimeout: () => void,
   isTaskTerminal: () => TerminalReason | null,
   pollIntervalMs: number = POLL_INTERVAL_MS,
+  logFile?: string,
 ): Promise<OrchestrateResult> {
   return new Promise((resolve) => {
-    const child = spawn(bin, args, { stdio: "inherit" });
+    let logStream: ReturnType<typeof createWriteStream> | null = null;
+    if (logFile) {
+      try {
+        mkdirSync(dirname(logFile), { recursive: true });
+        logStream = createWriteStream(logFile);
+      } catch (e) {
+        // Logging is a nice-to-have — don't block the run if the FS is hostile.
+        logLine("WARN", `run log unavailable (${(e as Error).message}); continuing without capture`);
+        logStream = null;
+      }
+    }
+    const child = logStream
+      ? spawn(bin, args, { stdio: ["inherit", "pipe", "pipe"] })
+      : spawn(bin, args, { stdio: "inherit" });
+    if (logStream && child.stdout && child.stderr) {
+      // `end: false` so a single stderr or stdout EOF doesn't close the file
+      // before the other stream flushes. We close explicitly on child exit.
+      child.stdout.pipe(logStream, { end: false });
+      child.stderr.pipe(logStream, { end: false });
+    }
     let terminationReason: "timeout" | "early-term" | null = null;
     let exited = false;
     const deadline = Date.now() + minutes * 60_000;
@@ -467,25 +508,34 @@ export function runWithTimeout(
       }
     }, pollIntervalMs);
 
+    // Resolve only after the log stream has flushed to disk; otherwise a caller
+    // that reads the log file right after `await runWithTimeout(...)` returns
+    // can race the kernel-buffer flush and see a partial transcript.
+    const finishWithLogClosed = (cb: () => void) => {
+      if (logStream) logStream.end(cb);
+      else cb();
+    };
     child.on("error", (err) => {
       exited = true;
       clearInterval(poll);
       logLine("ERROR", `failed to spawn ${bin}: ${err.message}`);
-      resolve({ exitCode: 127 });
+      finishWithLogClosed(() => resolve({ exitCode: 127 }));
     });
     child.on("exit", (code, signal) => {
       exited = true;
       clearInterval(poll);
-      if (terminationReason === "timeout") {
-        onTimeout();
-        logLine("WARN", `timed out after ${minutes}m (signal=${signal ?? "?"})`);
-        resolve({ exitCode: 124, terminationReason: "timeout" });
-      } else if (terminationReason === "early-term") {
-        logLine("INFO", `terminated early after task closed (signal=${signal ?? "?"})`);
-        resolve({ exitCode: 0, terminationReason: "early-term" });
-      } else {
-        resolve({ exitCode: code ?? 0 });
-      }
+      finishWithLogClosed(() => {
+        if (terminationReason === "timeout") {
+          onTimeout();
+          logLine("WARN", `timed out after ${minutes}m (signal=${signal ?? "?"})`);
+          resolve({ exitCode: 124, terminationReason: "timeout" });
+        } else if (terminationReason === "early-term") {
+          logLine("INFO", `terminated early after task closed (signal=${signal ?? "?"})`);
+          resolve({ exitCode: 0, terminationReason: "early-term" });
+        } else {
+          resolve({ exitCode: code ?? 0 });
+        }
+      });
     });
   });
 }

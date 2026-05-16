@@ -151,8 +151,38 @@ a.pr-chip:hover { text-decoration: none; opacity: .8; }
   .pr-title { color: #8d96a0; }
   .pr-badge-label { color: #8d96a0; }
 }
+.run-panel { margin-top: 2rem; padding-top: 1rem; border-top: 2px solid #d0d7de; }
+.run-panel h2 { font-size: 1.05rem; margin-top: 0; padding-bottom: .2rem; border: 0; }
+.run-panel h2 .meta { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .7em; color: #8d96a0; }
+.run-empty { color: #8d96a0; font-size: .9em; margin: .5rem 0; font-style: italic; }
+.run-meta { color: #8d96a0; font-size: .8em; margin: .55rem 0 0; }
+.run-events { list-style: none; padding: 0; margin: .5rem 0 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .82em; line-height: 1.45; }
+.run-events .ev { display: flex; gap: .65rem; padding: .15rem 0; border-top: 1px solid #f0f3f6; }
+.run-events .ev:first-child { border-top: 0; }
+.run-events .ev-tag { flex: 0 0 auto; min-width: 9.5em; color: #57606a; font-weight: 500; }
+.run-events .ev-body { flex: 1 1 auto; color: #1f2328; word-break: break-word; }
+.run-events .ev-system .ev-tag { color: #8d96a0; }
+.run-events .ev-tool .ev-tag { color: #0969da; }
+.run-events .ev-result .ev-tag { color: #1a7f37; }
+.run-events .ev-final { border-top: 2px solid #d0d7de; margin-top: .35rem; padding-top: .35rem; }
+.run-events .ev-final .ev-tag { color: #1a7f37; }
+.run-events .ev-error .ev-tag { color: #cf222e; }
+.run-events .ev-raw .ev-tag { color: #8d96a0; }
+@media (prefers-color-scheme: dark) {
+  .run-panel { border-color: #30363d; }
+  .run-events .ev { border-color: #21262d; }
+  .run-events .ev-final { border-top-color: #30363d; }
+  .run-events .ev-body { color: #e6edf3; }
+  .run-events .ev-tag { color: #8d96a0; }
+  .run-events .ev-tool .ev-tag { color: #79c0ff; }
+  .run-events .ev-result .ev-tag { color: #56d364; }
+  .run-events .ev-final .ev-tag { color: #56d364; }
+  .run-events .ev-error .ev-tag { color: #ff7b72; }
+}
 @media (max-width: 900px) {
   .layout, .layout.no-rail { grid-template-columns: 1fr; }
   .task-rail { position: static; }
+  .run-events .ev { flex-direction: column; gap: .15rem; }
+  .run-events .ev-tag { min-width: 0; }
 }
 `;

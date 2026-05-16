@@ -733,3 +733,145 @@ test("taskRow: PR chip renders without a state label on a cache miss (still a li
   // No trailing state word — just "PR #1".
   assert.match(r.body, />PR #1<\/a>/);
 });
+
+// ---- run panel + raw run-log route ----------------------------------------
+
+import type { RunLogReader, RunLogRawReader } from "./serve.ts";
+
+// Helper: stub the run-log reader with an in-memory NDJSON transcript.
+function runLogOf(text: string, name = "alpha-001--20260515T120000Z.log"): RunLogReader {
+  return () => ({ name, text });
+}
+
+test("renderTask: run panel renders 'Current run' on an in-progress task with parsed events", () => {
+  const t = task("001-foo", "in-progress");
+  const p = project("alpha", [t]);
+  const text = [
+    JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-4-7" }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Reading the file." }] } }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "a", name: "Read", input: { file_path: "/x/y.ts" } }] } }),
+    JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "a", content: "line one\nline two" }] } }),
+    JSON.stringify({ type: "result", subtype: "success", result: "PR opened.", duration_ms: 1500, total_cost_usd: 0.05 }),
+  ].join("\n");
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: runLogOf(text) });
+  assert.equal(r.status, 200);
+  assert.match(r.body, /class="run-panel"/);
+  assert.match(r.body, /Current run/);
+  // Events surface in human-readable form.
+  assert.match(r.body, /Reading the file\./);
+  assert.match(r.body, /→ Read/);
+  assert.match(r.body, /\/x\/y\.ts/);
+  assert.match(r.body, /line one line two/);
+  assert.match(r.body, /result success/);
+  assert.match(r.body, /PR opened\./);
+  // Raw log link points at /runs/<file>.
+  assert.match(r.body, /href="\/runs\/alpha-001--20260515T120000Z\.log"/);
+});
+
+test("renderTask: run panel labels 'Last run' on a non-in-progress task", () => {
+  const t = task("001-foo", "needs-review");
+  const p = project("alpha", [t]);
+  const text = JSON.stringify({ type: "system", subtype: "init" });
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: runLogOf(text) });
+  assert.match(r.body, /Last run/);
+  assert.doesNotMatch(r.body, /Current run/);
+});
+
+test("renderTask: in-progress task gets auto-refresh meta tag", () => {
+  const t = task("001-foo", "in-progress");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: runLogOf("") });
+  assert.match(r.body, /http-equiv="refresh" content="10"/);
+});
+
+test("renderTask: non-in-progress task does NOT auto-refresh (page reload would lose scroll/flash)", () => {
+  const t = task("001-foo", "ready");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: runLogOf("") });
+  assert.doesNotMatch(r.body, /http-equiv="refresh"/);
+});
+
+test("renderTask: run panel shows a placeholder when no log on disk", () => {
+  const t = task("001-foo", "in-progress");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: () => null });
+  assert.match(r.body, /class="run-panel run-panel-empty"/);
+  assert.match(r.body, /Waiting for the agent/);
+  // Still labelled 'Current run' so the user knows the run is meant to be live.
+  assert.match(r.body, /Current run/);
+});
+
+test("renderTask: run panel placeholder text for ready/done tasks is the 'never dispatched' variant", () => {
+  const t = task("001-foo", "ready");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: () => null });
+  assert.match(r.body, /class="run-panel run-panel-empty"/);
+  assert.match(r.body, /No run log on disk/);
+  // The wording explicitly references the orchestrator (the only writer).
+  assert.match(r.body, /tpm orchestrate/);
+});
+
+test("renderTask: run panel handles a malformed NDJSON line by degrading to raw (no crash)", () => {
+  const t = task("001-foo", "in-progress");
+  const p = project("alpha", [t]);
+  const text = [
+    JSON.stringify({ type: "system", subtype: "init" }),
+    "not valid json",
+  ].join("\n");
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: runLogOf(text) });
+  assert.equal(r.status, 200);
+  // The raw line surfaces but is escaped.
+  assert.match(r.body, /class="ev ev-raw/);
+  assert.match(r.body, /not valid json/);
+});
+
+test("renderTask: run panel truncates long transcripts (shows last 60 events)", () => {
+  const lines: string[] = [];
+  for (let i = 0; i < 80; i++) {
+    lines.push(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: `evt ${i}` }] } }));
+  }
+  const t = task("001-foo", "in-progress");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: runLogOf(lines.join("\n")) });
+  // Truncation note appears.
+  assert.match(r.body, /Showing the last 60 of 80 events/);
+  // The newest event (evt 79) is visible; the oldest (evt 0) is dropped.
+  assert.match(r.body, /evt 79/);
+  assert.doesNotMatch(r.body, />evt 0</);
+});
+
+test("renderTask: run panel escapes user-controlled text in events (no HTML injection)", () => {
+  const t = task("001-foo", "in-progress");
+  const p = project("alpha", [t]);
+  const text = JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "text", text: "<script>alert(1)</script>" }] },
+  });
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: runLogOf(text) });
+  assert.match(r.body, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(r.body, /<script>alert\(1\)<\/script>/);
+});
+
+test("route: /runs/<file> serves raw log contents as text/plain", () => {
+  const raw: RunLogRawReader = (name) =>
+    name === "alpha-001--20260515T120000Z.log" ? '{"type":"system","subtype":"init"}\n' : null;
+  const r = route("/runs/alpha-001--20260515T120000Z.log", new URLSearchParams(), [], { runLogRaw: raw });
+  assert.equal(r.status, 200);
+  assert.match(r.contentType, /text\/plain/);
+  assert.match(r.body, /"subtype":"init"/);
+});
+
+test("route: /runs/<unknown> returns 404", () => {
+  const raw: RunLogRawReader = () => null;
+  const r = route("/runs/alpha-001--20260101T000000Z.log", new URLSearchParams(), [], { runLogRaw: raw });
+  assert.equal(r.status, 404);
+});
+
+test("route: /runs/<bad-name> rejects traversal attempts before reading", () => {
+  // The reader stub should never be called for an invalid name.
+  let calls = 0;
+  const raw: RunLogRawReader = () => { calls++; return "leaked"; };
+  const r = route("/runs/..%2Fetc%2Fpasswd", new URLSearchParams(), [], { runLogRaw: raw });
+  assert.equal(r.status, 404);
+  assert.equal(calls, 0);
+});
