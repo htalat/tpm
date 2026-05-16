@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { route, routeMutation, isSameOrigin, isLoopback } from "./serve.ts";
-import type { CliRunner, PrCacheReader } from "./serve.ts";
+import type { CliRunner, ConfigSnapshot, PrCacheReader } from "./serve.ts";
 import type { Project, Task } from "./tree.ts";
 
 function task(slug: string, status: string, extra: Record<string, unknown> = {}): Task {
@@ -874,4 +874,148 @@ test("route: /runs/<bad-name> rejects traversal attempts before reading", () => 
   const r = route("/runs/..%2Fetc%2Fpasswd", new URLSearchParams(), [], { runLogRaw: raw });
   assert.equal(r.status, 404);
   assert.equal(calls, 0);
+});
+
+// ---- /config page ---------------------------------------------------------
+
+function snapshotOf(path: string, parsed: unknown): ConfigSnapshot {
+  return { path, raw: JSON.stringify(parsed, null, 2), parsed, error: null, missing: false };
+}
+
+test("route: /config renders interpretive labels for harness config + agents", () => {
+  const cfg = snapshotOf("/h/.tpm/config.json", {
+    root: "/Users/test/tpm",
+    timezone: "America/Los_Angeles",
+    time_bound_minutes: 45,
+    notifications: { start: false, finish: true, fail: true },
+  });
+  const agents = snapshotOf("/h/.tpm/agents.json", {
+    agents: {
+      "claude-1": { prefer_repos: ["alpha", "beta"], comment: "primary" },
+      "claude-2": { prefer_repos: ["gamma"] },
+    },
+  });
+  const r = route("/config", new URLSearchParams(), [], {
+    configSnapshot: () => cfg,
+    agentsSnapshot: () => agents,
+  });
+  assert.equal(r.status, 200);
+  // Interpretive labels for both sections.
+  assert.match(r.body, /Harness config/);
+  assert.match(r.body, /Tree root/);
+  assert.match(r.body, /Timezone/);
+  assert.match(r.body, /Time bound/);
+  assert.match(r.body, /Notifications/);
+  // Interpretive values surfaced.
+  assert.match(r.body, /\/Users\/test\/tpm/);
+  assert.match(r.body, /America\/Los_Angeles/);
+  assert.match(r.body, /45 min/);
+  // Agent ids + their preferred repos visible.
+  assert.match(r.body, /claude-1/);
+  assert.match(r.body, /claude-2/);
+  assert.match(r.body, /alpha/);
+  assert.match(r.body, /primary/);
+});
+
+test("route: /config pretty-prints the JSON for each file", () => {
+  const cfg = snapshotOf("/h/.tpm/config.json", { root: "/tmp", timezone: "UTC" });
+  const agents = snapshotOf("/h/.tpm/agents.json", { agents: {} });
+  const r = route("/config", new URLSearchParams(), [], {
+    configSnapshot: () => cfg,
+    agentsSnapshot: () => agents,
+  });
+  // Pretty-printed JSON wrapped in the config-json block (quotes are HTML-escaped).
+  assert.match(r.body, /class="config-json"/);
+  assert.match(r.body, /&quot;root&quot;: &quot;\/tmp&quot;/);
+  assert.match(r.body, /&quot;timezone&quot;: &quot;UTC&quot;/);
+});
+
+test("route: /config shows file paths for both files", () => {
+  const cfg: ConfigSnapshot = { path: "/h/.tpm/config.json", raw: "{}", parsed: {}, error: null, missing: false };
+  const agents: ConfigSnapshot = { path: "/h/.tpm/agents.json", raw: "{}", parsed: { agents: {} }, error: null, missing: false };
+  const r = route("/config", new URLSearchParams(), [], {
+    configSnapshot: () => cfg,
+    agentsSnapshot: () => agents,
+  });
+  assert.match(r.body, /\.tpm\/config\.json/);
+  assert.match(r.body, /\.tpm\/agents\.json/);
+});
+
+test("route: /config renders an error block when a file is invalid JSON", () => {
+  const cfg: ConfigSnapshot = {
+    path: "/h/.tpm/config.json",
+    raw: "not json",
+    parsed: null,
+    error: "Unexpected token o in JSON at position 1",
+    missing: false,
+  };
+  const agents: ConfigSnapshot = { path: "/h/.tpm/agents.json", raw: "{}", parsed: { agents: {} }, error: null, missing: false };
+  const r = route("/config", new URLSearchParams(), [], {
+    configSnapshot: () => cfg,
+    agentsSnapshot: () => agents,
+  });
+  assert.match(r.body, /class="config-error"/);
+  assert.match(r.body, /Failed to parse/);
+  assert.match(r.body, /Unexpected token/);
+  // Raw contents available in <details> for debugging.
+  assert.match(r.body, /Raw contents/);
+  assert.match(r.body, /not json/);
+});
+
+test("route: /config indicates missing files with a placeholder + still shows defaults", () => {
+  const missing: ConfigSnapshot = { path: "/h/.tpm/config.json", raw: "", parsed: null, error: null, missing: true };
+  const agentsMissing: ConfigSnapshot = { path: "/h/.tpm/agents.json", raw: "", parsed: null, error: null, missing: true };
+  const r = route("/config", new URLSearchParams(), [], {
+    configSnapshot: () => missing,
+    agentsSnapshot: () => agentsMissing,
+  });
+  // Per-section placeholder.
+  assert.match(r.body, /class="config-missing"/);
+  assert.match(r.body, /No file at this path yet/);
+  // Defaults surface in the interpretive dl even with no file present.
+  assert.match(r.body, /America\/Los_Angeles/);
+  assert.match(r.body, /\(default\)/);
+});
+
+test("route: /config empty agents renders a 'no agents configured' hint", () => {
+  const cfg = snapshotOf("/h/.tpm/config.json", {});
+  const agents = snapshotOf("/h/.tpm/agents.json", { agents: {} });
+  const r = route("/config", new URLSearchParams(), [], {
+    configSnapshot: () => cfg,
+    agentsSnapshot: () => agents,
+  });
+  assert.match(r.body, /No agents configured/);
+});
+
+test("route: /config escapes user-controlled JSON content (no HTML injection)", () => {
+  const cfg = snapshotOf("/h/.tpm/config.json", { root: "<script>alert(1)</script>" });
+  const agents = snapshotOf("/h/.tpm/agents.json", { agents: {} });
+  const r = route("/config", new URLSearchParams(), [], {
+    configSnapshot: () => cfg,
+    agentsSnapshot: () => agents,
+  });
+  assert.doesNotMatch(r.body, /<script>alert\(1\)<\/script>/);
+  assert.match(r.body, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+});
+
+test("route: every page renders a Config link in the top nav", () => {
+  const t = task("001-a", "ready");
+  const p = project("alpha", [t]);
+  // Index.
+  assert.match(route("/", new URLSearchParams(), [p]).body, /href="\/config"/);
+  // Project page.
+  assert.match(route("/p/alpha", new URLSearchParams(), [p]).body, /href="\/config"/);
+  // Task page (top nav now appears here too).
+  assert.match(route("/t/alpha/001-a", new URLSearchParams(), [p]).body, /href="\/config"/);
+});
+
+test("route: /config marks the config chip as active (no href)", () => {
+  const cfg = snapshotOf("/h/.tpm/config.json", {});
+  const agents = snapshotOf("/h/.tpm/agents.json", { agents: {} });
+  const r = route("/config", new URLSearchParams(), [], {
+    configSnapshot: () => cfg,
+    agentsSnapshot: () => agents,
+  });
+  // The active chip is a span, not a link.
+  assert.match(r.body, /<span class="chip chip-config active">config<\/span>/);
 });

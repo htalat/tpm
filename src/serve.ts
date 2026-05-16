@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjects, flatTasks, isParent, rollupStatus } from "./tree.ts";
@@ -24,6 +25,15 @@ import {
   runsDir,
 } from "./run_log.ts";
 import type { RunEvent } from "./run_log.ts";
+import {
+  CONFIG_PATH,
+  DEFAULT_NOTIFICATIONS,
+  DEFAULT_TIMEZONE,
+  DEFAULT_TIME_BOUND_MINUTES,
+} from "./config.ts";
+import type { Config } from "./config.ts";
+import { AGENTS_PATH } from "./agents.ts";
+import type { AgentEntry } from "./agents.ts";
 
 // A PR-cache lookup. Production passes `readPrCache` (reads ~/.tpm/pr-cache);
 // tests pass a stub so `route` stays pure and disk-free.
@@ -42,6 +52,21 @@ export type RunLogReader = (slug: string) => RunLogSnapshot | null;
 // file contents, or null if the file is missing or the name is rejected by the
 // path-traversal guard.
 export type RunLogRawReader = (name: string) => string | null;
+
+// A read-only view of a JSON config file (~/.tpm/config.json or
+// ~/.tpm/agents.json) for the `/config` page. The renderer wants both the raw
+// text (to pretty-print) and the parsed value (to surface interpretive fields),
+// plus the file's path and a parse/IO error if either failed. `missing` is
+// distinguished from `error` so the UI can render a "no file yet — using
+// defaults" hint instead of a scary parse-error block.
+export interface ConfigSnapshot {
+  path: string;
+  raw: string;
+  parsed: unknown | null;
+  error: string | null;
+  missing: boolean;
+}
+export type ConfigSnapshotReader = () => ConfigSnapshot;
 
 // Older than this, a cached snapshot is treated as no-data: the page renders a
 // placeholder rather than implying the state is current.
@@ -193,6 +218,10 @@ export interface RouteOpts {
   // `route` pure and disk-free.
   runLog?: RunLogReader;
   runLogRaw?: RunLogRawReader;
+  // Config-file snapshots for the `/config` page. Default readers hit disk;
+  // tests inject in-memory stubs.
+  configSnapshot?: ConfigSnapshotReader;
+  agentsSnapshot?: ConfigSnapshotReader;
 }
 
 // Pure dispatch — returns the response shape, doesn't touch the network.
@@ -206,6 +235,11 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
   }
   if (pathname === "/api/refresh") {
     return ok("application/json", renderRefresh(projects));
+  }
+  if (pathname === "/config") {
+    const cfg = (opts.configSnapshot ?? defaultConfigSnapshot)();
+    const agents = (opts.agentsSnapshot ?? defaultAgentsSnapshot)();
+    return ok("text/html; charset=utf-8", renderConfig(projects, cfg, agents));
   }
   const runsMatch = pathname.match(/^\/runs\/([^/]+)\/?$/);
   if (runsMatch) {
@@ -229,7 +263,7 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const query = decodeURIComponent(taskMatch[1]);
     const match = findTask(projects, query);
     if (!match) return notFound(`No task: ${query}`);
-    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, opts, prCache, runLog));
+    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, projects, opts, prCache, runLog));
   }
   return notFound(pathname);
 }
@@ -256,6 +290,36 @@ function defaultRunLogRawReader(name: string): string | null {
     return readFileSync(path, "utf8");
   } catch {
     return null;
+  }
+}
+
+function defaultConfigSnapshot(): ConfigSnapshot {
+  return readConfigSnapshot(CONFIG_PATH);
+}
+
+function defaultAgentsSnapshot(): ConfigSnapshot {
+  return readConfigSnapshot(AGENTS_PATH);
+}
+
+// Non-throwing snapshot reader for the /config page. Distinguishes
+// missing-file (return defaults) from invalid-JSON (show parse error + raw).
+// Doesn't run the stricter validators in `readConfig` / `readAgentsRegistry` —
+// the UI should surface what the file says, even when fields are off-spec.
+function readConfigSnapshot(path: string): ConfigSnapshot {
+  if (!existsSync(path)) {
+    return { path, raw: "", parsed: null, error: null, missing: true };
+  }
+  let raw = "";
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (e) {
+    return { path, raw: "", parsed: null, error: (e as Error).message, missing: false };
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return { path, raw, parsed, error: null, missing: false };
+  } catch (e) {
+    return { path, raw, parsed: null, error: (e as Error).message, missing: false };
   }
 }
 
@@ -496,6 +560,7 @@ ${projectChips(allProjects, project.slug)}
 function renderTask(
   project: Project,
   task: Task,
+  allProjects: Project[],
   opts: RouteOpts = {},
   prCache: PrCacheReader = (url) => readPrCache(url),
   runLog: RunLogReader = defaultRunLogReader,
@@ -546,6 +611,7 @@ function renderTask(
   const autoRefresh = status === "in-progress" ? 10 : undefined;
 
   const body = `
+${projectChips(allProjects, project.slug)}
 <nav class="crumbs"><a href="/">tpm</a>${crumbsTrail}</nav>
 ${flashBanner}
 <header>
@@ -575,6 +641,115 @@ ${flashBanner}
 </div>
 `;
   return layout(`tpm · ${title}`, body, { autoRefresh });
+}
+
+// ---- /config page ---------------------------------------------------------
+
+// Read-only view of the two ~/.tpm JSON files driving harness behavior. Pairs
+// an interpretive `dl` (the fields people actually care about, with defaults
+// from `src/defaults` / `src/config.ts` filled in) with the raw pretty-printed
+// JSON for everything else.
+function renderConfig(projects: Project[], cfg: ConfigSnapshot, agents: ConfigSnapshot): string {
+  const body = `
+${projectChips(projects, null, "config")}
+<nav class="crumbs"><a href="/">tpm</a><a href="/config">config</a></nav>
+<header>
+  <h1>Configuration</h1>
+  <p class="meta">Harness config + agent registry. Read-only — edit the files to change them.</p>
+</header>
+<section class="config-section">
+  <h2>Harness config</h2>
+  <p class="meta">File: <code>${esc(displayPath(cfg.path))}</code></p>
+  ${renderHarnessInterp(cfg)}
+  ${renderConfigJson(cfg)}
+</section>
+<section class="config-section">
+  <h2>Agents</h2>
+  <p class="meta">File: <code>${esc(displayPath(agents.path))}</code></p>
+  ${renderAgentsInterp(agents)}
+  ${renderConfigJson(agents)}
+</section>
+`;
+  return layout("tpm · config", body);
+}
+
+// Render the `~/...` short form when the path lives under $HOME so the page
+// matches the canonical names operators use in docs and CLI output.
+function displayPath(path: string): string {
+  const home = homedir();
+  if (home && (path === home || path.startsWith(home + "/"))) {
+    return "~" + path.slice(home.length);
+  }
+  return path;
+}
+
+function renderHarnessInterp(snap: ConfigSnapshot): string {
+  const cfg = isPlainObject(snap.parsed) ? (snap.parsed as Config) : ({} as Config);
+  const root = typeof cfg.root === "string" && cfg.root.length
+    ? `<code>${esc(cfg.root)}</code>`
+    : `<em>not set (default — see <code>tpm root</code>)</em>`;
+  const tz = typeof cfg.timezone === "string" && cfg.timezone.length
+    ? esc(cfg.timezone)
+    : `${esc(DEFAULT_TIMEZONE)} <span class="config-default">(default)</span>`;
+  const tb = typeof cfg.time_bound_minutes === "number"
+    ? `${esc(String(cfg.time_bound_minutes))} min`
+    : `${esc(String(DEFAULT_TIME_BOUND_MINUTES))} min <span class="config-default">(default)</span>`;
+  const notif = { ...DEFAULT_NOTIFICATIONS, ...(cfg.notifications ?? {}) };
+  const notifBody = ["start", "finish", "fail"].map(k => {
+    const v = (notif as Record<string, boolean>)[k];
+    return `${esc(k)}: <code>${esc(String(v))}</code>`;
+  }).join("  ·  ");
+  return `<dl class="config-interp">
+  <dt>Tree root</dt><dd>${root}</dd>
+  <dt>Timezone</dt><dd>${tz}</dd>
+  <dt>Time bound</dt><dd>${tb}</dd>
+  <dt>Notifications</dt><dd>${notifBody}</dd>
+</dl>`;
+}
+
+function renderAgentsInterp(snap: ConfigSnapshot): string {
+  const parsed = isPlainObject(snap.parsed) ? (snap.parsed as { agents?: unknown }) : {};
+  const agentsRaw = parsed.agents;
+  if (!isPlainObject(agentsRaw)) {
+    return `<p class="config-empty">No agents configured. Run <code>tpm agents add &lt;id&gt; --repo &lt;slug&gt;</code> to register one.</p>`;
+  }
+  const entries = Object.entries(agentsRaw as Record<string, unknown>);
+  if (entries.length === 0) {
+    return `<p class="config-empty">No agents configured. Run <code>tpm agents add &lt;id&gt; --repo &lt;slug&gt;</code> to register one.</p>`;
+  }
+  const rows = entries.map(([id, entryRaw]) => {
+    const entry = isPlainObject(entryRaw) ? (entryRaw as AgentEntry & Record<string, unknown>) : ({} as AgentEntry);
+    const repos = Array.isArray(entry.prefer_repos) && entry.prefer_repos.length
+      ? entry.prefer_repos.map(r => `<code>${esc(String(r))}</code>`).join(", ")
+      : `<em>none</em>`;
+    const comment = typeof entry.comment === "string" && entry.comment.length
+      ? `  ·  <span class="config-comment">${esc(entry.comment)}</span>`
+      : "";
+    return `<dt>${esc(id)}</dt><dd>prefer: ${repos}${comment}</dd>`;
+  }).join("");
+  return `<dl class="config-interp">${rows}</dl>`;
+}
+
+function renderConfigJson(snap: ConfigSnapshot): string {
+  if (snap.missing) {
+    return `<p class="config-missing">No file at this path yet — defaults are used.</p>`;
+  }
+  if (snap.error) {
+    const rawBlock = snap.raw.length
+      ? `<details class="config-raw"><summary>Raw contents</summary><pre><code>${esc(snap.raw)}</code></pre></details>`
+      : "";
+    return `<div class="config-error">
+  <p><strong>Failed to parse this file.</strong></p>
+  <pre><code>${esc(snap.error)}</code></pre>
+  ${rawBlock}
+</div>`;
+  }
+  const pretty = JSON.stringify(snap.parsed, null, 2);
+  return `<pre class="config-json"><code>${esc(pretty)}</code></pre>`;
+}
+
+function isPlainObject(v: unknown): boolean {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
 // ---- run panel ------------------------------------------------------------
@@ -992,16 +1167,19 @@ function relativeAge(ms: number): string {
 }
 
 // Inline list of project links shown above the page header. The current
-// project (if any) is rendered as a non-link "active" chip.
-function projectChips(projects: Project[], activeSlug: string | null): string {
-  if (projects.length === 0) return "";
+// project (if any) is rendered as a non-link "active" chip. Always trailed by
+// a site-wide "config" chip so /config is one click from every page.
+function projectChips(projects: Project[], activeSlug: string | null, activeView?: "config"): string {
   const chips = projects.map(p => {
     if (p.slug === activeSlug) {
       return `<span class="chip active">${esc(strOr(p.data.name, p.slug))}</span>`;
     }
     return `<a class="chip" href="/p/${esc(p.slug)}">${esc(strOr(p.data.name, p.slug))}</a>`;
-  }).join("");
-  return `<nav class="project-chips">${chips}</nav>`;
+  });
+  const configChip = activeView === "config"
+    ? `<span class="chip chip-config active">config</span>`
+    : `<a class="chip chip-config" href="/config">config</a>`;
+  return `<nav class="project-chips">${chips.join("")}${configChip}</nav>`;
 }
 
 function extractProjectBody(body: string): string {
