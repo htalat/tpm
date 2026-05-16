@@ -204,6 +204,8 @@ a.pr-chip:hover { text-decoration: none; opacity: .8; }
 .log-level-info { background: #dafbe1; color: #1a7f37; }
 .log-level-warn { background: #fff8c5; color: #9a6700; }
 .log-level-error { background: #ffebe9; color: #cf222e; }
+.log-source-task-log { font-style: italic; color: #57606a; }
+.log-line-task-log .log-msg { color: #57606a; }
 @media (prefers-color-scheme: dark) {
   .log-panel { background: #161b22; border-color: #30363d; }
   .log-line { border-color: #21262d; }
@@ -212,6 +214,8 @@ a.pr-chip:hover { text-decoration: none; opacity: .8; }
   .log-level-info { background: #0f3d1f; color: #56d364; }
   .log-level-warn { background: #4d3a00; color: #e3b341; }
   .log-level-error { background: #5d1a1a; color: #ff7b72; }
+  .log-source-task-log { color: #8d96a0; }
+  .log-line-task-log .log-msg { color: #b6becc; }
 }
 @media (max-width: 900px) {
   .log-line { flex-direction: column; gap: .1rem; }

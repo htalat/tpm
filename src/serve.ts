@@ -34,7 +34,7 @@ import {
 import type { Config } from "./config.ts";
 import { AGENTS_PATH } from "./agents.ts";
 import type { AgentEntry } from "./agents.ts";
-import { defaultHarnessLogReader } from "./harness_log.ts";
+import { defaultHarnessLogReader, parseTaskLogEntries } from "./harness_log.ts";
 import type { HarnessLogReader, HarnessLogSource, HarnessLogLine } from "./harness_log.ts";
 
 // A PR-cache lookup. Production passes `readPrCache` (reads ~/.tpm/pr-cache);
@@ -257,9 +257,24 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const taskFilter = params.get("task")?.trim() || undefined;
     const linesParam = parseTailParam(params.get("lines"));
     const sources = reader({ lines: linesParam, filter: taskFilter });
+    // Per-task view: also pull the task body's `## Log` section so the merged
+    // panel can interleave state transitions (tpm-written entries) with what
+    // the harness observed. Falls back to envelope-only when the slug doesn't
+    // resolve, the body has no log entries, or the slug is ambiguous.
+    let taskLog: HarnessLogLine[] = [];
+    if (taskFilter) {
+      try {
+        const match = findTask(projects, taskFilter);
+        if (match) taskLog = parseTaskLogEntries(match.task.body);
+      } catch {
+        // Ambiguous slug — leave taskLog empty; the envelope filter still
+        // narrows the panels, which is the most useful fallback.
+      }
+    }
     return ok("text/html; charset=utf-8", renderLogs(projects, sources, {
       taskFilter,
       tail: linesParam,
+      taskLog,
     }));
   }
   const runsMatch = pathname.match(/^\/runs\/([^/]+)\/?$/);
@@ -778,6 +793,10 @@ function isPlainObject(v: unknown): boolean {
 interface LogsViewOpts {
   taskFilter?: string;
   tail: number;
+  // Task body Log entries to merge with envelope output. Non-empty only when
+  // `taskFilter` resolved to a real task; otherwise the page renders the
+  // legacy per-source panels.
+  taskLog?: HarnessLogLine[];
 }
 
 // Clamp `?lines=N` to [1, LOGS_MAX_TAIL]. Falls back to the default for any
@@ -795,9 +814,16 @@ function renderLogs(projects: Project[], sources: HarnessLogSource[], opts: Logs
   const filterChip = opts.taskFilter
     ? `<p class="meta">Filtered to lines containing <code>${esc(opts.taskFilter)}</code> · <a href="/logs">clear filter</a></p>`
     : "";
-  const panels = sources.length === 0
-    ? `<p class="config-empty">No harness log files found under <code>~/.tpm/</code>. Logs appear once <code>tpm orchestrate</code> or a recurring script has run.</p>`
-    : sources.map(s => renderLogPanel(s, opts)).join("");
+  let panels: string;
+  if (opts.taskFilter && opts.taskLog && opts.taskLog.length > 0) {
+    // Per-task scope with a resolved task: render a single chronological
+    // stream that interleaves envelope events with task-body Log entries.
+    panels = renderMergedLogs(sources, opts);
+  } else if (sources.length === 0) {
+    panels = `<p class="config-empty">No harness log files found under <code>~/.tpm/</code>. Logs appear once <code>tpm orchestrate</code> or a recurring script has run.</p>`;
+  } else {
+    panels = sources.map(s => renderLogPanel(s, opts)).join("");
+  }
   const body = `
 ${projectChips(projects, null, "logs")}
 <nav class="crumbs"><a href="/">tpm</a><a href="/logs">logs</a></nav>
@@ -811,6 +837,28 @@ ${panels}
   // 5s refresh matches a live `tail -f` cadence. Same trade-off as the PR
   // panel's poll: flicker over fanciness.
   return layout("tpm · logs", body, { autoRefresh: 5 });
+}
+
+// Per-task merged panel: every envelope line from every discovered source
+// plus the task body's `## Log` entries, sorted chronologically. Date.parse
+// is the sort key (not lex order) so pre-task-061 `Z`-suffixed entries land
+// in the right place relative to the post-061 offset-bearing entries.
+function renderMergedLogs(sources: HarnessLogSource[], opts: LogsViewOpts): string {
+  const envelope = sources.flatMap(s => s.lines);
+  const merged = [...envelope, ...(opts.taskLog ?? [])]
+    .filter(l => l.timestamp)
+    .sort((a, b) => Date.parse(a.timestamp!) - Date.parse(b.timestamp!));
+  if (merged.length === 0) {
+    return `<section class="log-panel">
+  <h2>All events for <code>${esc(opts.taskFilter!)}</code></h2>
+  <p class="log-empty">No log entries for this task yet.</p>
+</section>`;
+  }
+  return `<section class="log-panel">
+  <h2>All events for <code>${esc(opts.taskFilter!)}</code></h2>
+  <p class="log-meta">Merged from harness envelope logs and the task body's <code>## Log</code> section.</p>
+  <ol class="log-lines">${merged.map(renderLogLine).join("")}</ol>
+</section>`;
 }
 
 function renderLogPanel(source: HarnessLogSource, opts: LogsViewOpts): string {
@@ -836,6 +884,18 @@ function renderLogPanel(source: HarnessLogSource, opts: LogsViewOpts): string {
 }
 
 function renderLogLine(line: HarnessLogLine): string {
+  if (line.source === "task-log") {
+    // Task-body Log entry: no level chip; the script column holds the
+    // `task-log` source badge styled to distinguish from envelope rows.
+    // Empty `.log-level` keeps the timestamp / source / message columns
+    // visually aligned with envelope lines in the merged stream.
+    return `<li class="log-line log-line-task-log">
+    <span class="log-ts">${esc(line.timestamp ?? "")}</span>
+    <span class="log-level"></span>
+    <span class="log-script log-source-task-log">${esc(line.script ?? "task-log")}</span>
+    <span class="log-msg">${esc(line.message ?? "")}</span>
+  </li>`;
+  }
   if (!line.level) {
     // Free-form / pre-task-042 output. Surface verbatim, no level chip.
     return `<li class="log-line log-line-raw"><span class="log-raw">${esc(line.raw)}</span></li>`;

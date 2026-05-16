@@ -17,6 +17,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { CONFIG_DIR } from "./config.ts";
+import { wallToIsoOffset } from "./time.ts";
 
 export type LogLevel = "INFO" | "WARN" | "ERROR";
 
@@ -26,6 +27,10 @@ export interface HarnessLogLine {
   level?: LogLevel;
   script?: string;
   message?: string;
+  // `task-log` marks entries lifted out of a task body's `## Log` section.
+  // They don't carry a structured level; the UI renders them without a level
+  // chip and styles the script column to read as a source badge.
+  source?: "task-log";
 }
 
 export interface HarnessLogSource {
@@ -153,4 +158,39 @@ export function defaultHarnessLogReader(opts: HarnessLogReadOpts): HarnessLogSou
 function basenameWithoutExt(path: string): string {
   const b = basename(path);
   return b.endsWith(".log") ? b.slice(0, -4) : b;
+}
+
+// Parse a task body's `## Log` section into HarnessLogLine records so the
+// `/logs?task=<slug>` view can merge them with envelope-log entries on a
+// single chronological timeline. Lines that don't match the canonical
+// `- <wall-clock>: <message>` shape are skipped — humans occasionally edit
+// the Log section by hand and we'd rather silently drop noise than render
+// half-parsed garbage.
+//
+// Timestamp conversion uses the configured TZ (or `tz` if passed) as the
+// authority; the abbreviation in the source (`PDT`, `PST`, etc.) is
+// informational and not parsed.
+export function parseTaskLogEntries(body: string, tz?: string): HarnessLogLine[] {
+  const section = extractLogSection(body);
+  if (!section) return [];
+  const out: HarnessLogLine[] = [];
+  for (const raw of section.split(/\r?\n/)) {
+    const m = raw.match(/^-\s*(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?)\s*(?:[A-Z]{2,5})?\s*:\s*(.*)$/);
+    if (!m) continue;
+    const iso = wallToIsoOffset(m[1], tz);
+    if (!iso) continue;
+    out.push({
+      raw,
+      timestamp: iso,
+      script: "task-log",
+      message: m[2],
+      source: "task-log",
+    });
+  }
+  return out;
+}
+
+function extractLogSection(body: string): string | null {
+  const m = body.match(/(?:^|\n)##\s+Log\s*\n([\s\S]*?)(?=\n##\s+|$)/);
+  return m ? m[1] : null;
 }

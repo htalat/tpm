@@ -2,7 +2,7 @@
 import "./_test_helpers.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isoWithOffset } from "./time.ts";
+import { isoWithOffset, wallToIsoOffset } from "./time.ts";
 
 test("isoWithOffset: PDT instant in America/Los_Angeles → -07:00", () => {
   // 2026-05-15 16:14:23Z is summer in LA (PDT, UTC-7) → 09:14:23 local.
@@ -53,4 +53,60 @@ test("isoWithOffset: defaults to configured TZ when none passed", () => {
   // Pin to a winter instant so the offset is the stable -08:00.
   const d = new Date("2026-01-15T17:14:23Z");
   assert.equal(isoWithOffset(d), "2026-01-15T09:14:23-08:00");
+});
+
+test("wallToIsoOffset: PDT wall time in America/Los_Angeles", () => {
+  // tpm-now-style input: "YYYY-MM-DD HH:MM <abbrev>". Abbrev is decorative.
+  assert.equal(
+    wallToIsoOffset("2026-05-15 14:13 PDT", "America/Los_Angeles"),
+    "2026-05-15T14:13:00-07:00",
+  );
+});
+
+test("wallToIsoOffset: PST wall time in America/Los_Angeles", () => {
+  assert.equal(
+    wallToIsoOffset("2026-01-15 09:14 PST", "America/Los_Angeles"),
+    "2026-01-15T09:14:00-08:00",
+  );
+});
+
+test("wallToIsoOffset: trailing zone abbreviation is ignored (configured tz wins)", () => {
+  // Even if a stale abbrev claims "PDT" mid-winter, the configured tz picks
+  // the correct -08:00 offset for that wall instant.
+  assert.equal(
+    wallToIsoOffset("2026-01-15 09:14 PDT", "America/Los_Angeles"),
+    "2026-01-15T09:14:00-08:00",
+  );
+});
+
+test("wallToIsoOffset: positive-offset tz renders with leading +", () => {
+  assert.equal(
+    wallToIsoOffset("2026-07-15 12:00 CEST", "Europe/Berlin"),
+    "2026-07-15T12:00:00+02:00",
+  );
+});
+
+test("wallToIsoOffset: half-hour-offset tz keeps minute component", () => {
+  assert.equal(
+    wallToIsoOffset("2026-05-15 05:30 IST", "Asia/Kolkata"),
+    "2026-05-15T05:30:00+05:30",
+  );
+});
+
+test("wallToIsoOffset: accepts T-separator and seconds (idempotent on ISO-shaped input)", () => {
+  assert.equal(
+    wallToIsoOffset("2026-05-15T14:13:23", "America/Los_Angeles"),
+    "2026-05-15T14:13:23-07:00",
+  );
+});
+
+test("wallToIsoOffset: rejects garbage input", () => {
+  assert.equal(wallToIsoOffset("not a date", "America/Los_Angeles"), null);
+  assert.equal(wallToIsoOffset("", "America/Los_Angeles"), null);
+});
+
+test("wallToIsoOffset: defaults to configured TZ when none passed", () => {
+  // Configured TZ defaults to America/Los_Angeles in tests; winter wall time
+  // maps to -08:00.
+  assert.equal(wallToIsoOffset("2026-01-15 09:14"), "2026-01-15T09:14:00-08:00");
 });
