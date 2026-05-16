@@ -1068,29 +1068,201 @@ test("harness_log.parseLine: WARN and ERROR levels parse", () => {
   assert.equal(parseLine("2026-05-15T18:42:25Z ERROR orchestrate boom").level, "ERROR");
 });
 
-test("route: /logs renders one panel per discovered source with structured columns", () => {
+test("route: /logs landing page renders a summary card per category linking to the per-source pages", () => {
+  const reader: HarnessLogReader = () => [
+    harnessSource("orchestrator-laptop", [
+      "2026-05-16T14:30:00-07:00  INFO   orchestrate      disposition tpm/061 shipped",
+    ]),
+    harnessSource("recurring-check-pr-signal", [
+      "2026-05-16T14:27:01-07:00  INFO   check-pr-signal  summary checked=2 flipped=1",
+    ]),
+  ];
+  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
+  assert.equal(r.status, 200);
+  // One card per category with a link to the per-source page.
+  assert.match(r.body, /href="\/logs\/orchestrate">Orchestrator</);
+  assert.match(r.body, /href="\/logs\/poller">Poller</);
+  // The "Last entry" line surfaces the most recent timestamp + message per
+  // category so the operator can glance and decide which stream to open.
+  assert.match(r.body, /Last entry: <code>2026-05-16T14:30:00-07:00<\/code>.*disposition tpm\/061 shipped/);
+  assert.match(r.body, /Last entry: <code>2026-05-16T14:27:01-07:00<\/code>.*summary checked=2 flipped=1/);
+  // Per-task pointer hint is on the landing page (cross-ref to 071's behavior).
+  assert.match(r.body, /Per-task:.*\/logs\?task=/);
+  // Landing page is not a per-source panel layout — no log-panel sections.
+  assert.doesNotMatch(r.body, /class="log-panel"/);
+});
+
+test("route: /logs landing page shows a placeholder card when a category has no sources", () => {
+  // Only an orchestrator source — the poller card should still render with
+  // an empty hint rather than disappearing.
+  const reader: HarnessLogReader = () => [
+    harnessSource("orchestrator-laptop", [
+      "2026-05-16T14:30:00-07:00  INFO   orchestrate      ok",
+    ]),
+  ];
+  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
+  assert.match(r.body, /href="\/logs\/orchestrate">Orchestrator</);
+  assert.match(r.body, /href="\/logs\/poller">Poller</);
+  assert.match(r.body, /No log files discovered yet/);
+});
+
+test("route: /logs landing page aggregates total line count and most-recent entry across multiple files per category", () => {
+  // Two orchestrator agents writing in parallel: landing surfaces the newer
+  // entry and the summed line count so the operator sees the aggregate.
+  const older = harnessSource("orchestrator-laptop", [
+    "2026-05-16T10:00:00-07:00  INFO   orchestrate      old",
+  ]);
+  older.totalLines = 50;
+  const newer = harnessSource("orchestrator-rpi", [
+    "2026-05-16T14:30:00-07:00  INFO   orchestrate      newer",
+  ]);
+  newer.totalLines = 100;
+  const reader: HarnessLogReader = () => [older, newer];
+  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
+  assert.match(r.body, /150 lines across 2 files/);
+  assert.match(r.body, /Last entry: <code>2026-05-16T14:30:00-07:00<\/code>.*newer/);
+});
+
+test("route: /logs landing page only asks the reader for one line per source (cheap discovery pass)", () => {
+  let receivedOpts: { lines: number; filter?: string } | null = null;
+  const reader: HarnessLogReader = (opts) => {
+    receivedOpts = opts;
+    return [];
+  };
+  route("/logs", new URLSearchParams(), [], { harnessLog: reader });
+  assert.ok(receivedOpts);
+  assert.equal(receivedOpts!.lines, 1);
+  // No substring filter on the landing page — that's only for the per-task
+  // merged view (which lives on /logs?task=<slug>).
+  assert.equal(receivedOpts!.filter, undefined);
+});
+
+test("route: /logs/orchestrate renders only orchestrator-prefixed sources", () => {
   const reader: HarnessLogReader = () => [
     harnessSource("orchestrator-laptop", [
       "2026-05-15T18:42:25-07:00  INFO   orchestrate      disposition tpm/061 shipped",
       "2026-05-15T19:00:00-07:00  WARN   orchestrate      time-bound exceeded",
     ]),
     harnessSource("recurring-check-pr-signal", [
+      "2026-05-15T19:01:00Z  INFO   check-pr-signal  noise",
+    ]),
+  ];
+  const r = route("/logs/orchestrate", new URLSearchParams(), [], { harnessLog: reader });
+  assert.equal(r.status, 200);
+  // Orchestrator panel renders.
+  assert.match(r.body, /orchestrator-laptop/);
+  // Structured columns render.
+  assert.match(r.body, /2026-05-15T18:42:25-07:00/);
+  assert.match(r.body, /<span class="log-level log-level-info">INFO<\/span>/);
+  assert.match(r.body, /<span class="log-level log-level-warn">WARN<\/span>/);
+  assert.match(r.body, /disposition tpm\/061 shipped/);
+  // Recurring (poller) sources are excluded — this is the split's whole point.
+  assert.doesNotMatch(r.body, /recurring-check-pr-signal/);
+  assert.doesNotMatch(r.body, /check-pr-signal  noise/);
+});
+
+test("route: /logs/poller renders only recurring-prefixed sources", () => {
+  const reader: HarnessLogReader = () => [
+    harnessSource("orchestrator-laptop", [
+      "2026-05-15T18:42:25-07:00  INFO   orchestrate      noise",
+    ]),
+    harnessSource("recurring-check-pr-signal", [
       "2026-05-15T19:01:00Z  INFO   check-pr-signal  summary checked=2 flipped=1",
       "2026-05-15T19:02:00Z  ERROR  check-pr-signal  gh fetch failed",
     ]),
   ];
-  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
+  const r = route("/logs/poller", new URLSearchParams(), [], { harnessLog: reader });
   assert.equal(r.status, 200);
-  // Each source gets its own panel with the file basename + path.
-  assert.match(r.body, /orchestrator-laptop/);
   assert.match(r.body, /recurring-check-pr-signal/);
-  // Structured columns render: timestamps, levels, scripts, messages.
-  assert.match(r.body, /2026-05-15T18:42:25-07:00/);
   assert.match(r.body, /<span class="log-level log-level-info">INFO<\/span>/);
-  assert.match(r.body, /<span class="log-level log-level-warn">WARN<\/span>/);
   assert.match(r.body, /<span class="log-level log-level-error">ERROR<\/span>/);
-  assert.match(r.body, /disposition tpm\/061 shipped/);
   assert.match(r.body, /summary checked=2 flipped=1/);
+  assert.doesNotMatch(r.body, /orchestrator-laptop/);
+  assert.doesNotMatch(r.body, /orchestrate      noise/);
+});
+
+test("route: /logs/orchestrate shows a category-scoped empty hint when no sources match", () => {
+  // Only a recurring source — the orchestrate page filters it out and falls
+  // back to the empty-state copy rather than rendering an empty panel grid.
+  const reader: HarnessLogReader = () => [
+    harnessSource("recurring-check-pr-signal", [
+      "2026-05-15T19:01:00Z  INFO   check-pr-signal  ok",
+    ]),
+  ];
+  const r = route("/logs/orchestrate", new URLSearchParams(), [], { harnessLog: reader });
+  assert.match(r.body, /No orchestrator log files found/);
+});
+
+test("route: /logs/orchestrate ?lines=N clamps and forwards the tail size", () => {
+  let receivedLines = -1;
+  const reader: HarnessLogReader = (opts) => {
+    receivedLines = opts.lines;
+    return [harnessSource("orchestrator-laptop", [])];
+  };
+  route("/logs/orchestrate", new URLSearchParams("lines=42"), [], { harnessLog: reader });
+  assert.equal(receivedLines, 42);
+  route("/logs/orchestrate", new URLSearchParams("lines=99999"), [], { harnessLog: reader });
+  assert.equal(receivedLines, 2000);
+  route("/logs/orchestrate", new URLSearchParams("lines=garbage"), [], { harnessLog: reader });
+  assert.equal(receivedLines, 200);
+});
+
+test("route: /logs/orchestrate renders a placeholder when a log file is missing", () => {
+  const reader: HarnessLogReader = () => [
+    {
+      name: "orchestrator-laptop",
+      path: "/h/.tpm/orchestrator-laptop.log",
+      exists: false,
+      lines: [],
+      totalLines: 0,
+    },
+  ];
+  const r = route("/logs/orchestrate", new URLSearchParams(), [], { harnessLog: reader });
+  assert.match(r.body, /No log file at/);
+  assert.match(r.body, /orchestrator-laptop\.log/);
+});
+
+test("route: /logs/orchestrate surfaces non-structured lines verbatim (raw row)", () => {
+  const reader: HarnessLogReader = () => [
+    harnessSource("orchestrator-laptop", [
+      "Some pre-task-042 free-form output",
+      "2026-05-15T18:42:25Z  INFO   orchestrate      structured",
+    ]),
+  ];
+  const r = route("/logs/orchestrate", new URLSearchParams(), [], { harnessLog: reader });
+  assert.match(r.body, /class="log-line log-line-raw"/);
+  assert.match(r.body, /Some pre-task-042 free-form output/);
+});
+
+test("route: /logs/orchestrate escapes log content (no HTML injection)", () => {
+  const reader: HarnessLogReader = () => [
+    harnessSource("orchestrator-laptop", [
+      "2026-05-15T18:42:25Z  INFO   orchestrate      <script>alert(1)</script>",
+    ]),
+  ];
+  const r = route("/logs/orchestrate", new URLSearchParams(), [], { harnessLog: reader });
+  assert.doesNotMatch(r.body, /<script>alert\(1\)<\/script>/);
+  assert.match(r.body, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+});
+
+test("route: /logs/orchestrate reports truncation honestly when more lines exist than rendered", () => {
+  const reader: HarnessLogReader = () => [{
+    name: "orchestrator-laptop",
+    path: "/h/.tpm/orchestrator-laptop.log",
+    exists: true,
+    lines: [parseLine("2026-05-15T18:42:25Z INFO orchestrate one")],
+    totalLines: 200,
+  }];
+  const r = route("/logs/orchestrate", new URLSearchParams(), [], { harnessLog: reader });
+  assert.match(r.body, /Showing the last 1 of 200 lines/);
+});
+
+test("route: /logs and the per-source pages all auto-refresh every 5s for live tailing", () => {
+  const reader: HarnessLogReader = () => [];
+  for (const path of ["/logs", "/logs/orchestrate", "/logs/poller"]) {
+    const r = route(path, new URLSearchParams(), [], { harnessLog: reader });
+    assert.match(r.body, /http-equiv="refresh" content="5"/, `expected ${path} to auto-refresh`);
+  }
 });
 
 test("route: /logs propagates ?task=<slug> to the reader as a filter", () => {
@@ -1105,88 +1277,9 @@ test("route: /logs propagates ?task=<slug> to the reader as a filter", () => {
   assert.equal(r.status, 200);
   assert.ok(receivedOpts);
   assert.equal(receivedOpts!.filter, "tpm/069");
-  // Page hints the filter is active + offers a clear link.
+  // Page hints the filter is active + offers a clear link back to the landing.
   assert.match(r.body, /Filtered to lines containing/);
   assert.match(r.body, /href="\/logs"/);
-});
-
-test("route: /logs ?lines=N clamps and forwards the tail size", () => {
-  let receivedLines = -1;
-  const reader: HarnessLogReader = (opts) => {
-    receivedLines = opts.lines;
-    return [harnessSource("orchestrator-laptop", [])];
-  };
-  // Numeric param within range.
-  route("/logs", new URLSearchParams("lines=42"), [], { harnessLog: reader });
-  assert.equal(receivedLines, 42);
-  // Out-of-range param clamps.
-  route("/logs", new URLSearchParams("lines=99999"), [], { harnessLog: reader });
-  assert.equal(receivedLines, 2000);
-  // Garbage param falls back to default.
-  route("/logs", new URLSearchParams("lines=garbage"), [], { harnessLog: reader });
-  assert.equal(receivedLines, 200);
-});
-
-test("route: /logs renders a placeholder when a log file is missing", () => {
-  const reader: HarnessLogReader = () => [
-    {
-      name: "orchestrator-laptop",
-      path: "/h/.tpm/orchestrator-laptop.log",
-      exists: false,
-      lines: [],
-      totalLines: 0,
-    },
-  ];
-  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
-  assert.match(r.body, /No log file at/);
-  assert.match(r.body, /orchestrator-laptop\.log/);
-});
-
-test("route: /logs renders a 'no logs yet' hint when no sources are discovered", () => {
-  const reader: HarnessLogReader = () => [];
-  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
-  assert.match(r.body, /No harness log files found/);
-});
-
-test("route: /logs surfaces non-structured lines verbatim (raw row)", () => {
-  const reader: HarnessLogReader = () => [
-    harnessSource("orchestrator-laptop", [
-      "Some pre-task-042 free-form output",
-      "2026-05-15T18:42:25Z  INFO   orchestrate      structured",
-    ]),
-  ];
-  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
-  assert.match(r.body, /class="log-line log-line-raw"/);
-  assert.match(r.body, /Some pre-task-042 free-form output/);
-});
-
-test("route: /logs auto-refreshes every 5s for live tailing", () => {
-  const reader: HarnessLogReader = () => [];
-  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
-  assert.match(r.body, /http-equiv="refresh" content="5"/);
-});
-
-test("route: /logs escapes log content (no HTML injection)", () => {
-  const reader: HarnessLogReader = () => [
-    harnessSource("orchestrator-laptop", [
-      "2026-05-15T18:42:25Z  INFO   orchestrate      <script>alert(1)</script>",
-    ]),
-  ];
-  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
-  assert.doesNotMatch(r.body, /<script>alert\(1\)<\/script>/);
-  assert.match(r.body, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
-});
-
-test("route: /logs reports truncation honestly when more lines exist than rendered", () => {
-  const reader: HarnessLogReader = () => [{
-    name: "orchestrator-laptop",
-    path: "/h/.tpm/orchestrator-laptop.log",
-    exists: true,
-    lines: [parseLine("2026-05-15T18:42:25Z INFO orchestrate one")],
-    totalLines: 200,
-  }];
-  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
-  assert.match(r.body, /Showing the last 1 of 200 lines/);
 });
 
 test("route: every page renders a Logs link in the top nav", () => {
@@ -1197,10 +1290,12 @@ test("route: every page renders a Logs link in the top nav", () => {
   assert.match(route("/t/alpha/001-a", new URLSearchParams(), [p]).body, /href="\/logs"/);
 });
 
-test("route: /logs marks the logs chip as active (no href)", () => {
+test("route: /logs and per-source pages mark the logs chip as active (no href)", () => {
   const reader: HarnessLogReader = () => [];
-  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
-  assert.match(r.body, /<span class="chip chip-logs active">logs<\/span>/);
+  for (const path of ["/logs", "/logs/orchestrate", "/logs/poller"]) {
+    const r = route(path, new URLSearchParams(), [], { harnessLog: reader });
+    assert.match(r.body, /<span class="chip chip-logs active">logs<\/span>/, `expected ${path} to mark logs chip active`);
+  }
 });
 
 test("route: /logs?task=<slug> merges task body Log entries with envelope lines chronologically", () => {

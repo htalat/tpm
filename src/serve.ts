@@ -255,14 +255,13 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
   if (pathname === "/logs") {
     const reader = opts.harnessLog ?? defaultHarnessLogReader;
     const taskFilter = params.get("task")?.trim() || undefined;
-    const linesParam = parseTailParam(params.get("lines"));
-    const sources = reader({ lines: linesParam, filter: taskFilter });
-    // Per-task view: also pull the task body's `## Log` section so the merged
-    // panel can interleave state transitions (tpm-written entries) with what
-    // the harness observed. Falls back to envelope-only when the slug doesn't
-    // resolve, the body has no log entries, or the slug is ambiguous.
-    let taskLog: HarnessLogLine[] = [];
     if (taskFilter) {
+      // Per-task scope keeps the merged chronological view on the unscoped
+      // route (per task 071). The unscoped per-category split only applies
+      // when there's no slug to anchor the merge.
+      const linesParam = parseTailParam(params.get("lines"));
+      const sources = reader({ lines: linesParam, filter: taskFilter });
+      let taskLog: HarnessLogLine[] = [];
       try {
         const match = findTask(projects, taskFilter);
         if (match) taskLog = parseTaskLogEntries(match.task.body);
@@ -270,12 +269,24 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
         // Ambiguous slug — leave taskLog empty; the envelope filter still
         // narrows the panels, which is the most useful fallback.
       }
+      return ok("text/html; charset=utf-8", renderLogsMerged(projects, sources, {
+        taskFilter,
+        tail: linesParam,
+        taskLog,
+      }));
     }
-    return ok("text/html; charset=utf-8", renderLogs(projects, sources, {
-      taskFilter,
-      tail: linesParam,
-      taskLog,
-    }));
+    // Landing page: one summary card per source category. Pull the last
+    // structured line per source for the "Last entry" hint — totalLines on
+    // each source still reflects the full file (or the filtered subset, but
+    // there's no filter here).
+    const sources = reader({ lines: 1 });
+    return ok("text/html; charset=utf-8", renderLogsLanding(projects, sources));
+  }
+  if (pathname === "/logs/orchestrate") {
+    return renderCategoryPage(projects, params, opts, "orchestrate");
+  }
+  if (pathname === "/logs/poller") {
+    return renderCategoryPage(projects, params, opts, "poller");
   }
   const runsMatch = pathname.match(/^\/runs\/([^/]+)\/?$/);
   if (runsMatch) {
@@ -810,18 +821,135 @@ function parseTailParam(raw: string | null): number {
   return Math.min(n, LOGS_MAX_TAIL);
 }
 
-function renderLogs(projects: Project[], sources: HarnessLogSource[], opts: LogsViewOpts): string {
+// Categories used to split the harness logs across pages. The prefix matches
+// the on-disk file naming established in `discoverLogPaths`.
+type LogCategory = "orchestrate" | "poller";
+
+const CATEGORIES: Record<LogCategory, { label: string; prefix: string; route: string }> = {
+  orchestrate: { label: "Orchestrator", prefix: "orchestrator-", route: "/logs/orchestrate" },
+  poller: { label: "Poller", prefix: "recurring-", route: "/logs/poller" },
+};
+
+function filterByCategory(sources: HarnessLogSource[], category: LogCategory): HarnessLogSource[] {
+  const prefix = CATEGORIES[category].prefix;
+  return sources.filter(s => s.name.startsWith(prefix));
+}
+
+function renderCategoryPage(
+  projects: Project[],
+  params: URLSearchParams,
+  opts: RouteOpts,
+  category: LogCategory,
+): RouteResult {
+  const reader = opts.harnessLog ?? defaultHarnessLogReader;
+  const linesParam = parseTailParam(params.get("lines"));
+  const sources = filterByCategory(reader({ lines: linesParam }), category);
+  return ok("text/html; charset=utf-8", renderLogsCategory(projects, sources, {
+    tail: linesParam,
+  }, category));
+}
+
+function renderLogsLanding(projects: Project[], sources: HarnessLogSource[]): string {
+  const cards = (Object.keys(CATEGORIES) as LogCategory[])
+    .map(c => renderCategoryCard(c, filterByCategory(sources, c)))
+    .join("");
+  const body = `
+${projectChips(projects, null, "logs")}
+<nav class="crumbs"><a href="/">tpm</a><a href="/logs">logs</a></nav>
+<header>
+  <h1>Harness logs</h1>
+  <p class="meta">Envelope logs from <code>~/.tpm/</code>, split by source. Pick a stream below. Auto-refreshes every 5s.</p>
+</header>
+<section class="log-cards">${cards}</section>
+<p class="meta">Per-task: <code>/logs?task=&lt;slug&gt;</code> for the merged chronological view of a single task.</p>
+`;
+  return layout("tpm · logs", body, { autoRefresh: 5 });
+}
+
+function renderCategoryCard(category: LogCategory, sources: HarnessLogSource[]): string {
+  const { label, route } = CATEGORIES[category];
+  if (sources.length === 0) {
+    return `<article class="log-card log-card-empty">
+  <h2><a href="${route}">${esc(label)}</a></h2>
+  <p class="log-empty">No log files discovered yet.</p>
+</article>`;
+  }
+  const totalLines = sources.reduce((sum, s) => sum + s.totalLines, 0);
+  const fileCount = sources.length;
+  // Pick the most recent timestamp across all files in this category. Each
+  // source's `lines` here is the last one only (reader was called with
+  // lines: 1), so a single pass suffices.
+  let latest: HarnessLogLine | null = null;
+  let latestPath = "";
+  let latestParsed = -Infinity;
+  for (const s of sources) {
+    const line = s.lines[s.lines.length - 1];
+    if (!line) continue;
+    const ts = line.timestamp ? Date.parse(line.timestamp) : NaN;
+    // Lines without a parseable timestamp fall back to file order: prefer
+    // any earlier match over an unstamped line. Otherwise pick the newest.
+    if (Number.isFinite(ts) && ts > latestParsed) {
+      latest = line;
+      latestPath = s.path;
+      latestParsed = ts;
+    } else if (!latest) {
+      latest = line;
+      latestPath = s.path;
+    }
+  }
+  const fileSummary = fileCount === 1
+    ? `${totalLines} line${totalLines === 1 ? "" : "s"} in <code>${esc(sources[0].path)}</code>`
+    : `${totalLines} lines across ${fileCount} files`;
+  const lastEntry = latest
+    ? `<p class="log-card-last">Last entry: <code>${esc(latest.timestamp ?? "?")}</code> ${esc(latest.level ?? "")} ${esc(latest.script ?? "")} ${esc(latest.message ?? latest.raw)}</p>`
+    : `<p class="log-empty">No entries yet.</p>`;
+  const pathHint = fileCount > 1 && latest
+    ? `<p class="log-meta">From <code>${esc(latestPath)}</code></p>`
+    : "";
+  return `<article class="log-card">
+  <h2><a href="${route}">${esc(label)}</a></h2>
+  <p class="log-meta">${fileSummary}</p>
+  ${lastEntry}
+  ${pathHint}
+</article>`;
+}
+
+function renderLogsCategory(
+  projects: Project[],
+  sources: HarnessLogSource[],
+  opts: LogsViewOpts,
+  category: LogCategory,
+): string {
+  const { label, route } = CATEGORIES[category];
+  const panels = sources.length === 0
+    ? `<p class="config-empty">No ${esc(label.toLowerCase())} log files found under <code>~/.tpm/</code>. Logs appear once <code>tpm orchestrate</code> or a recurring script has run.</p>`
+    : sources.map(s => renderLogPanel(s, opts)).join("");
+  const body = `
+${projectChips(projects, null, "logs")}
+<nav class="crumbs"><a href="/">tpm</a><a href="/logs">logs</a><a href="${route}">${esc(label.toLowerCase())}</a></nav>
+<header>
+  <h1>${esc(label)} logs</h1>
+  <p class="meta">Tail of the ${esc(label.toLowerCase())} envelope logs from <code>~/.tpm/</code>. Auto-refreshes every 5s.</p>
+</header>
+${panels}
+`;
+  return layout(`tpm · ${label.toLowerCase()} logs`, body, { autoRefresh: 5 });
+}
+
+function renderLogsMerged(projects: Project[], sources: HarnessLogSource[], opts: LogsViewOpts): string {
   const filterChip = opts.taskFilter
     ? `<p class="meta">Filtered to lines containing <code>${esc(opts.taskFilter)}</code> · <a href="/logs">clear filter</a></p>`
     : "";
   let panels: string;
-  if (opts.taskFilter && opts.taskLog && opts.taskLog.length > 0) {
-    // Per-task scope with a resolved task: render a single chronological
-    // stream that interleaves envelope events with task-body Log entries.
+  if (opts.taskLog && opts.taskLog.length > 0) {
+    // Resolved task with body Log entries: single chronological stream that
+    // interleaves envelope events with task-body Log entries.
     panels = renderMergedLogs(sources, opts);
   } else if (sources.length === 0) {
     panels = `<p class="config-empty">No harness log files found under <code>~/.tpm/</code>. Logs appear once <code>tpm orchestrate</code> or a recurring script has run.</p>`;
   } else {
+    // Slug didn't resolve (or body had no Log entries): fall back to
+    // per-source panels filtered by the slug substring.
     panels = sources.map(s => renderLogPanel(s, opts)).join("");
   }
   const body = `
@@ -829,13 +957,11 @@ ${projectChips(projects, null, "logs")}
 <nav class="crumbs"><a href="/">tpm</a><a href="/logs">logs</a></nav>
 <header>
   <h1>Harness logs</h1>
-  <p class="meta">Tail of the orchestrator + recurring-script envelope logs from <code>~/.tpm/</code>. Auto-refreshes every 5s.</p>
+  <p class="meta">Merged envelope + task-body Log entries from <code>~/.tpm/</code>. Auto-refreshes every 5s.</p>
   ${filterChip}
 </header>
 ${panels}
 `;
-  // 5s refresh matches a live `tail -f` cadence. Same trade-off as the PR
-  // panel's poll: flicker over fanciness.
   return layout("tpm · logs", body, { autoRefresh: 5 });
 }
 
