@@ -1019,3 +1019,192 @@ test("route: /config marks the config chip as active (no href)", () => {
   // The active chip is a span, not a link.
   assert.match(r.body, /<span class="chip chip-config active">config<\/span>/);
 });
+
+// ---- /logs page -----------------------------------------------------------
+
+import type { HarnessLogReader, HarnessLogSource } from "./serve.ts";
+import { parseLine } from "./harness_log.ts";
+
+function harnessSource(name: string, lines: string[]): HarnessLogSource {
+  return {
+    name,
+    path: `/h/.tpm/${name}.log`,
+    exists: true,
+    lines: lines.map(parseLine),
+    totalLines: lines.length,
+  };
+}
+
+test("harness_log.parseLine: structured line splits into ts/level/script/message", () => {
+  const ln = parseLine("2026-05-15T18:42:25-07:00  INFO   orchestrate      disposition tpm/061 shipped");
+  assert.equal(ln.timestamp, "2026-05-15T18:42:25-07:00");
+  assert.equal(ln.level, "INFO");
+  assert.equal(ln.script, "orchestrate");
+  assert.equal(ln.message, "disposition tpm/061 shipped");
+});
+
+test("harness_log.parseLine: non-structured line keeps raw text only (no level)", () => {
+  const ln = parseLine("Some free-form claude output that landed in the log");
+  assert.equal(ln.level, undefined);
+  assert.equal(ln.timestamp, undefined);
+  assert.equal(ln.raw, "Some free-form claude output that landed in the log");
+});
+
+test("harness_log.parseLine: WARN and ERROR levels parse", () => {
+  assert.equal(parseLine("2026-05-15T18:42:25Z WARN check-pr-signal flaky api").level, "WARN");
+  assert.equal(parseLine("2026-05-15T18:42:25Z ERROR orchestrate boom").level, "ERROR");
+});
+
+test("route: /logs renders one panel per discovered source with structured columns", () => {
+  const reader: HarnessLogReader = () => [
+    harnessSource("orchestrator-laptop", [
+      "2026-05-15T18:42:25-07:00  INFO   orchestrate      disposition tpm/061 shipped",
+      "2026-05-15T19:00:00-07:00  WARN   orchestrate      time-bound exceeded",
+    ]),
+    harnessSource("recurring-check-pr-signal", [
+      "2026-05-15T19:01:00Z  INFO   check-pr-signal  summary checked=2 flipped=1",
+      "2026-05-15T19:02:00Z  ERROR  check-pr-signal  gh fetch failed",
+    ]),
+  ];
+  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
+  assert.equal(r.status, 200);
+  // Each source gets its own panel with the file basename + path.
+  assert.match(r.body, /orchestrator-laptop/);
+  assert.match(r.body, /recurring-check-pr-signal/);
+  // Structured columns render: timestamps, levels, scripts, messages.
+  assert.match(r.body, /2026-05-15T18:42:25-07:00/);
+  assert.match(r.body, /<span class="log-level log-level-info">INFO<\/span>/);
+  assert.match(r.body, /<span class="log-level log-level-warn">WARN<\/span>/);
+  assert.match(r.body, /<span class="log-level log-level-error">ERROR<\/span>/);
+  assert.match(r.body, /disposition tpm\/061 shipped/);
+  assert.match(r.body, /summary checked=2 flipped=1/);
+});
+
+test("route: /logs propagates ?task=<slug> to the reader as a filter", () => {
+  let receivedOpts: { lines: number; filter?: string } | null = null;
+  const reader: HarnessLogReader = (opts) => {
+    receivedOpts = opts;
+    return [harnessSource("orchestrator-laptop", [
+      "2026-05-15T18:42:25-07:00  INFO   orchestrate      start tpm/069",
+    ])];
+  };
+  const r = route("/logs", new URLSearchParams("task=tpm/069"), [], { harnessLog: reader });
+  assert.equal(r.status, 200);
+  assert.ok(receivedOpts);
+  assert.equal(receivedOpts!.filter, "tpm/069");
+  // Page hints the filter is active + offers a clear link.
+  assert.match(r.body, /Filtered to lines containing/);
+  assert.match(r.body, /href="\/logs"/);
+});
+
+test("route: /logs ?lines=N clamps and forwards the tail size", () => {
+  let receivedLines = -1;
+  const reader: HarnessLogReader = (opts) => {
+    receivedLines = opts.lines;
+    return [harnessSource("orchestrator-laptop", [])];
+  };
+  // Numeric param within range.
+  route("/logs", new URLSearchParams("lines=42"), [], { harnessLog: reader });
+  assert.equal(receivedLines, 42);
+  // Out-of-range param clamps.
+  route("/logs", new URLSearchParams("lines=99999"), [], { harnessLog: reader });
+  assert.equal(receivedLines, 2000);
+  // Garbage param falls back to default.
+  route("/logs", new URLSearchParams("lines=garbage"), [], { harnessLog: reader });
+  assert.equal(receivedLines, 200);
+});
+
+test("route: /logs renders a placeholder when a log file is missing", () => {
+  const reader: HarnessLogReader = () => [
+    {
+      name: "orchestrator-laptop",
+      path: "/h/.tpm/orchestrator-laptop.log",
+      exists: false,
+      lines: [],
+      totalLines: 0,
+    },
+  ];
+  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
+  assert.match(r.body, /No log file at/);
+  assert.match(r.body, /orchestrator-laptop\.log/);
+});
+
+test("route: /logs renders a 'no logs yet' hint when no sources are discovered", () => {
+  const reader: HarnessLogReader = () => [];
+  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
+  assert.match(r.body, /No harness log files found/);
+});
+
+test("route: /logs surfaces non-structured lines verbatim (raw row)", () => {
+  const reader: HarnessLogReader = () => [
+    harnessSource("orchestrator-laptop", [
+      "Some pre-task-042 free-form output",
+      "2026-05-15T18:42:25Z  INFO   orchestrate      structured",
+    ]),
+  ];
+  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
+  assert.match(r.body, /class="log-line log-line-raw"/);
+  assert.match(r.body, /Some pre-task-042 free-form output/);
+});
+
+test("route: /logs auto-refreshes every 5s for live tailing", () => {
+  const reader: HarnessLogReader = () => [];
+  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
+  assert.match(r.body, /http-equiv="refresh" content="5"/);
+});
+
+test("route: /logs escapes log content (no HTML injection)", () => {
+  const reader: HarnessLogReader = () => [
+    harnessSource("orchestrator-laptop", [
+      "2026-05-15T18:42:25Z  INFO   orchestrate      <script>alert(1)</script>",
+    ]),
+  ];
+  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
+  assert.doesNotMatch(r.body, /<script>alert\(1\)<\/script>/);
+  assert.match(r.body, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+});
+
+test("route: /logs reports truncation honestly when more lines exist than rendered", () => {
+  const reader: HarnessLogReader = () => [{
+    name: "orchestrator-laptop",
+    path: "/h/.tpm/orchestrator-laptop.log",
+    exists: true,
+    lines: [parseLine("2026-05-15T18:42:25Z INFO orchestrate one")],
+    totalLines: 200,
+  }];
+  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
+  assert.match(r.body, /Showing the last 1 of 200 lines/);
+});
+
+test("route: every page renders a Logs link in the top nav", () => {
+  const t = task("001-a", "ready");
+  const p = project("alpha", [t]);
+  assert.match(route("/", new URLSearchParams(), [p]).body, /href="\/logs"/);
+  assert.match(route("/p/alpha", new URLSearchParams(), [p]).body, /href="\/logs"/);
+  assert.match(route("/t/alpha/001-a", new URLSearchParams(), [p]).body, /href="\/logs"/);
+});
+
+test("route: /logs marks the logs chip as active (no href)", () => {
+  const reader: HarnessLogReader = () => [];
+  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
+  assert.match(r.body, /<span class="chip chip-logs active">logs<\/span>/);
+});
+
+test("renderTask: run panel links to harness logs scoped to this task's qualified slug", () => {
+  const t = task("001-a", "in-progress");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { runLog: () => null });
+  // Slug is project-qualified so the filter matches lines like
+  // `disposition alpha/001-a shipped`.
+  assert.match(r.body, /href="\/logs\?task=alpha\/001-a"/);
+});
+
+test("renderTask: child task run panel links to harness logs with parent-qualified slug", () => {
+  const child = task("003-child", "in-progress", { parent: "002-parent" });
+  child.parent = "002-parent";
+  const parent = task("002-parent", "in-progress");
+  parent.children = [child];
+  const p = project("alpha", [parent]);
+  const r = route("/t/alpha/002-parent/003-child", new URLSearchParams(), [p], { runLog: () => null });
+  assert.match(r.body, /href="\/logs\?task=alpha\/002-parent\/003-child"/);
+});
