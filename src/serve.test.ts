@@ -448,12 +448,21 @@ test("renderTask: terminal task with PR history keeps the rail (PR panel only)",
   assert.doesNotMatch(r.body, /class="layout no-rail"/);
 });
 
-test("renderTask: terminal task with no PRs collapses layout to 2-col (no-rail fallback)", () => {
+test("renderTask: terminal task with no PRs keeps the rail open for the 'View log →' link", () => {
+  // Pre-073, a done/dropped task with no PRs collapsed to 2-col. Task 073's
+  // "View log →" link lives in the rail and is useful on terminal tasks too
+  // (the audit trail is exactly what someone visiting a closed task wants),
+  // so the rail stays open with just that link.
   const t = task("001-done", "done");
   const p = project("alpha", [t]);
   const r = route("/t/alpha/001-done", new URLSearchParams(), [p], { mutationsEnabled: true });
-  assert.doesNotMatch(r.body, /class="task-rail"/);
-  assert.match(r.body, /class="layout no-rail"/);
+  assert.match(r.body, /class="task-rail"/);
+  assert.match(r.body, /class="task-log-link"/);
+  assert.doesNotMatch(r.body, /class="layout no-rail"/);
+  // No actions/settings/PRs on a terminal task with no linked PRs.
+  assert.doesNotMatch(r.body, /class="task-actions"/);
+  assert.doesNotMatch(r.body, /class="task-settings"/);
+  assert.doesNotMatch(r.body, /class="pr-panel"/);
 });
 
 test("renderTask: mutationsEnabled=false still rails the disabled notice + PR panel", () => {
@@ -1086,8 +1095,10 @@ test("route: /logs landing page renders a summary card per category linking to t
   // category so the operator can glance and decide which stream to open.
   assert.match(r.body, /Last entry: <code>2026-05-16T14:30:00-07:00<\/code>.*disposition tpm\/061 shipped/);
   assert.match(r.body, /Last entry: <code>2026-05-16T14:27:01-07:00<\/code>.*summary checked=2 flipped=1/);
-  // Per-task pointer hint is on the landing page (cross-ref to 071's behavior).
-  assert.match(r.body, /Per-task:.*\/logs\?task=/);
+  // Per-task pointer hint surfaces the new `/t/<proj>/<slug>/log` shape so
+  // operators don't keep using the old `?task=` query route.
+  assert.match(r.body, /Per-task logs live at.*\/t\/&lt;proj&gt;\/&lt;slug&gt;\/log/);
+  assert.doesNotMatch(r.body, /\/logs\?task=/);
   // Landing page is not a per-source panel layout — no log-panel sections.
   assert.doesNotMatch(r.body, /class="log-panel"/);
 });
@@ -1133,7 +1144,7 @@ test("route: /logs landing page only asks the reader for one line per source (ch
   assert.ok(receivedOpts);
   assert.equal(receivedOpts!.lines, 1);
   // No substring filter on the landing page — that's only for the per-task
-  // merged view (which lives on /logs?task=<slug>).
+  // merged view (which lives on /t/<proj>/<slug>/log).
   assert.equal(receivedOpts!.filter, undefined);
 });
 
@@ -1265,21 +1276,42 @@ test("route: /logs and the per-source pages all auto-refresh every 5s for live t
   }
 });
 
-test("route: /logs propagates ?task=<slug> to the reader as a filter", () => {
-  let receivedOpts: { lines: number; filter?: string } | null = null;
-  const reader: HarnessLogReader = (opts) => {
-    receivedOpts = opts;
-    return [harnessSource("orchestrator-laptop", [
-      "2026-05-15T18:42:25-07:00  INFO   orchestrate      start tpm/069",
-    ])];
-  };
-  const r = route("/logs", new URLSearchParams("task=tpm/069"), [], { harnessLog: reader });
-  assert.equal(r.status, 200);
-  assert.ok(receivedOpts);
-  assert.equal(receivedOpts!.filter, "tpm/069");
-  // Page hints the filter is active + offers a clear link back to the landing.
-  assert.match(r.body, /Filtered to lines containing/);
-  assert.match(r.body, /href="\/logs"/);
+test("route: /logs?task=<slug> 302-redirects to /t/<proj>/<slug>/log", () => {
+  // Per-task logs moved from a query-param branch of /logs to a sub-resource
+  // of the task. Old bookmarks redirect for one release window before the
+  // redirect itself is dropped.
+  const t = task("064-foo", "ready");
+  const p = project("tpm", [t]);
+  const r = route("/logs", new URLSearchParams("task=tpm/064-foo"), [p]);
+  assert.equal(r.status, 302);
+  assert.equal(r.location, "/t/tpm/064-foo/log");
+});
+
+test("route: /logs?task=<slug> redirect preserves ?lines=N", () => {
+  const t = task("064-foo", "ready");
+  const p = project("tpm", [t]);
+  const r = route("/logs", new URLSearchParams("task=tpm/064-foo&lines=500"), [p]);
+  assert.equal(r.status, 302);
+  assert.equal(r.location, "/t/tpm/064-foo/log?lines=500");
+});
+
+test("route: /logs?task=<slug> redirect qualifies child tasks with the parent segment", () => {
+  const child = task("003-child", "ready", { parent: "002-parent" });
+  child.parent = "002-parent";
+  const parent = task("002-parent", "in-progress");
+  parent.children = [child];
+  const p = project("alpha", [parent]);
+  const r = route("/logs", new URLSearchParams("task=alpha/003-child"), [p]);
+  assert.equal(r.status, 302);
+  assert.equal(r.location, "/t/alpha/002-parent/003-child/log");
+});
+
+test("route: /logs?task=<unresolved> redirects to /logs (drop the broken param)", () => {
+  // External bookmark for a deleted/renamed task: drop the param so the user
+  // lands on the landing page rather than a broken merged view.
+  const r = route("/logs", new URLSearchParams("task=tpm/999-ghost"), []);
+  assert.equal(r.status, 302);
+  assert.equal(r.location, "/logs");
 });
 
 test("route: every page renders a Logs link in the top nav", () => {
@@ -1298,8 +1330,8 @@ test("route: /logs and per-source pages mark the logs chip as active (no href)",
   }
 });
 
-test("route: /logs?task=<slug> merges task body Log entries with envelope lines chronologically", () => {
-  // Per-task view (with a resolved slug + body Log entries) collapses to a
+test("route: /t/<proj>/<slug>/log merges task body Log entries with envelope lines chronologically", () => {
+  // Per-task subpage (with a resolved slug + body Log entries) collapses to a
   // single chronological stream. Each entry surfaces with the right source:
   // `task-log` for body entries, INFO/WARN/ERROR + script for envelope.
   const body = [
@@ -1324,8 +1356,10 @@ test("route: /logs?task=<slug> merges task body Log entries with envelope lines 
       "2026-05-15T14:13:00-07:00  INFO   check-pr-signal  flipped tpm/064-foo -> needs-close",
     ]),
   ];
-  const r = route("/logs", new URLSearchParams("task=tpm/064-foo"), [p], { harnessLog: reader });
+  const r = route("/t/tpm/064-foo/log", new URLSearchParams(), [p], { harnessLog: reader });
   assert.equal(r.status, 200);
+  // Page heading carries the task title for orientation.
+  assert.match(r.body, /<h1>Log — Task 064-foo<\/h1>/);
   // Merged panel heading shows the scope.
   assert.match(r.body, /All events for/);
   // Each task-log entry renders with the task-log source class.
@@ -1350,30 +1384,40 @@ test("route: /logs?task=<slug> merges task body Log entries with envelope lines 
   // The per-source panel layout is suppressed in the merged view (one panel,
   // not three).
   assert.equal((r.body.match(/class="log-panel"/g) ?? []).length, 1);
+  // Breadcrumb has a back-to-task link.
+  assert.match(r.body, /<a href="\/t\/tpm\/064-foo">Back to task →<\/a>/);
 });
 
-test("route: /logs?task=<slug> with unresolved task falls back to per-source panels (envelope-only)", () => {
-  // Slug doesn't match any project/task — the merged path is bypassed and the
-  // legacy per-source panels render, still substring-filtered by the reader.
-  const reader: HarnessLogReader = () => [
-    harnessSource("orchestrator-laptop", [
-      "2026-05-15T13:56:11-07:00  INFO   orchestrate      start tpm/999-ghost",
-    ]),
-  ];
-  const r = route("/logs", new URLSearchParams("task=tpm/999-ghost"), [], { harnessLog: reader });
+test("route: /t/<proj>/<parent>/<child>/log resolves folder-form children", () => {
+  // The 4-segment shape (`/t/proj/parent/child/log`) peels `log` off the end
+  // and resolves the remaining segments as a folder-form child task.
+  const child = task("003-child", "in-progress", { parent: "002-parent" });
+  child.parent = "002-parent";
+  child.body = "## Log\n- 2026-05-16 09:00 PDT: child started\n";
+  const parent = task("002-parent", "in-progress");
+  parent.children = [child];
+  const p = project("alpha", [parent]);
+  const reader: HarnessLogReader = (opts) => {
+    // Filter should be the parent-qualified slug so envelope rows like
+    // `disposition alpha/002-parent/003-child shipped` match.
+    assert.equal(opts.filter, "alpha/002-parent/003-child");
+    return [harnessSource("orchestrator-laptop", [
+      "2026-05-16T09:05:00-07:00  INFO   orchestrate      start alpha/002-parent/003-child",
+    ])];
+  };
+  const r = route("/t/alpha/002-parent/003-child/log", new URLSearchParams(), [p], { harnessLog: reader });
   assert.equal(r.status, 200);
-  assert.match(r.body, /orchestrator-laptop/);
-  assert.doesNotMatch(r.body, /All events for/);
-  // No task-log rows rendered. Match the class on the actual usage attribute
-  // (the CSS rule itself includes the class name, so the inline <style> would
-  // otherwise spuriously match).
-  assert.doesNotMatch(r.body, /class="log-line log-line-task-log"/);
+  assert.match(r.body, /All events for/);
+  assert.match(r.body, /child started/);
+  assert.match(r.body, /start alpha\/002-parent\/003-child/);
 });
 
-test("route: /logs?task=<slug> with resolved task but no body Log entries falls back to per-source panels", () => {
-  // Task resolves but its body has no `## Log` section content — there's
-  // nothing to merge in, so the page stays in the per-source layout. This
-  // keeps the rendering consistent: merged mode requires real body content.
+test("route: /t/<unknown>/log returns 404", () => {
+  const r = route("/t/alpha/no-such/log", new URLSearchParams(), [project("alpha", [])]);
+  assert.equal(r.status, 404);
+});
+
+test("route: /t/<proj>/<slug>/log with resolved task but no body Log entries falls back to per-source panels (envelope-only)", () => {
   const t = task("055-foo", "ready");
   t.body = "## Context\nfoo\n\n## Plan\n- a\n\n## Log\n\n## Outcome\n";
   const p = project("tpm", [t]);
@@ -1382,51 +1426,81 @@ test("route: /logs?task=<slug> with resolved task but no body Log entries falls 
       "2026-05-15T13:56:11-07:00  INFO   orchestrate      start tpm/055-foo",
     ]),
   ];
-  const r = route("/logs", new URLSearchParams("task=tpm/055-foo"), [p], { harnessLog: reader });
+  const r = route("/t/tpm/055-foo/log", new URLSearchParams(), [p], { harnessLog: reader });
   assert.equal(r.status, 200);
   assert.doesNotMatch(r.body, /All events for/);
   assert.match(r.body, /orchestrator-laptop/);
 });
 
-test("route: /logs?task=<slug> escapes task-log messages (no HTML injection)", () => {
+test("route: /t/<proj>/<slug>/log with no body Log and no envelope shows an empty hint", () => {
+  // Both data streams empty: render an explicit "no log entries yet" message
+  // rather than the generic per-source-panel placeholder, since this page is
+  // specifically scoped to one task.
+  const t = task("055-foo", "ready");
+  t.body = "## Context\nfoo\n\n## Log\n\n## Outcome\n";
+  const p = project("tpm", [t]);
+  const reader: HarnessLogReader = () => [];
+  const r = route("/t/tpm/055-foo/log", new URLSearchParams(), [p], { harnessLog: reader });
+  assert.equal(r.status, 200);
+  assert.match(r.body, /No log entries for this task yet/);
+});
+
+test("route: /t/<proj>/<slug>/log escapes task-log messages (no HTML injection)", () => {
   const t = task("064-foo", "ready");
   t.body = "## Log\n- 2026-05-15 13:56 PDT: <script>alert(1)</script>\n";
   const p = project("tpm", [t]);
   const reader: HarnessLogReader = () => [];
-  const r = route("/logs", new URLSearchParams("task=tpm/064-foo"), [p], { harnessLog: reader });
+  const r = route("/t/tpm/064-foo/log", new URLSearchParams(), [p], { harnessLog: reader });
   assert.doesNotMatch(r.body, /<script>alert\(1\)<\/script>/);
   assert.match(r.body, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
 });
 
-test("route: /logs?task=<slug> resolves archived tasks (close-out audit trail still readable)", () => {
+test("route: /t/<proj>/<slug>/log resolves archived tasks (close-out audit trail still readable)", () => {
   // Per the task body's archived-tasks decision: the file is readable from
-  // the archive path, so the merged view should still resolve.
+  // the archive path, so the subpage should still resolve.
   const t = task("064-old", "done", { closed: "2026-05-15 14:13 PDT" });
   t.archived = true;
   t.body = "## Log\n- 2026-05-15 14:13 PDT: closed\n";
   const p = project("tpm", [t]);
   const reader: HarnessLogReader = () => [];
-  const r = route("/logs", new URLSearchParams("task=tpm/064-old"), [p], { harnessLog: reader });
+  const r = route("/t/tpm/064-old/log", new URLSearchParams(), [p], { harnessLog: reader });
   assert.equal(r.status, 200);
   assert.match(r.body, /All events for/);
   assert.match(r.body, />closed</);
 });
 
-test("renderTask: run panel links to harness logs scoped to this task's qualified slug", () => {
+test("route: /t/<proj>/<slug>/log clamps ?lines=N like the per-source pages", () => {
+  let received = -1;
+  const reader: HarnessLogReader = (opts) => {
+    received = opts.lines;
+    return [];
+  };
+  const t = task("001-a", "ready");
+  const p = project("alpha", [t]);
+  route("/t/alpha/001-a/log", new URLSearchParams("lines=42"), [p], { harnessLog: reader });
+  assert.equal(received, 42);
+  route("/t/alpha/001-a/log", new URLSearchParams("lines=99999"), [p], { harnessLog: reader });
+  assert.equal(received, 2000);
+});
+
+test("renderTask: rail surfaces a 'View log →' link to /t/<proj>/<slug>/log", () => {
+  // The cross-link from 071's run panel moved into the sticky rail at the
+  // new URL (this task) — discoverability is one click, not buried in the
+  // run-panel footer.
   const t = task("001-a", "in-progress");
   const p = project("alpha", [t]);
   const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { runLog: () => null });
-  // Slug is project-qualified so the filter matches lines like
-  // `disposition alpha/001-a shipped`.
-  assert.match(r.body, /href="\/logs\?task=alpha\/001-a"/);
+  assert.match(r.body, /<section class="task-log-link"><a href="\/t\/alpha\/001-a\/log">View log →<\/a><\/section>/);
+  // Old URL is gone (no more `/logs?task=` link anywhere on the task page).
+  assert.doesNotMatch(r.body, /\/logs\?task=/);
 });
 
-test("renderTask: child task run panel links to harness logs with parent-qualified slug", () => {
+test("renderTask: child task rail link points to parent-qualified /log path", () => {
   const child = task("003-child", "in-progress", { parent: "002-parent" });
   child.parent = "002-parent";
   const parent = task("002-parent", "in-progress");
   parent.children = [child];
   const p = project("alpha", [parent]);
   const r = route("/t/alpha/002-parent/003-child", new URLSearchParams(), [p], { runLog: () => null });
-  assert.match(r.body, /href="\/logs\?task=alpha\/002-parent\/003-child"/);
+  assert.match(r.body, /href="\/t\/alpha\/002-parent\/003-child\/log"/);
 });
