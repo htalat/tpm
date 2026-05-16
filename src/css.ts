@@ -185,4 +185,26 @@ a.pr-chip:hover { text-decoration: none; opacity: .8; }
   .run-events .ev { flex-direction: column; gap: .15rem; }
   .run-events .ev-tag { min-width: 0; }
 }
+.chip-config { font-style: italic; }
+.config-section { margin-bottom: 2rem; }
+.config-section h2 { font-size: 1.15rem; }
+.config-interp { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; margin: .75rem 0; font-size: .9em; }
+.config-interp dt { color: #57606a; font-weight: 600; font-size: .85em; text-transform: uppercase; letter-spacing: .04em; }
+.config-interp dd { margin: 0; }
+.config-default { color: #8d96a0; font-size: .85em; }
+.config-comment { color: #8d96a0; font-style: italic; }
+.config-empty, .config-missing { color: #8d96a0; font-size: .9em; font-style: italic; margin: .5rem 0; }
+.config-json { background: #f6f8fa; padding: .75rem; border-radius: 6px; overflow-x: auto; font-size: .85em; line-height: 1.4; margin: .75rem 0; }
+.config-json code { background: none; padding: 0; }
+.config-error { padding: .65rem .85rem; border-radius: 6px; background: #ffebe9; border: 1px solid #f1aeb5; color: #82071e; margin: .75rem 0; }
+.config-error pre { background: rgba(255, 255, 255, .5); padding: .4rem .6rem; border-radius: 4px; margin: .35rem 0; overflow-x: auto; font-size: .85em; }
+.config-error code { background: none; padding: 0; }
+.config-raw summary { cursor: pointer; color: #82071e; font-size: .85em; }
+@media (prefers-color-scheme: dark) {
+  .config-default, .config-comment, .config-empty, .config-missing { color: #8d96a0; }
+  .config-json { background: #161b22; }
+  .config-error { background: #5d1a1a; border-color: #cf222e; color: #ffdcd7; }
+  .config-error pre { background: rgba(0, 0, 0, .3); }
+  .config-raw summary { color: #ffdcd7; }
+}
 `;
