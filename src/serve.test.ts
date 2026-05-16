@@ -1203,6 +1203,120 @@ test("route: /logs marks the logs chip as active (no href)", () => {
   assert.match(r.body, /<span class="chip chip-logs active">logs<\/span>/);
 });
 
+test("route: /logs?task=<slug> merges task body Log entries with envelope lines chronologically", () => {
+  // Per-task view (with a resolved slug + body Log entries) collapses to a
+  // single chronological stream. Each entry surfaces with the right source:
+  // `task-log` for body entries, INFO/WARN/ERROR + script for envelope.
+  const body = [
+    "## Context\nfoo\n",
+    "## Plan\n- step 1\n",
+    "## Log",
+    "- 2026-05-15 13:56 PDT: started",
+    "- 2026-05-15 13:58 PDT: opened PR https://github.com/x/y/pull/66",
+    "- 2026-05-15 14:13 PDT: closed",
+    "",
+    "## Outcome\n",
+  ].join("\n");
+  const t = task("064-foo", "done");
+  t.body = body;
+  const p = project("tpm", [t]);
+  const reader: HarnessLogReader = () => [
+    harnessSource("orchestrator-laptop", [
+      "2026-05-15T13:56:11-07:00  INFO   orchestrate      start tpm/064-foo as laptop time-bound=30m claude=claude",
+      "2026-05-15T13:59:00-07:00  INFO   orchestrate      disposition tpm/064-foo shipped exit=0",
+    ]),
+    harnessSource("recurring-check-pr-signal", [
+      "2026-05-15T14:13:00-07:00  INFO   check-pr-signal  flipped tpm/064-foo -> needs-close",
+    ]),
+  ];
+  const r = route("/logs", new URLSearchParams("task=tpm/064-foo"), [p], { harnessLog: reader });
+  assert.equal(r.status, 200);
+  // Merged panel heading shows the scope.
+  assert.match(r.body, /All events for/);
+  // Each task-log entry renders with the task-log source class.
+  assert.match(r.body, /class="log-script log-source-task-log"/);
+  // Body messages present.
+  assert.match(r.body, /started/);
+  assert.match(r.body, /opened PR https:\/\/github\.com\/x\/y\/pull\/66/);
+  assert.match(r.body, /closed/);
+  // Envelope messages present.
+  assert.match(r.body, /start tpm\/064-foo as laptop/);
+  // `->` is HTML-escaped in the rendered body, so match the escaped form.
+  assert.match(r.body, /flipped tpm\/064-foo -&gt; needs-close/);
+  // Chronological order: started (13:56) < start envelope (13:56:11) <
+  // opened PR (13:58) < disposition (13:59) < flipped (14:13) < closed (14:13).
+  const ord = ["started", "start tpm\\/064-foo as laptop", "opened PR", "disposition tpm\\/064-foo shipped", "flipped tpm\\/064-foo", ">closed<"];
+  let prev = -1;
+  for (const needle of ord) {
+    const idx = r.body.search(new RegExp(needle));
+    assert.ok(idx > prev, `expected "${needle}" after the previous entry`);
+    prev = idx;
+  }
+  // The per-source panel layout is suppressed in the merged view (one panel,
+  // not three).
+  assert.equal((r.body.match(/class="log-panel"/g) ?? []).length, 1);
+});
+
+test("route: /logs?task=<slug> with unresolved task falls back to per-source panels (envelope-only)", () => {
+  // Slug doesn't match any project/task — the merged path is bypassed and the
+  // legacy per-source panels render, still substring-filtered by the reader.
+  const reader: HarnessLogReader = () => [
+    harnessSource("orchestrator-laptop", [
+      "2026-05-15T13:56:11-07:00  INFO   orchestrate      start tpm/999-ghost",
+    ]),
+  ];
+  const r = route("/logs", new URLSearchParams("task=tpm/999-ghost"), [], { harnessLog: reader });
+  assert.equal(r.status, 200);
+  assert.match(r.body, /orchestrator-laptop/);
+  assert.doesNotMatch(r.body, /All events for/);
+  // No task-log rows rendered. Match the class on the actual usage attribute
+  // (the CSS rule itself includes the class name, so the inline <style> would
+  // otherwise spuriously match).
+  assert.doesNotMatch(r.body, /class="log-line log-line-task-log"/);
+});
+
+test("route: /logs?task=<slug> with resolved task but no body Log entries falls back to per-source panels", () => {
+  // Task resolves but its body has no `## Log` section content — there's
+  // nothing to merge in, so the page stays in the per-source layout. This
+  // keeps the rendering consistent: merged mode requires real body content.
+  const t = task("055-foo", "ready");
+  t.body = "## Context\nfoo\n\n## Plan\n- a\n\n## Log\n\n## Outcome\n";
+  const p = project("tpm", [t]);
+  const reader: HarnessLogReader = () => [
+    harnessSource("orchestrator-laptop", [
+      "2026-05-15T13:56:11-07:00  INFO   orchestrate      start tpm/055-foo",
+    ]),
+  ];
+  const r = route("/logs", new URLSearchParams("task=tpm/055-foo"), [p], { harnessLog: reader });
+  assert.equal(r.status, 200);
+  assert.doesNotMatch(r.body, /All events for/);
+  assert.match(r.body, /orchestrator-laptop/);
+});
+
+test("route: /logs?task=<slug> escapes task-log messages (no HTML injection)", () => {
+  const t = task("064-foo", "ready");
+  t.body = "## Log\n- 2026-05-15 13:56 PDT: <script>alert(1)</script>\n";
+  const p = project("tpm", [t]);
+  const reader: HarnessLogReader = () => [];
+  const r = route("/logs", new URLSearchParams("task=tpm/064-foo"), [p], { harnessLog: reader });
+  assert.doesNotMatch(r.body, /<script>alert\(1\)<\/script>/);
+  assert.match(r.body, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+});
+
+test("route: /logs?task=<slug> resolves archived tasks (close-out audit trail still readable)", () => {
+  // Per the task body's archived-tasks decision: the file is readable from
+  // the archive path, so the merged view should still resolve.
+  const t = task("064-old", "done", { closed: "2026-05-15 14:13 PDT" });
+  t.archived = true;
+  t.body = "## Log\n- 2026-05-15 14:13 PDT: closed\n";
+  const p = project("tpm", [t]);
+  const reader: HarnessLogReader = () => [];
+  const r = route("/logs", new URLSearchParams("task=tpm/064-old"), [p], { harnessLog: reader });
+  assert.equal(r.status, 200);
+  assert.match(r.body, /All events for/);
+  assert.match(r.body, />closed</);
+});
+
 test("renderTask: run panel links to harness logs scoped to this task's qualified slug", () => {
   const t = task("001-a", "in-progress");
   const p = project("alpha", [t]);
