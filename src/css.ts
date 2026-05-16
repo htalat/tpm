@@ -207,6 +207,11 @@ a.pr-chip:hover { text-decoration: none; opacity: .8; }
 .log-level-error { background: #ffebe9; color: #cf222e; }
 .log-source-task-log { font-style: italic; color: #57606a; }
 .log-line-task-log .log-msg { color: #57606a; }
+.log-cards { display: grid; gap: 1rem; margin: 1rem 0 1.5rem; }
+.log-card { margin: 0; padding: .75rem .9rem; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; }
+.log-card h2 { margin: 0 0 .25rem; padding: 0; border: 0; font-size: 1rem; }
+.log-card-last { margin: .35rem 0 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .8em; color: #1f2328; word-break: break-word; }
+.log-card-empty .log-card-last { color: #8d96a0; }
 @media (prefers-color-scheme: dark) {
   .log-panel { background: #161b22; border-color: #30363d; }
   .log-line { border-color: #21262d; }
@@ -217,6 +222,8 @@ a.pr-chip:hover { text-decoration: none; opacity: .8; }
   .log-level-error { background: #5d1a1a; color: #ff7b72; }
   .log-source-task-log { color: #8d96a0; }
   .log-line-task-log .log-msg { color: #b6becc; }
+  .log-card { background: #161b22; border-color: #30363d; }
+  .log-card-last { color: #e6edf3; }
 }
 @media (max-width: 900px) {
   .log-line { flex-direction: column; gap: .1rem; }
