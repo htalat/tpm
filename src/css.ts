@@ -89,6 +89,8 @@ body { max-width: 1600px; }
 .layout.no-rail { grid-template-columns: 220px minmax(0, 1fr); }
 .task-rail { position: sticky; top: 1rem; display: flex; flex-direction: column; gap: 1rem; }
 .task-rail section { margin: 0; padding-top: 0; border-top: 0; }
+.task-log-link { padding: .5rem .85rem; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; font-size: .9em; }
+.task-log-link a { text-decoration: none; }
 .sidebar { font-size: .9em; }
 .sidebar dt { color: #57606a; font-weight: 600; font-size: .75em; text-transform: uppercase; letter-spacing: .04em; margin-top: .8rem; }
 .sidebar dd { margin: .15rem 0 0; }
@@ -111,6 +113,7 @@ body { max-width: 1600px; }
   .task-row.child { border-left-color: #21262d; }
   .sidebar dt { color: #8d96a0; }
   .body pre { background: #161b22; }
+  .task-log-link { background: #161b22; border-color: #30363d; }
 }
 .flash { margin: 0 0 1rem; padding: .55rem .85rem; border-radius: 6px; background: #fff8c5; border: 1px solid #d4a72c; color: #57606a; font-size: .9em; display: flex; gap: .75rem; align-items: center; justify-content: space-between; }
 .flash a.flash-dismiss { color: #57606a; font-size: .8em; }

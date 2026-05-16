@@ -155,6 +155,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Ser
     flash,
     mutationsEnabled: ctx.mutationsEnabled,
   });
+  if (result.location && result.status >= 300 && result.status < 400) {
+    res.writeHead(result.status, { location: result.location });
+    res.end();
+    return;
+  }
   res.writeHead(result.status, { "content-type": result.contentType });
   res.end(result.body);
 }
@@ -208,6 +213,9 @@ export interface RouteResult {
   status: number;
   contentType: string;
   body: string;
+  // Set when the response is a redirect (status 3xx). `handleRequest` writes
+  // this as the `Location` header and skips the body.
+  location?: string;
 }
 
 export interface RouteOpts {
@@ -253,28 +261,26 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     return ok("text/html; charset=utf-8", renderConfig(projects, cfg, agents));
   }
   if (pathname === "/logs") {
-    const reader = opts.harnessLog ?? defaultHarnessLogReader;
     const taskFilter = params.get("task")?.trim() || undefined;
     if (taskFilter) {
-      // Per-task scope keeps the merged chronological view on the unscoped
-      // route (per task 071). The unscoped per-category split only applies
-      // when there's no slug to anchor the merge.
-      const linesParam = parseTailParam(params.get("lines"));
-      const sources = reader({ lines: linesParam, filter: taskFilter });
-      let taskLog: HarnessLogLine[] = [];
-      try {
-        const match = findTask(projects, taskFilter);
-        if (match) taskLog = parseTaskLogEntries(match.task.body);
-      } catch {
-        // Ambiguous slug — leave taskLog empty; the envelope filter still
-        // narrows the panels, which is the most useful fallback.
+      // Per-task scope moved to `/t/<proj>/<slug>/log` (a sub-resource of the
+      // task). Redirect old bookmarks for one release window; the redirect
+      // goes away in a follow-up task once it's clear nothing's hitting it.
+      let match: { project: Project; task: Task } | null = null;
+      try { match = findTask(projects, taskFilter); } catch { match = null; }
+      if (match) {
+        const slugPath = match.task.parent
+          ? `${match.project.slug}/${match.task.parent}/${match.task.slug}`
+          : `${match.project.slug}/${match.task.slug}`;
+        const encoded = slugPath.split("/").map(encodeURIComponent).join("/");
+        const linesParam = params.get("lines");
+        const query = linesParam ? `?lines=${encodeURIComponent(linesParam)}` : "";
+        return redirect(302, `/t/${encoded}/log${query}`);
       }
-      return ok("text/html; charset=utf-8", renderLogsMerged(projects, sources, {
-        taskFilter,
-        tail: linesParam,
-        taskLog,
-      }));
+      // Slug doesn't resolve — drop the broken param and send to the landing.
+      return redirect(302, "/logs");
     }
+    const reader = opts.harnessLog ?? defaultHarnessLogReader;
     // Landing page: one summary card per source category. Pull the last
     // structured line per source for the "Last entry" hint — totalLines on
     // each source still reflects the full file (or the filtered subset, but
@@ -305,6 +311,25 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const showArchived = params.get("archived") === "1";
     return ok("text/html; charset=utf-8", renderProject(project, projects, showArchived, prCache));
   }
+  const taskLogMatch = pathname.match(/^\/t\/(.+)\/log\/?$/);
+  if (taskLogMatch) {
+    const query = decodeURIComponent(taskLogMatch[1]);
+    let match: { project: Project; task: Task } | null = null;
+    try { match = findTask(projects, query); } catch { match = null; }
+    if (!match) return notFound(`No task: ${query}`);
+    const reader = opts.harnessLog ?? defaultHarnessLogReader;
+    const slugPath = match.task.parent
+      ? `${match.project.slug}/${match.task.parent}/${match.task.slug}`
+      : `${match.project.slug}/${match.task.slug}`;
+    const linesParam = parseTailParam(params.get("lines"));
+    const sources = reader({ lines: linesParam, filter: slugPath });
+    const taskLog = parseTaskLogEntries(match.task.body);
+    return ok("text/html; charset=utf-8", renderTaskLog(projects, match.project, match.task, sources, {
+      taskFilter: slugPath,
+      tail: linesParam,
+      taskLog,
+    }));
+  }
   const taskMatch = pathname.match(/^\/t\/(.+?)\/?$/);
   if (taskMatch) {
     const query = decodeURIComponent(taskMatch[1]);
@@ -313,6 +338,10 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     return ok("text/html; charset=utf-8", renderTask(match.project, match.task, projects, opts, prCache, runLog));
   }
   return notFound(pathname);
+}
+
+function redirect(status: number, location: string): RouteResult {
+  return { status, contentType: "text/plain; charset=utf-8", body: "", location };
 }
 
 // Read the most recent run log for a slug from `~/.tpm/runs/`. Returns null
@@ -645,7 +674,11 @@ function renderTask(
   const prPanel = renderPrPanel(prs, prCache);
   const actionsSection = renderActions(project, task, status, opts);
   const settingsSection = renderSettings(project, task, status, opts);
-  const railContent = `${prPanel}${actionsSection}${settingsSection}`;
+  const railLogHref = task.parent
+    ? `/t/${esc(project.slug)}/${esc(task.parent)}/${esc(task.slug)}/log`
+    : `/t/${esc(project.slug)}/${esc(task.slug)}/log`;
+  const logLinkSection = `<section class="task-log-link"><a href="${railLogHref}">View log →</a></section>`;
+  const railContent = `${logLinkSection}${prPanel}${actionsSection}${settingsSection}`;
   const hasRail = railContent.length > 0;
 
   const slug = task.parent
@@ -861,7 +894,7 @@ ${projectChips(projects, null, "logs")}
   <p class="meta">Envelope logs from <code>~/.tpm/</code>, split by source. Pick a stream below. Auto-refreshes every 5s.</p>
 </header>
 <section class="log-cards">${cards}</section>
-<p class="meta">Per-task: <code>/logs?task=&lt;slug&gt;</code> for the merged chronological view of a single task.</p>
+<p class="meta">Per-task logs live at <code>/t/&lt;proj&gt;/&lt;slug&gt;/log</code> — open a task and click <em>View log</em> in the rail for the merged chronological view of its envelope + body-Log entries.</p>
 `;
   return layout("tpm · logs", body, { autoRefresh: 5 });
 }
@@ -936,33 +969,43 @@ ${panels}
   return layout(`tpm · ${label.toLowerCase()} logs`, body, { autoRefresh: 5 });
 }
 
-function renderLogsMerged(projects: Project[], sources: HarnessLogSource[], opts: LogsViewOpts): string {
-  const filterChip = opts.taskFilter
-    ? `<p class="meta">Filtered to lines containing <code>${esc(opts.taskFilter)}</code> · <a href="/logs">clear filter</a></p>`
-    : "";
+// Per-task log subpage: `/t/<proj>/<slug>/log` (or `.../<parent>/<child>/log`).
+// Merges envelope lines filtered by the task's qualified slug with the task
+// body's `## Log` entries, sorted chronologically. Falls back to per-source
+// panels when the body has no Log entries (envelope-only view is still
+// useful), or an empty message when neither has anything yet.
+function renderTaskLog(
+  projects: Project[],
+  project: Project,
+  task: Task,
+  sources: HarnessLogSource[],
+  opts: LogsViewOpts,
+): string {
   let panels: string;
   if (opts.taskLog && opts.taskLog.length > 0) {
-    // Resolved task with body Log entries: single chronological stream that
-    // interleaves envelope events with task-body Log entries.
     panels = renderMergedLogs(sources, opts);
   } else if (sources.length === 0) {
-    panels = `<p class="config-empty">No harness log files found under <code>~/.tpm/</code>. Logs appear once <code>tpm orchestrate</code> or a recurring script has run.</p>`;
+    panels = `<p class="config-empty">No log entries for this task yet. Envelope logs appear under <code>~/.tpm/</code> once <code>tpm orchestrate</code> or the PR poller acts on this slug; body-Log entries appear when a CLI verb (or a manual <code>tpm log</code>) writes one.</p>`;
   } else {
-    // Slug didn't resolve (or body had no Log entries): fall back to
-    // per-source panels filtered by the slug substring.
     panels = sources.map(s => renderLogPanel(s, opts)).join("");
   }
+  const title = strOr(task.data.title, task.slug);
+  const taskHref = task.parent
+    ? `/t/${esc(project.slug)}/${esc(task.parent)}/${esc(task.slug)}`
+    : `/t/${esc(project.slug)}/${esc(task.slug)}`;
+  const crumbsTrail = task.parent
+    ? `<a href="/p/${esc(project.slug)}">${esc(project.slug)}</a><a href="/t/${esc(project.slug)}/${esc(task.parent)}">${esc(task.parent)}</a><a href="${taskHref}">${esc(task.slug)}</a><a href="${taskHref}/log">log</a>`
+    : `<a href="/p/${esc(project.slug)}">${esc(project.slug)}</a><a href="${taskHref}">${esc(task.slug)}</a><a href="${taskHref}/log">log</a>`;
   const body = `
-${projectChips(projects, null, "logs")}
-<nav class="crumbs"><a href="/">tpm</a><a href="/logs">logs</a></nav>
+${projectChips(projects, project.slug)}
+<nav class="crumbs"><a href="/">tpm</a>${crumbsTrail}</nav>
 <header>
-  <h1>Harness logs</h1>
-  <p class="meta">Merged envelope + task-body Log entries from <code>~/.tpm/</code>. Auto-refreshes every 5s.</p>
-  ${filterChip}
+  <h1>Log — ${esc(title)}</h1>
+  <p class="meta">Merged envelope + task-body Log entries for <code>${esc(opts.taskFilter ?? "")}</code>. <a href="${taskHref}">Back to task →</a>  ·  Auto-refreshes every 5s.</p>
 </header>
 ${panels}
 `;
-  return layout("tpm · logs", body, { autoRefresh: 5 });
+  return layout(`tpm · ${title} · log`, body, { autoRefresh: 5 });
 }
 
 // Per-task merged panel: every envelope line from every discovered source
@@ -1045,11 +1088,6 @@ const RUN_PANEL_EVENTS = 60;
 function renderRunPanel(slug: string, status: string, runLog: RunLogReader): string {
   const snapshot = runLog(slug);
   const label = status === "in-progress" ? "Current run" : "Last run";
-  // Always offer the cross-link to the envelope logs scoped to this slug — the
-  // run panel shows the inner claude session; the harness-logs page shows what
-  // the orchestrator + poller decided about the task. Different question, same
-  // entry point.
-  const harnessLink = `<p class="run-meta"><a href="/logs?task=${esc(slug)}">View harness logs for this task →</a></p>`;
   if (!snapshot) {
     // No run on disk yet. For an in-progress task this is a transient state
     // (orchestrator just spawned, no events yet); for any other status it
@@ -1060,7 +1098,6 @@ function renderRunPanel(slug: string, status: string, runLog: RunLogReader): str
     return `<section class="run-panel run-panel-empty">
   <h2>${esc(label)}</h2>
   <p class="run-empty">${esc(note)}</p>
-  ${harnessLink}
 </section>`;
   }
   const events = parseEvents(snapshot.text);
@@ -1077,7 +1114,6 @@ function renderRunPanel(slug: string, status: string, runLog: RunLogReader): str
   ${rendered}
   ${truncated}
   ${rawLink}
-  ${harnessLink}
 </section>`;
 }
 
