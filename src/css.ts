@@ -146,6 +146,12 @@ body { max-width: 1600px; }
   .action-form button { background: #1f6feb; border-color: #1f6feb; }
   .action-form button:hover { background: #388bfd; }
 }
+.report-actions-bar { position: sticky; top: 0; z-index: 10; display: flex; gap: .6rem; flex-wrap: wrap; align-items: flex-start; margin: 0 0 1rem; padding: .6rem .85rem; background: #fff; border: 1px solid #d0d7de; border-radius: 6px; box-shadow: 0 2px 6px rgba(31, 35, 40, .06); }
+.report-actions-bar .action-form { margin: 0; padding: .35rem .55rem; flex: 0 1 auto; min-width: 0; }
+.report-actions-bar .action-form button { white-space: nowrap; }
+@media (prefers-color-scheme: dark) {
+  .report-actions-bar { background: #0d1117; border-color: #30363d; box-shadow: 0 2px 6px rgba(0, 0, 0, .35); }
+}
 .pr-panel { margin-top: 2rem; padding-top: 1rem; border-top: 2px solid #d0d7de; }
 .pr-panel h2 { font-size: 1.05rem; margin-top: 0; padding-bottom: .2rem; border: 0; }
 .pr-card { margin: .75rem 0; padding: .7rem .9rem; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; }
