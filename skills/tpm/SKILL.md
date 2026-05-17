@@ -79,7 +79,7 @@ This is the primary mode.
    - If the briefing has a `Workflow:` line, read that file (path is relative to the repo root).
    - Else look for `AGENTS.md`, then `CLAUDE.md`, in the repo root.
    - Else ask the user before each shipping step (commit, push, PR, close).
-6. Read the task body and execute the Plan. If the type is `investigation`, your deliverable is a **report file** (not a PR, not findings written into the task body) — see step 8's investigation branch.
+6. **If `prs:` is non-empty and any linked PR is OPEN, fetch its comments and reviews via the host CLI (dispatch on `Host:` in the briefing) before any other discovery.** Unaddressed comments are almost certainly why you're seeing this task — address them first. Then read the task body and execute the Plan. If the type is `investigation`, your deliverable is a **report file** (not a PR, not findings written into the task body) — see step 8's investigation branch.
 7. As you make meaningful progress, run `tpm log <slug> "<what changed>"` to append a timestamped Log entry. Don't load the task file just to write a Log line.
 8. **To ship**, the verb depends on the task type:
    - **`type: pr`**: follow the workflow doc verbatim — validate (run any checks/tests it names), commit, push, open PR. Then `tpm pr <slug> <url>` — that adds the URL to `prs:`, logs the open, and auto-flips `in-progress → needs-review` (the handoff to the human). If the workflow says "close after merge" (the default for `type: pr`), stop after `tpm pr` — the poller closes the task inline when the PR merges; manual `/tpm done <task>` is the escape hatch.

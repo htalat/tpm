@@ -206,9 +206,9 @@ export function shouldAutoRevert(input: AutoRevertInput): boolean {
 }
 
 // Compose the agent prompt: a non-interactive preamble, the full task briefing,
-// then the four execution rules that used to live in the tpm skill's "Start a
-// task" section. Inlining them here means the agent doesn't have to discover
-// the skill, load ~3000 tokens of SKILL.md, or run `tpm context` itself before
+// then the execution rules that used to live in the tpm skill's "Start a task"
+// section. Inlining them here means the agent doesn't have to discover the
+// skill, load ~3000 tokens of SKILL.md, or run `tpm context` itself before
 // starting work — the orchestrator path only needs the "execute a ready task"
 // mode.
 //
@@ -225,6 +225,7 @@ export function buildExecutionPrompt(briefing: string): string {
 ${briefing}
 
 You are executing this task. Rules:
+- If \`prs:\` is non-empty and any linked PR is OPEN, fetch its comments and reviews via the host CLI (dispatch on \`Host:\` in the briefing) before any other discovery. Unaddressed comments are almost certainly why you're seeing this task — address them first.
 - Follow the Plan above.
 - If type=pr: after opening a PR, run \`tpm pr <slug> <url>\` (CLI auto-flips to needs-review). Stop.
 - If type=investigation: your deliverable is a **report**, not a PR. Write findings into \`<project>/reports/<slug>.md\` (run \`tpm report <slug>\` to create it from template + register it). When done, \`tpm report <slug>\` auto-flips to needs-review. Don't run \`tpm pr\`.
