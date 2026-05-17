@@ -415,23 +415,28 @@ test("renderTask: mutationsEnabled=false renders a disabled-actions notice", () 
   assert.doesNotMatch(r.body, /<form method="POST"/);
 });
 
-test("renderTask: actionable task wraps PR/Actions/Settings inside a .task-rail next to the body", () => {
-  // Rail sits inside .layout (the grid container), not after it. The PR panel
-  // renders first within the rail, then Actions, then Settings.
+test("renderTask: actionable task wraps Recent log / Runs link / PR / Actions / Settings inside a .task-rail next to the body", () => {
+  // Rail sits inside .layout (the grid container), not after it. Order within
+  // the rail (task 075): Recent log → Runs link → PR panel → Actions → Settings.
   const t = task("001-a", "in-progress", { prs: ["https://github.com/x/y/pull/1"] });
   const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], {
+    mutationsEnabled: true,
+    harnessLog: () => [],
+  });
   assert.match(r.body, /class="task-rail"/);
   const idxLayoutOpen  = r.body.indexOf('class="layout');
   const idxRail        = r.body.indexOf('class="task-rail"');
   const idxLayoutClose = r.body.indexOf("</div>", idxRail);
   // Rail must sit inside the layout grid (between its open and its first close).
   assert.ok(idxLayoutOpen >= 0 && idxRail > idxLayoutOpen && idxLayoutClose > idxRail);
-  // Order inside the rail: PR panel → Actions → Settings.
+  const idxRecent   = r.body.indexOf('class="task-recent-log"');
+  const idxRuns     = r.body.indexOf('class="task-runs-link"');
   const idxPr       = r.body.indexOf('class="pr-panel"');
   const idxActions  = r.body.indexOf('class="task-actions"');
   const idxSettings = r.body.indexOf('class="task-settings"');
-  assert.ok(idxRail < idxPr && idxPr < idxActions && idxActions < idxSettings);
+  assert.ok(idxRail < idxRecent && idxRecent < idxRuns && idxRuns < idxPr && idxPr < idxActions && idxActions < idxSettings,
+    "expected rail order Recent log → Runs link → PR → Actions → Settings");
   // Layout opts into the rail (no "no-rail" fallback class).
   assert.doesNotMatch(r.body, /class="layout no-rail"/);
 });
@@ -448,17 +453,25 @@ test("renderTask: terminal task with PR history keeps the rail (PR panel only)",
   assert.doesNotMatch(r.body, /class="layout no-rail"/);
 });
 
-test("renderTask: terminal task with no PRs keeps the rail open for the 'View log →' link", () => {
+test("renderTask: terminal task with no PRs keeps the rail open for the Recent log + Runs link", () => {
   // Pre-073, a done/dropped task with no PRs collapsed to 2-col. Task 073's
-  // "View log →" link lives in the rail and is useful on terminal tasks too
-  // (the audit trail is exactly what someone visiting a closed task wants),
-  // so the rail stays open with just that link.
+  // "View log →" link kept the rail open; task 075 replaces that link with
+  // the "Recent log" panel + a "View runs →" link — both are useful on a
+  // closed task (the audit trail is exactly what a visitor wants), so the
+  // rail still stays open.
   const t = task("001-done", "done");
   const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-done", new URLSearchParams(), [p], { mutationsEnabled: true });
+  const r = route("/t/alpha/001-done", new URLSearchParams(), [p], {
+    mutationsEnabled: true,
+    harnessLog: () => [],
+  });
   assert.match(r.body, /class="task-rail"/);
-  assert.match(r.body, /class="task-log-link"/);
+  assert.match(r.body, /class="task-recent-log"/);
+  assert.match(r.body, /class="task-runs-link"/);
   assert.doesNotMatch(r.body, /class="layout no-rail"/);
+  // The legacy plain "View log →" link section is gone — the link now lives
+  // inside the Recent log panel as "View full log →".
+  assert.doesNotMatch(r.body, /class="task-log-link"/);
   // No actions/settings/PRs on a terminal task with no linked PRs.
   assert.doesNotMatch(r.body, /class="task-actions"/);
   assert.doesNotMatch(r.body, /class="task-settings"/);
@@ -758,14 +771,20 @@ test("taskRow: PR chip renders without a state label on a cache miss (still a li
 
 // ---- run panel + raw run-log route ----------------------------------------
 
-import type { RunLogReader, RunLogRawReader } from "./serve.ts";
+import type { RunLogListReader, RunLogReader, RunLogRawReader } from "./serve.ts";
 
 // Helper: stub the run-log reader with an in-memory NDJSON transcript.
 function runLogOf(text: string, name = "alpha-001--20260515T120000Z.log"): RunLogReader {
   return () => ({ name, text });
 }
 
-test("renderTask: run panel renders 'Current run' on an in-progress task with parsed events", () => {
+function runLogListOf(...names: string[]): RunLogListReader {
+  return () => names;
+}
+
+test("route: /t/<proj>/<slug>/runs renders 'Current run' on an in-progress task with parsed events", () => {
+  // The inline run panel from task 057 moved out to `/runs` (task 075). The
+  // parsed transcript layer is unchanged; only the URL it renders at moved.
   const t = task("001-foo", "in-progress");
   const p = project("alpha", [t]);
   const text = [
@@ -775,7 +794,10 @@ test("renderTask: run panel renders 'Current run' on an in-progress task with pa
     JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "a", content: "line one\nline two" }] } }),
     JSON.stringify({ type: "result", subtype: "success", result: "PR opened.", duration_ms: 1500, total_cost_usd: 0.05 }),
   ].join("\n");
-  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: runLogOf(text) });
+  const r = route("/t/alpha/001-foo/runs", new URLSearchParams(), [p], {
+    runLog: runLogOf(text),
+    runLogList: runLogListOf("alpha-001--20260515T120000Z.log"),
+  });
   assert.equal(r.status, 200);
   assert.match(r.body, /class="run-panel"/);
   assert.match(r.body, /Current run/);
@@ -790,71 +812,118 @@ test("renderTask: run panel renders 'Current run' on an in-progress task with pa
   assert.match(r.body, /href="\/runs\/alpha-001--20260515T120000Z\.log"/);
 });
 
-test("renderTask: run panel labels 'Last run' on a non-in-progress task", () => {
+test("route: /t/<proj>/<slug>/runs labels 'Last run' on a non-in-progress task", () => {
   const t = task("001-foo", "needs-review");
   const p = project("alpha", [t]);
   const text = JSON.stringify({ type: "system", subtype: "init" });
-  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: runLogOf(text) });
+  const r = route("/t/alpha/001-foo/runs", new URLSearchParams(), [p], {
+    runLog: runLogOf(text),
+    runLogList: runLogListOf("alpha-001--20260515T120000Z.log"),
+  });
   assert.match(r.body, /Last run/);
   assert.doesNotMatch(r.body, /Current run/);
 });
 
-test("renderTask: in-progress task gets auto-refresh meta tag", () => {
+test("route: /t/<proj>/<slug>/runs auto-refreshes only when the task is in-progress", () => {
+  const inProg = task("001-foo", "in-progress");
+  const p1 = project("alpha", [inProg]);
+  const r1 = route("/t/alpha/001-foo/runs", new URLSearchParams(), [p1], {
+    runLog: runLogOf(""), runLogList: runLogListOf(),
+  });
+  assert.match(r1.body, /http-equiv="refresh" content="10"/);
+  const ready = task("002-bar", "ready");
+  const p2 = project("alpha", [ready]);
+  const r2 = route("/t/alpha/002-bar/runs", new URLSearchParams(), [p2], {
+    runLog: runLogOf(""), runLogList: runLogListOf(),
+  });
+  assert.doesNotMatch(r2.body, /http-equiv="refresh"/);
+});
+
+test("renderTask: in-progress task auto-refreshes for the Recent log panel", () => {
+  // Task 075 dropped the inline run panel but kept the page's auto-refresh so
+  // the rail's Recent log slice stays current as new envelope/body entries land.
   const t = task("001-foo", "in-progress");
   const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: runLogOf("") });
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { harnessLog: () => [] });
   assert.match(r.body, /http-equiv="refresh" content="10"/);
 });
 
 test("renderTask: non-in-progress task does NOT auto-refresh (page reload would lose scroll/flash)", () => {
   const t = task("001-foo", "ready");
   const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: runLogOf("") });
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { harnessLog: () => [] });
   assert.doesNotMatch(r.body, /http-equiv="refresh"/);
 });
 
-test("renderTask: run panel shows a placeholder when no log on disk", () => {
+test("renderTask: task detail page no longer renders the inline 'Last/Current run' panel", () => {
+  // Task 075 moved the run panel to /t/.../runs — the task body shouldn't
+  // carry that section anymore (the rail-side "View runs →" link replaces it).
   const t = task("001-foo", "in-progress");
   const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: () => null });
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { harnessLog: () => [] });
+  assert.doesNotMatch(r.body, /class="run-panel"/);
+  assert.doesNotMatch(r.body, /Last run/);
+  assert.doesNotMatch(r.body, /Current run/);
+  // The rail link to /runs survives.
+  assert.match(r.body, /<section class="task-runs-link"><a href="\/t\/alpha\/001-foo\/runs">View runs →<\/a><\/section>/);
+});
+
+test("route: /t/<proj>/<slug>/runs shows a placeholder when no log on disk", () => {
+  const t = task("001-foo", "in-progress");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-foo/runs", new URLSearchParams(), [p], {
+    runLog: () => null,
+    runLogList: runLogListOf(),
+  });
   assert.match(r.body, /class="run-panel run-panel-empty"/);
   assert.match(r.body, /Waiting for the agent/);
   // Still labelled 'Current run' so the user knows the run is meant to be live.
   assert.match(r.body, /Current run/);
+  // The "All runs" section also renders an empty hint.
+  assert.match(r.body, /No run logs on disk yet/);
 });
 
-test("renderTask: run panel placeholder text for ready/done tasks is the 'never dispatched' variant", () => {
+test("route: /t/<proj>/<slug>/runs placeholder text for ready/done tasks is the 'never dispatched' variant", () => {
   const t = task("001-foo", "ready");
   const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: () => null });
+  const r = route("/t/alpha/001-foo/runs", new URLSearchParams(), [p], {
+    runLog: () => null,
+    runLogList: runLogListOf(),
+  });
   assert.match(r.body, /class="run-panel run-panel-empty"/);
   assert.match(r.body, /No run log on disk/);
   // The wording explicitly references the orchestrator (the only writer).
   assert.match(r.body, /tpm orchestrate/);
 });
 
-test("renderTask: run panel handles a malformed NDJSON line by degrading to raw (no crash)", () => {
+test("route: /t/<proj>/<slug>/runs handles a malformed NDJSON line by degrading to raw (no crash)", () => {
   const t = task("001-foo", "in-progress");
   const p = project("alpha", [t]);
   const text = [
     JSON.stringify({ type: "system", subtype: "init" }),
     "not valid json",
   ].join("\n");
-  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: runLogOf(text) });
+  const r = route("/t/alpha/001-foo/runs", new URLSearchParams(), [p], {
+    runLog: runLogOf(text),
+    runLogList: runLogListOf("alpha-001--20260515T120000Z.log"),
+  });
   assert.equal(r.status, 200);
   // The raw line surfaces but is escaped.
   assert.match(r.body, /class="ev ev-raw/);
   assert.match(r.body, /not valid json/);
 });
 
-test("renderTask: run panel truncates long transcripts (shows last 60 events)", () => {
+test("route: /t/<proj>/<slug>/runs truncates long transcripts (shows last 60 events)", () => {
   const lines: string[] = [];
   for (let i = 0; i < 80; i++) {
     lines.push(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: `evt ${i}` }] } }));
   }
   const t = task("001-foo", "in-progress");
   const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: runLogOf(lines.join("\n")) });
+  const r = route("/t/alpha/001-foo/runs", new URLSearchParams(), [p], {
+    runLog: runLogOf(lines.join("\n")),
+    runLogList: runLogListOf("alpha-001--20260515T120000Z.log"),
+  });
   // Truncation note appears.
   assert.match(r.body, /Showing the last 60 of 80 events/);
   // The newest event (evt 79) is visible; the oldest (evt 0) is dropped.
@@ -862,16 +931,64 @@ test("renderTask: run panel truncates long transcripts (shows last 60 events)", 
   assert.doesNotMatch(r.body, />evt 0</);
 });
 
-test("renderTask: run panel escapes user-controlled text in events (no HTML injection)", () => {
+test("route: /t/<proj>/<slug>/runs escapes user-controlled text in events (no HTML injection)", () => {
   const t = task("001-foo", "in-progress");
   const p = project("alpha", [t]);
   const text = JSON.stringify({
     type: "assistant",
     message: { content: [{ type: "text", text: "<script>alert(1)</script>" }] },
   });
-  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], { runLog: runLogOf(text) });
+  const r = route("/t/alpha/001-foo/runs", new URLSearchParams(), [p], {
+    runLog: runLogOf(text),
+    runLogList: runLogListOf("alpha-001--20260515T120000Z.log"),
+  });
   assert.match(r.body, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.doesNotMatch(r.body, /<script>alert\(1\)<\/script>/);
+});
+
+test("route: /t/<proj>/<slug>/runs lists every run for the task newest-first with a per-file link", () => {
+  const t = task("001-foo", "needs-review");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-foo/runs", new URLSearchParams(), [p], {
+    // No inline run panel — focus the test on the list itself.
+    runLog: () => null,
+    runLogList: runLogListOf(
+      "alpha-001-foo--20260601T080000Z.log",
+      "alpha-001-foo--20260515T120000Z.log",
+      "alpha-001-foo--20260101T000000Z.log",
+    ),
+  });
+  assert.equal(r.status, 200);
+  assert.match(r.body, /All runs <span class="meta">\(3\)<\/span>/);
+  // Each file is a link to the raw viewer with a human-readable timestamp.
+  assert.match(r.body, /href="\/runs\/alpha-001-foo--20260601T080000Z\.log"/);
+  assert.match(r.body, /href="\/runs\/alpha-001-foo--20260515T120000Z\.log"/);
+  assert.match(r.body, /href="\/runs\/alpha-001-foo--20260101T000000Z\.log"/);
+  assert.match(r.body, /2026-06-01 08:00 UTC/);
+  // Newest first.
+  const idxNew = r.body.indexOf("20260601T080000Z");
+  const idxMid = r.body.indexOf("20260515T120000Z");
+  const idxOld = r.body.indexOf("20260101T000000Z");
+  assert.ok(idxNew < idxMid && idxMid < idxOld, "expected newest run first");
+});
+
+test("route: /t/<proj>/<slug>/runs resolves folder-form children", () => {
+  const child = task("003-child", "in-progress", { parent: "002-parent" });
+  child.parent = "002-parent";
+  const parent = task("002-parent", "in-progress");
+  parent.children = [child];
+  const p = project("alpha", [parent]);
+  const r = route("/t/alpha/002-parent/003-child/runs", new URLSearchParams(), [p], {
+    runLog: () => null,
+    runLogList: runLogListOf(),
+  });
+  assert.equal(r.status, 200);
+  assert.match(r.body, /Runs — Task 003-child/);
+});
+
+test("route: /t/<unknown>/runs returns 404", () => {
+  const r = route("/t/alpha/no-such/runs", new URLSearchParams(), [project("alpha", [])]);
+  assert.equal(r.status, 404);
 });
 
 test("route: /runs/<file> serves raw log contents as text/plain", () => {
@@ -1483,15 +1600,18 @@ test("route: /t/<proj>/<slug>/log clamps ?lines=N like the per-source pages", ()
   assert.equal(received, 2000);
 });
 
-test("renderTask: rail surfaces a 'View log →' link to /t/<proj>/<slug>/log", () => {
-  // The cross-link from 071's run panel moved into the sticky rail at the
-  // new URL (this task) — discoverability is one click, not buried in the
-  // run-panel footer.
+test("renderTask: rail Recent log panel embeds 'View full log →' link to /t/<proj>/<slug>/log", () => {
+  // Task 075 replaced the standalone "View log →" link section with a
+  // "Recent log" panel; the link still surfaces inside the panel so
+  // discoverability stays one click away.
   const t = task("001-a", "in-progress");
   const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { runLog: () => null });
-  assert.match(r.body, /<section class="task-log-link"><a href="\/t\/alpha\/001-a\/log">View log →<\/a><\/section>/);
-  // Old URL is gone (no more `/logs?task=` link anywhere on the task page).
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { harnessLog: () => [] });
+  assert.match(r.body, /class="task-recent-log"/);
+  assert.match(r.body, /<a href="\/t\/alpha\/001-a\/log">View full log →<\/a>/);
+  // Legacy task-log-link section is gone.
+  assert.doesNotMatch(r.body, /class="task-log-link"/);
+  // Old URL is gone (no `/logs?task=` link anywhere on the task page).
   assert.doesNotMatch(r.body, /\/logs\?task=/);
 });
 
@@ -1501,6 +1621,142 @@ test("renderTask: child task rail link points to parent-qualified /log path", ()
   const parent = task("002-parent", "in-progress");
   parent.children = [child];
   const p = project("alpha", [parent]);
-  const r = route("/t/alpha/002-parent/003-child", new URLSearchParams(), [p], { runLog: () => null });
+  const r = route("/t/alpha/002-parent/003-child", new URLSearchParams(), [p], { harnessLog: () => [] });
   assert.match(r.body, /href="\/t\/alpha\/002-parent\/003-child\/log"/);
+});
+
+// ---- breadcrumb dedupe (task 075) -----------------------------------------
+
+test("renderTask: breadcrumb walks home → task; project segment is left to the chip nav", () => {
+  // Task 075 dedupe: dropping the project segment from the breadcrumb fixes
+  // the `tpm > tpm > <task>` doubling that single-project trees hit. The
+  // project chip row above the breadcrumb still provides project navigation.
+  const t = task("075-foo", "in-progress");
+  const p = project("tpm", [t]);
+  const r = route("/t/tpm/075-foo", new URLSearchParams(), [p], { harnessLog: () => [] });
+  assert.match(r.body, /<nav class="crumbs"><a href="\/">tpm<\/a><a href="\/t\/tpm\/075-foo">075-foo<\/a><\/nav>/);
+});
+
+test("renderTask: folder-form child breadcrumb walks home → parent → child", () => {
+  const child = task("003-child", "in-progress", { parent: "002-parent" });
+  child.parent = "002-parent";
+  const parent = task("002-parent", "in-progress");
+  parent.children = [child];
+  const p = project("tpm", [parent]);
+  const r = route("/t/tpm/002-parent/003-child", new URLSearchParams(), [p], { harnessLog: () => [] });
+  assert.match(
+    r.body,
+    /<nav class="crumbs"><a href="\/">tpm<\/a><a href="\/t\/tpm\/002-parent">002-parent<\/a><a href="\/t\/tpm\/002-parent\/003-child">003-child<\/a><\/nav>/,
+  );
+});
+
+test("renderTaskLog: /log breadcrumb walks home → task → log (no doubled project)", () => {
+  // Single source of truth — `breadcrumbFor(task, {suffix: 'log'})` builds the
+  // crumb on /log the same way the task page does, plus a `log` suffix.
+  const t = task("075-foo", "ready");
+  t.body = "## Log\n- 2026-05-16 09:00 PDT: started\n";
+  const p = project("tpm", [t]);
+  const r = route("/t/tpm/075-foo/log", new URLSearchParams(), [p], { harnessLog: () => [] });
+  assert.match(
+    r.body,
+    /<nav class="crumbs"><a href="\/">tpm<\/a><a href="\/t\/tpm\/075-foo">075-foo<\/a><a href="\/t\/tpm\/075-foo\/log">log<\/a><\/nav>/,
+  );
+});
+
+test("renderTaskRuns: /runs breadcrumb walks home → task → runs (no doubled project)", () => {
+  const t = task("075-foo", "ready");
+  const p = project("tpm", [t]);
+  const r = route("/t/tpm/075-foo/runs", new URLSearchParams(), [p], {
+    runLog: () => null, runLogList: runLogListOf(),
+  });
+  assert.match(
+    r.body,
+    /<nav class="crumbs"><a href="\/">tpm<\/a><a href="\/t\/tpm\/075-foo">075-foo<\/a><a href="\/t\/tpm\/075-foo\/runs">runs<\/a><\/nav>/,
+  );
+});
+
+// ---- Recent log rail panel (task 075) -------------------------------------
+
+// Extract the body of the `<section class="task-recent-log">…</section>`
+// block so a test can assert ordering inside the rail without colliding
+// with the task body's markdown-rendered ## Log section above it.
+function recentLogSection(body: string): string {
+  const m = body.match(/<section class="task-recent-log">[\s\S]*?<\/section>/);
+  return m ? m[0] : "";
+}
+
+test("renderTask: Recent log panel renders the latest merged log entries newest-first", () => {
+  const t = task("075-foo", "in-progress");
+  t.body = "## Log\n- 2026-05-16 09:00 PDT: body entry one\n- 2026-05-16 09:05 PDT: body entry two\n";
+  const p = project("tpm", [t]);
+  const reader: HarnessLogReader = (opts) => {
+    // Filter is the qualified task slug — the rail panel scopes envelope
+    // lookups to this task just like /log does.
+    assert.equal(opts.filter, "tpm/075-foo");
+    return [harnessSource("orchestrator-laptop", [
+      "2026-05-16T09:03:00-07:00  INFO   orchestrate      envelope mid",
+      "2026-05-16T09:10:00-07:00  INFO   orchestrate      envelope late",
+    ])];
+  };
+  const r = route("/t/tpm/075-foo", new URLSearchParams(), [p], { harnessLog: reader });
+  const panel = recentLogSection(r.body);
+  assert.ok(panel.length > 0, "expected a .task-recent-log section");
+  assert.match(panel, /class="recent-log-lines"/);
+  // All four entries surface inside the panel.
+  assert.match(panel, /body entry one/);
+  assert.match(panel, /body entry two/);
+  assert.match(panel, /envelope mid/);
+  assert.match(panel, /envelope late/);
+  // Newest-first inside the rail panel (opposite of the chronological /log).
+  const idxLate = panel.indexOf("envelope late");
+  const idxTwo  = panel.indexOf("body entry two");
+  const idxMid  = panel.indexOf("envelope mid");
+  const idxOne  = panel.indexOf("body entry one");
+  assert.ok(idxLate < idxTwo && idxTwo < idxMid && idxMid < idxOne, "expected newest-first order in rail");
+  // task-log entries get the source-badge styling.
+  assert.match(panel, /class="recent-log-source recent-log-source-task-log"/);
+});
+
+test("renderTask: Recent log panel shows an empty placeholder when nothing has logged yet", () => {
+  const t = task("075-foo", "ready");
+  t.body = "## Context\nfoo\n";
+  const p = project("tpm", [t]);
+  const r = route("/t/tpm/075-foo", new URLSearchParams(), [p], { harnessLog: () => [] });
+  assert.match(r.body, /class="task-recent-log"/);
+  assert.match(r.body, /No log entries yet/);
+  // The "View full log →" link still surfaces — discoverability for when the
+  // first entry lands.
+  assert.match(r.body, /View full log →/);
+});
+
+test("renderTask: Recent log panel caps at 8 entries even when more exist", () => {
+  const lines: string[] = ["## Log"];
+  for (let i = 1; i <= 12; i++) {
+    const mm = i.toString().padStart(2, "0");
+    lines.push(`- 2026-05-16 09:${mm} PDT: entry ${i}`);
+  }
+  const t = task("075-foo", "in-progress");
+  t.body = lines.join("\n");
+  const p = project("tpm", [t]);
+  const r = route("/t/tpm/075-foo", new URLSearchParams(), [p], { harnessLog: () => [] });
+  const panel = recentLogSection(r.body);
+  assert.ok(panel.length > 0);
+  // The last 8 entries surface in the panel (5..12); the first 4 fall off.
+  // Scope the check to the panel — the full ## Log section above it carries
+  // every entry as markdown.
+  for (let i = 5; i <= 12; i++) {
+    assert.match(panel, new RegExp(`entry ${i}\\b`));
+  }
+  for (let i = 1; i <= 4; i++) {
+    assert.doesNotMatch(panel, new RegExp(`entry ${i}\\b`), `expected entry ${i} to fall off`);
+  }
+});
+
+test("renderTask: Recent log panel escapes user-controlled task-body messages (no HTML injection)", () => {
+  const t = task("075-foo", "ready");
+  t.body = "## Log\n- 2026-05-16 09:00 PDT: <img src=x onerror=alert(1)>\n";
+  const p = project("tpm", [t]);
+  const r = route("/t/tpm/075-foo", new URLSearchParams(), [p], { harnessLog: () => [] });
+  assert.doesNotMatch(r.body, /<img src=x onerror=alert\(1\)>/);
+  assert.match(r.body, /&lt;img src=x onerror=alert\(1\)&gt;/);
 });

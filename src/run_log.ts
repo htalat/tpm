@@ -34,18 +34,27 @@ export function newRunLogPath(slug: string, when: Date = new Date()): string {
 // Most recent run log for a slug, or null if none exist. Sorts by filename
 // (compact UTC sorts chronologically); no fs.stat per file.
 export function latestRunLog(slug: string, dir: string = runsDir()): string | null {
-  if (!existsSync(dir)) return null;
+  const all = allRunLogs(slug, dir);
+  return all.length ? all[0] : null;
+}
+
+// All run logs for a slug, newest-first (compact-UTC suffix sorts
+// chronologically). Returns absolute paths; callers can `basename()` for
+// display. Empty array when the runs dir doesn't exist or the slug has no
+// runs — the page renders a "never dispatched" placeholder either way.
+export function allRunLogs(slug: string, dir: string = runsDir()): string[] {
+  if (!existsSync(dir)) return [];
   const prefix = `${encodeSlug(slug)}--`;
   let entries: string[];
   try {
     entries = readdirSync(dir);
   } catch {
-    return null;
+    return [];
   }
   const matches = entries.filter(f => f.startsWith(prefix) && f.endsWith(".log"));
-  if (matches.length === 0) return null;
   matches.sort();
-  return resolve(dir, matches[matches.length - 1]);
+  matches.reverse();
+  return matches.map(name => resolve(dir, name));
 }
 
 // Path-traversal guard for the `/runs/<file>` route. A valid name is
