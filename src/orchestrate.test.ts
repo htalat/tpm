@@ -748,11 +748,12 @@ test("buildExecutionPrompt: prompt embeds the briefing inline and is not /tpm <s
 });
 
 test("buildExecutionPrompt: leads with the non-interactive 'never ask, always act' rule (task 085)", () => {
-  // Live failure 2026-05-17: in `-p` mode the agent hit a fork, articulated
-  // options, and asked the user which to take. There is no user. Placing this
-  // rule at the top of the prompt makes it the first thing the agent reads.
+  // Live failure 2026-05-17: in non-interactive mode the agent hit a fork,
+  // articulated options, and asked the user which to take. There is no user.
+  // Placing this rule at the top of the prompt makes it the first thing the
+  // agent reads.
   const prompt = buildExecutionPrompt("BRIEFING");
-  assert.match(prompt, /non-interactive mode \(`claude -p`\)/);
+  assert.match(prompt, /non-interactive mode/);
   assert.match(prompt, /always act/);
   assert.match(prompt, /take the smaller \/ safer path \(`tpm block`, `tpm revert`, log a Log line\) and exit/);
   // The rule must precede the briefing — that's the placement contract.

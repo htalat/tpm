@@ -212,15 +212,15 @@ export function shouldAutoRevert(input: AutoRevertInput): boolean {
 // starting work — the orchestrator path only needs the "execute a ready task"
 // mode.
 //
-// The preamble (task 085) leads because a `-p` run has no human on the other
-// end — every "which should I do?" question in the agent's output is
+// The preamble (task 085) leads because a non-interactive run has no human on
+// the other end — every "which should I do?" question in the agent's output is
 // structurally a halt. Placing the rule above the briefing means it's the
 // first thing the agent reads, not the last.
 //
 // `<slug>` / `<url>` / `<reason>` are left as placeholders; the briefing names
 // the qualified slug, and SKILL.md uses the same placeholder convention.
 export function buildExecutionPrompt(briefing: string): string {
-  return `You're running in non-interactive mode (\`claude -p\`). No one will see or respond to questions in your output. If you face a choice between asking and acting, always act — take the smaller / safer path (\`tpm block\`, \`tpm revert\`, log a Log line) and exit. The user reads the per-run log and the task state, not your final message.
+  return `You're running in non-interactive mode. No one will see or respond to questions in your output. If you face a choice between asking and acting, always act — take the smaller / safer path (\`tpm block\`, \`tpm revert\`, log a Log line) and exit. The user reads the per-run log and the task state, not your final message.
 
 ${briefing}
 
