@@ -93,18 +93,6 @@ body { max-width: 1600px; }
 .task-log-link a { text-decoration: none; }
 .task-runs-link { padding: .5rem .85rem; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; font-size: .9em; }
 .task-runs-link a { text-decoration: none; }
-.task-recent-log { padding: .65rem .85rem .5rem; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; }
-.task-recent-log h2 { font-size: .95rem; margin: 0 0 .35rem; padding: 0; border: 0; }
-.recent-log-empty { color: #8d96a0; font-size: .85em; font-style: italic; margin: .25rem 0 .5rem; }
-.recent-log-lines { list-style: none; padding: 0; margin: .25rem 0 .5rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .76em; line-height: 1.4; }
-.recent-log-line { display: grid; grid-template-columns: max-content max-content 1fr; gap: .45rem; padding: .15rem 0; border-top: 1px solid #eaeef2; align-items: baseline; }
-.recent-log-line:first-child { border-top: 0; }
-.recent-log-ts { color: #8d96a0; }
-.recent-log-source { color: #57606a; }
-.recent-log-source-task-log { font-style: italic; }
-.recent-log-msg { color: #1f2328; word-break: break-word; white-space: pre-wrap; }
-.recent-log-more { margin: .35rem 0 0; font-size: .85em; }
-.recent-log-more a { text-decoration: none; }
 .task-runs-list { margin-top: 2rem; padding-top: 1rem; border-top: 2px solid #d0d7de; }
 .task-runs-list h2 { font-size: 1.05rem; margin-top: 0; padding-bottom: .2rem; border: 0; }
 .run-list { list-style: none; padding: 0; margin: .5rem 0 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .85em; line-height: 1.6; }
@@ -135,10 +123,6 @@ body { max-width: 1600px; }
   .body pre { background: #161b22; }
   .task-log-link { background: #161b22; border-color: #30363d; }
   .task-runs-link { background: #161b22; border-color: #30363d; }
-  .task-recent-log { background: #161b22; border-color: #30363d; }
-  .recent-log-line { border-color: #21262d; }
-  .recent-log-ts, .recent-log-source { color: #8d96a0; }
-  .recent-log-msg { color: #e6edf3; }
   .task-runs-list { border-color: #30363d; }
   .run-list li { border-color: #21262d; }
   .run-list-ts { color: #8d96a0; }
