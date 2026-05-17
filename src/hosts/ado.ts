@@ -153,6 +153,45 @@ export const ado: PrHost = {
 
     return { signal: mapAdo(pr, ci, url), raw: { pr, ci } };
   },
+
+  async fetchFeedbackContext(url): Promise<string> {
+    if (!hasCli("az")) {
+      throw new Error("az CLI not found on PATH");
+    }
+    const parts = parseAdoUrl(url);
+    if (!parts) throw new Error(`not an ADO PR URL: ${url}`);
+    const orgUrl = `https://dev.azure.com/${parts.org}`;
+    // PR detail + threads (ADO's comments-and-reviews surface) + recent CI
+    // runs. Each is a separate `az` call; we wrap as a single payload so the
+    // agent sees one self-contained block per PR.
+    const prOut = execSync(
+      `az repos pr show --id ${parts.id} --org ${shq(orgUrl)} --output json`,
+      { stdio: ["ignore", "pipe", "pipe"] },
+    ).toString().trim();
+    let threadsOut = "[]";
+    try {
+      threadsOut = execSync(
+        `az repos pr thread list --pr-id ${parts.id} --org ${shq(orgUrl)} --output json`,
+        { stdio: ["ignore", "pipe", "pipe"] },
+      ).toString().trim();
+    } catch {
+      // best-effort — older az versions don't ship `thread list`; ship the
+      // PR body alone rather than failing the whole feedback round.
+    }
+    return [
+      `## PR ${url}`,
+      "",
+      "### PR",
+      "```json",
+      prOut,
+      "```",
+      "",
+      "### Threads",
+      "```json",
+      threadsOut,
+      "```",
+    ].join("\n");
+  },
 };
 
 function hasCli(name: string): boolean {

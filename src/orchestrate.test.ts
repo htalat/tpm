@@ -5,11 +5,14 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   buildExecutionPrompt,
+  buildFeedbackPrompt,
   checkProjectRepo,
   classifyDisposition,
   evaluateTerminalState,
+  fetchFeedbackContexts,
   formatDispositionLine,
   noPickLogEntry,
+  parsePrUrls,
   resolveTimeBound,
   runWithTimeout,
   shouldAutoRevert,
@@ -788,6 +791,82 @@ test("buildExecutionPrompt: PR-comments-first rule appears before the Plan-execu
   const followPlanIdx = prompt.indexOf("Follow the Plan above");
   assert.ok(commentsRuleIdx >= 0, "PR-comments-first rule should be present");
   assert.ok(followPlanIdx > commentsRuleIdx, "PR-comments-first rule should precede 'Follow the Plan above'");
+});
+
+test("buildFeedbackPrompt: embeds briefing + PR context + scoped feedback rules (task 089)", () => {
+  // The structural fix for the 085 / 088 incident family: with PR JSON in the
+  // prompt, the agent can't ignore comments. We assert briefing precedence,
+  // the context block, and the feedback rules — same shape contract as
+  // buildExecutionPrompt's test.
+  const briefing = "# Task briefing: do the thing\n\nslug: tpm/099-foo";
+  const prContext = '## PR https://github.com/x/y/pull/42\n\n```json\n{"state":"OPEN"}\n```';
+  const prompt = buildFeedbackPrompt(briefing, prContext);
+  assert.ok(prompt.includes(briefing), "prompt should include the briefing");
+  assert.ok(prompt.includes(prContext), "prompt should include the PR context block");
+  assert.match(prompt, /non-interactive mode/);
+  assert.match(prompt, /You are addressing feedback on the PR\(s\) above\. Rules:/);
+  // Pin the don't-refetch rule: agent should read the inline JSON instead of
+  // re-running `gh pr view` — that's what the 089 patch is for.
+  assert.match(prompt, /don't re-fetch with `gh pr view` \/ `az repos pr show`/);
+  assert.match(prompt, /addressed feedback — <one-line summary>/);
+  assert.match(prompt, /tpm status <slug> in-progress/);
+});
+
+test("buildFeedbackPrompt: rule precedence — non-interactive preamble before briefing before PR context before rules", () => {
+  // Placement contract: the agent reads the preamble first (so non-interactive
+  // wins over any "ask the user" reflex), then the briefing, then the PR JSON,
+  // then the rules that operate on both.
+  const prompt = buildFeedbackPrompt("BRIEFING-MARKER", "PR-CONTEXT-MARKER");
+  const preambleIdx = prompt.indexOf("non-interactive mode");
+  const briefingIdx = prompt.indexOf("BRIEFING-MARKER");
+  const prCtxIdx = prompt.indexOf("PR-CONTEXT-MARKER");
+  const rulesIdx = prompt.indexOf("You are addressing feedback");
+  assert.ok(preambleIdx >= 0 && briefingIdx > preambleIdx, "preamble before briefing");
+  assert.ok(prCtxIdx > briefingIdx, "PR context after briefing");
+  assert.ok(rulesIdx > prCtxIdx, "feedback rules after PR context");
+});
+
+test("parsePrUrls: returns string URLs, filters non-strings and empties", () => {
+  // Defensive against a hand-edited task file where `prs:` has a stray null,
+  // a number, or an empty string — those shouldn't blow up the fetch loop.
+  assert.deepEqual(
+    parsePrUrls(task({ prs: ["https://x/1", "", null, 42, "https://y/2"] as unknown[] })),
+    ["https://x/1", "https://y/2"],
+  );
+});
+
+test("parsePrUrls: missing prs frontmatter → empty list", () => {
+  assert.deepEqual(parsePrUrls(task()), []);
+});
+
+test("parsePrUrls: prs is not an array → empty list", () => {
+  // YAML could parse a single-string `prs: https://x` as a scalar; we should
+  // still treat that as empty (no array) rather than crash.
+  assert.deepEqual(parsePrUrls(task({ prs: "https://x/1" })), []);
+});
+
+test("fetchFeedbackContexts: empty URL list → empty string (caller should skip feedback mode)", async () => {
+  const out = await fetchFeedbackContexts([]);
+  assert.equal(out, "");
+});
+
+test("fetchFeedbackContexts: unknown-host URL → stub block, no crash", async () => {
+  // Defensive: a malformed `prs:` entry shouldn't kill the run. The agent sees
+  // a `_no host adapter matched_` stub and can still operate on the rest.
+  const out = await fetchFeedbackContexts(["not-a-pr-url"]);
+  assert.match(out, /## PR not-a-pr-url/);
+  assert.match(out, /_no host adapter matched this URL_/);
+});
+
+test("fetchFeedbackContexts: multi-PR concatenates each block separated by a blank line", async () => {
+  // Multi-PR tasks (uncommon but possible — e.g. a CLI + docs split) should
+  // get each PR's block in the prompt, not just the first.
+  const out = await fetchFeedbackContexts(["not-a-pr-url-a", "not-a-pr-url-b"]);
+  const aIdx = out.indexOf("not-a-pr-url-a");
+  const bIdx = out.indexOf("not-a-pr-url-b");
+  assert.ok(aIdx >= 0 && bIdx > aIdx, "both PR blocks should appear in order");
+  // Separator: two newlines between blocks.
+  assert.match(out, /not-a-pr-url-a[^]*?\n\n## PR not-a-pr-url-b/);
 });
 
 test("checkProjectRepo: repo.local set and directory exists → ok with cwd", () => {

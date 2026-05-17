@@ -141,6 +141,28 @@ export const github: PrHost = {
     const raw = JSON.parse(out) as GithubPrJson;
     return { signal: mapGithub(raw), raw };
   },
+
+  async fetchFeedbackContext(url): Promise<string> {
+    if (!hasCli("gh")) {
+      throw new Error("gh CLI not found on PATH");
+    }
+    // Distinct field list from fetchSignal: optimized for the feedback agent
+    // (comments + reviews + reviewThreads with resolution state + CI rollup),
+    // not the poller's verdict. Keeping the two separate avoids dragging the
+    // poller through a larger payload it doesn't use.
+    const fields = [
+      "title",
+      "state",
+      "comments",
+      "reviews",
+      "reviewThreads",
+      "statusCheckRollup",
+    ].join(",");
+    const out = execSync(`gh pr view ${shq(url)} --json ${fields}`, {
+      stdio: ["ignore", "pipe", "pipe"],
+    }).toString().trim();
+    return `## PR ${url}\n\n\`\`\`json\n${out}\n\`\`\``;
+  },
 };
 
 function hasCli(name: string): boolean {
