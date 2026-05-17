@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createWriteStream, mkdirSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { hostname } from "node:os";
 import { findRoot } from "./root.ts";
@@ -11,7 +11,7 @@ import * as lock from "./lock.ts";
 import { readConfig, DEFAULT_TIME_BOUND_MINUTES } from "./config.ts";
 import { logLine as sharedLogLine, type LogLevel } from "./log.ts";
 import { shouldNotify, fireNotification } from "./notify.ts";
-import { context as buildBriefing, resolveRepo } from "./context.ts";
+import { context as buildBriefing, resolveRepo, type Repo } from "./context.ts";
 import { resolveSameRepoStrategy, worktreePath, worktreeBranch } from "./strategy.ts";
 import { newRunLogPath } from "./run_log.ts";
 import type { Project, Task } from "./tree.ts";
@@ -242,6 +242,35 @@ function logLine(level: LogLevel, message: string): void {
   sharedLogLine(level, "orchestrate", message);
 }
 
+export type RepoCheck =
+  | { ok: true; cwd: string }
+  | { ok: false; reason: string };
+
+// Claude's permission sandbox locks to the spawn cwd. We must set cwd to the
+// project's local repo, or the agent inherits the orchestrator's install dir
+// and every file op in the project repo gets blocked (live failure on a
+// react-router-tutorial run, 2026-05-17). Bail when the local clone is
+// missing — operator can fix it before the next tick.
+export function checkProjectRepo(
+  slug: string,
+  repo: Repo,
+  exists: (p: string) => boolean,
+): RepoCheck {
+  if (!repo.local) {
+    return {
+      ok: false,
+      reason: `${slug}: project repo.local is unset; skipping spawn (set repo.local in the project frontmatter)`,
+    };
+  }
+  if (!exists(repo.local)) {
+    return {
+      ok: false,
+      reason: `${slug}: project repo.local (${repo.local}) is not on disk; skipping spawn (clone the repo, then re-run)`,
+    };
+  }
+  return { ok: true, cwd: repo.local };
+}
+
 export interface OrchestrateOpts {
   claudeBin?: string;
   minutesOverride?: number;
@@ -374,6 +403,24 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   const grace = (opts.graceSeconds ?? 10) * 1000;
   const claudeBin = opts.claudeBin ?? process.env.CLAUDE_BIN ?? "claude";
 
+  // Resolve and verify the project's local clone before spawning. Sandbox
+  // requires a usable cwd; missing clone → bail so the orchestrator can
+  // try again next tick (operator clones in between).
+  const repo = resolveRepo(pick.project, pick.task);
+  const repoCheck = checkProjectRepo(slug, repo, existsSync);
+  if (!repoCheck.ok) {
+    logLine("WARN", repoCheck.reason);
+    try { lock.releaseTask(root, slug, agentId); } catch (e) {
+      logLine("ERROR", `lock release failed for ${slug}: ${(e as Error).message}`);
+    }
+    if (resolveSameRepoStrategy(pick.project) === "serialize") {
+      try { lock.releaseRepo(root, pick.project.slug, agentId); } catch (e) {
+        logLine("ERROR", `repo lock release failed for ${pick.project.slug}: ${(e as Error).message}`);
+      }
+    }
+    return { exitCode: 1 };
+  }
+
   // Per-run log: capture the claude session output so `tpm serve` can show
   // what the agent is doing live, and so a post-mortem after a failed run has
   // more than just the start/finish envelope to work from. The orchestrator's
@@ -429,6 +476,7 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
       },
       undefined,
       logFile,
+      repoCheck.cwd,
     );
   } finally {
     clearInterval(heartbeatTimer);
@@ -521,6 +569,7 @@ export function runWithTimeout(
   isTaskTerminal: () => TerminalReason | null,
   pollIntervalMs: number = POLL_INTERVAL_MS,
   logFile?: string,
+  cwd?: string,
 ): Promise<OrchestrateResult> {
   return new Promise((resolve) => {
     let logStream: ReturnType<typeof createWriteStream> | null = null;
@@ -535,8 +584,8 @@ export function runWithTimeout(
       }
     }
     const child = logStream
-      ? spawn(bin, args, { stdio: ["inherit", "pipe", "pipe"] })
-      : spawn(bin, args, { stdio: "inherit" });
+      ? spawn(bin, args, { stdio: ["inherit", "pipe", "pipe"], cwd })
+      : spawn(bin, args, { stdio: "inherit", cwd });
     if (logStream && child.stdout && child.stderr) {
       // `end: false` so a single stderr or stdout EOF doesn't close the file
       // before the other stream flushes. We close explicitly on child exit.
