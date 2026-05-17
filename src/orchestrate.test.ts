@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   buildExecutionPrompt,
+  checkProjectRepo,
   classifyDisposition,
   evaluateTerminalState,
   formatDispositionLine,
@@ -757,6 +758,43 @@ test("buildExecutionPrompt: includes all execution rules verbatim", () => {
   assert.match(prompt, /- Unanticipated decision\? Ship the smaller \/ more local change, file follow-ups, don't halt\./);
 });
 
+test("checkProjectRepo: repo.local set and directory exists → ok with cwd", () => {
+  const result = checkProjectRepo(
+    "tpm/084-foo",
+    { remote: "https://example/repo.git", local: "/path/to/repo" },
+    (p) => p === "/path/to/repo",
+  );
+  assert.deepEqual(result, { ok: true, cwd: "/path/to/repo" });
+});
+
+test("checkProjectRepo: repo.local unset → bail with 'is unset' reason", () => {
+  // Project frontmatter never set repo.local. We can't sandbox the spawn to
+  // anything sensible — operator needs to add it to the project.md.
+  const result = checkProjectRepo(
+    "tpm/084-foo",
+    { remote: null, local: null },
+    () => true,
+  );
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.match(result.reason, /tpm\/084-foo/);
+  assert.match(result.reason, /repo\.local is unset/);
+});
+
+test("checkProjectRepo: repo.local set but path missing on disk → bail with 'not on disk' reason", () => {
+  // Project declares a clone path that hasn't been created — clone is missing.
+  const result = checkProjectRepo(
+    "tpm/084-foo",
+    { remote: null, local: "/path/never/cloned" },
+    () => false,
+  );
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.match(result.reason, /tpm\/084-foo/);
+  assert.match(result.reason, /\/path\/never\/cloned/);
+  assert.match(result.reason, /not on disk/);
+});
+
 // runWithTimeout integration: spawn a real (short-lived) child and verify the
 // terminal-state poll fires SIGTERM ahead of the time bound. We use `sleep`
 // because Node's `node -e` adds startup overhead that makes these tests slow.
@@ -876,6 +914,60 @@ test("runWithTimeout: creates parent directories for the logFile path", async ()
     assert.equal(result.exitCode, 0);
     const captured = readFileSync(logFile, "utf8");
     assert.match(captured, /nested-write/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runWithTimeout: passes cwd to spawn so the child runs in the project repo (task 084)", async () => {
+  // The root cause from 084: without cwd, claude inherits the orchestrator's
+  // install dir as the sandbox root and gets blocked on every file op in the
+  // project repo. The plumbing here is what fixes it.
+  const dir = realpathSync(mkdtempSync(resolve(tmpdir(), "tpm-orch-cwd-")));
+  const logFile = resolve(dir, "run.log");
+  try {
+    const result = await runWithTimeout(
+      "sh",
+      ["-c", "pwd"],
+      5,
+      100,
+      () => { throw new Error("onTimeout should not fire"); },
+      () => null,
+      50,
+      logFile,
+      dir,
+    );
+    assert.equal(result.exitCode, 0);
+    const captured = readFileSync(logFile, "utf8");
+    assert.ok(
+      captured.includes(dir),
+      `expected child's pwd to be ${dir}, got log: ${captured}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runWithTimeout: undefined cwd preserves pre-084 behavior (inherits parent cwd)", async () => {
+  // Existing callers (and the no-logFile path) shouldn't change behavior. With
+  // cwd omitted, spawn inherits process.cwd() — matches Node's default.
+  const dir = mkdtempSync(resolve(tmpdir(), "tpm-orch-cwd-default-"));
+  const logFile = resolve(dir, "run.log");
+  try {
+    const result = await runWithTimeout(
+      "sh",
+      ["-c", "pwd"],
+      5,
+      100,
+      () => { throw new Error("onTimeout should not fire"); },
+      () => null,
+      50,
+      logFile,
+      // no cwd
+    );
+    assert.equal(result.exitCode, 0);
+    const captured = readFileSync(logFile, "utf8").trim();
+    assert.equal(captured, realpathSync(process.cwd()));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
