@@ -12,6 +12,7 @@ import { readConfig, DEFAULT_TIME_BOUND_MINUTES } from "./config.ts";
 import { logLine as sharedLogLine, type LogLevel } from "./log.ts";
 import { shouldNotify, fireNotification } from "./notify.ts";
 import { context as buildBriefing, resolveRepo, type Repo } from "./context.ts";
+import { hostFor } from "./pr_signal.ts";
 import { resolveSameRepoStrategy, worktreePath, worktreeBranch } from "./strategy.ts";
 import { newRunLogPath } from "./run_log.ts";
 import type { Project, Task } from "./tree.ts";
@@ -233,6 +234,71 @@ You are executing this task. Rules:
 - Unanticipated decision? Ship the smaller / more local change, file follow-ups, don't halt.`;
 }
 
+// Feedback-mode prompt for tasks that re-enter the orchestrator at
+// `needs-feedback` (the poller flagged a signal, or a human bounced a
+// needs-review task via serve's "Reopen for agent" — post-087 those land at
+// needs-feedback). The prompt embeds the PR JSON inline so the agent's first
+// action can be a code Edit instead of a `gh pr view` round-trip.
+//
+// 089 is the structural follow-up to 088's instruction-only rule: if the
+// comments are already in context, the agent can't ignore them. The fetched
+// payload is host-formatted (`hosts/<host>.fetchFeedbackContext`) so multi-PR
+// concatenation reads cleanly even across GitHub and ADO.
+export function buildFeedbackPrompt(briefing: string, prContext: string): string {
+  return `You're running in non-interactive mode. No one will see or respond to questions in your output. If you face a choice between asking and acting, always act — take the smaller / safer path (\`tpm block\`, \`tpm revert\`, log a Log line) and exit. The user reads the per-run log and the task state, not your final message.
+
+${briefing}
+
+---
+
+## PR feedback context
+
+${prContext}
+
+---
+
+You are addressing feedback on the PR(s) above. Rules:
+- The PR state (title, state, comments, reviews, statusCheckRollup, plus review threads with resolution state) is already in this prompt. Read the JSON above; don't re-fetch with \`gh pr view\` / \`gh api graphql\` / \`az repos pr show\`.
+- For concrete code-suggestion threads: apply the fix, commit, push. Resolve the thread if the fix matches the suggestion exactly.
+- For CI failures: fetch the failed run log (\`gh run view <id> --log-failed\` for github), fix, commit, push.
+- For rebase needs (BEHIND / DIRTY): rebase against the default branch; on a conflict you can't resolve cleanly, escalate (don't commit a resolution you can't verify with the workflow doc's tests).
+- For ambiguous / design-level threads: flip to \`needs-review\` with a Log entry naming what's unclear, or \`tpm block <slug> "<reason>"\` for a hard blocker.
+- The PR is already open; don't run \`tpm pr\` again. After pushing, the poller re-flags on the next signal.
+- When the round is done: \`tpm log <slug> "addressed feedback — <one-line summary>"\` then \`tpm status <slug> in-progress\`. Never exit at in-progress without that explicit flip, a delivery state, or \`tpm revert\` / \`tpm block\`.
+- Never ask questions in your output. Take the smaller / safer action and log what you did.`;
+}
+
+// Read the `prs:` frontmatter as a list of URLs, filtering out empties /
+// non-strings so a stray bad entry doesn't crash the feedback fetch.
+export function parsePrUrls(task: Task): string[] {
+  const prs = task.data.prs;
+  if (!Array.isArray(prs)) return [];
+  return prs.filter((p): p is string => typeof p === "string" && p.length > 0);
+}
+
+// Fetch each linked PR's feedback context via the host registry and
+// concatenate. Per-PR failures don't abort the run — we splice a stub
+// `_fetch failed: ...` block so the agent sees the gap and can decide
+// whether to skip that PR or escalate. Routed through hostFor so adding a
+// new host is just a `src/hosts/<name>.ts` entry, not an orchestrator branch.
+export async function fetchFeedbackContexts(urls: string[]): Promise<string> {
+  const blocks: string[] = [];
+  for (const url of urls) {
+    const host = hostFor(url);
+    if (!host) {
+      blocks.push(`## PR ${url}\n\n_no host adapter matched this URL_`);
+      continue;
+    }
+    try {
+      const ctx = await host.fetchFeedbackContext(url);
+      blocks.push(ctx);
+    } catch (e) {
+      blocks.push(`## PR ${url}\n\n_fetch failed via ${host.name}: ${(e as Error).message}_`);
+    }
+  }
+  return blocks.join("\n\n");
+}
+
 function snapshotTask(task: Task): DispositionSnapshot {
   const reportField = task.data.report;
   const reportSet = typeof reportField === "string" && reportField.trim().length > 0;
@@ -451,8 +517,24 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   // Build the prompt inline: briefing (same shape as `tpm context <slug>`)
   // followed by the execution rules. The agent reads the Plan and starts
   // working — no skill discovery, no `tpm context` round-trip first.
+  //
+  // For tasks arriving at `needs-feedback` with linked PRs, swap in the
+  // feedback-mode prompt (task 089): pre-fetch PR comments + reviews via the
+  // host registry and inject the JSON so the agent's first tool call can be a
+  // code Edit, not a `gh pr view`. Falls back to the execution prompt if the
+  // PR list is empty or the fetch errors out — we'd rather ship a less-rich
+  // prompt than skip the dispatch.
   const briefing = buildBriefing(root, slug);
-  const prompt = buildExecutionPrompt(briefing);
+  const beforeStatus = String(pick.task.data.status ?? "");
+  const prUrls = parsePrUrls(pick.task);
+  let prompt: string;
+  if (beforeStatus === "needs-feedback" && prUrls.length > 0) {
+    const prContext = await fetchFeedbackContexts(prUrls);
+    prompt = buildFeedbackPrompt(briefing, prContext);
+    logLine("INFO", `${slug}: feedback-mode prompt with ${prUrls.length} PR(s)`);
+  } else {
+    prompt = buildExecutionPrompt(briefing);
+  }
 
   let result: OrchestrateResult;
   try {

@@ -40,4 +40,11 @@ export interface PrHost {
   matches: (url: string) => boolean;
   parse: (url: string) => PrRef | null; // null when matches() is false
   fetchSignal: (url: string) => Promise<FetchedSignal>;
+  // Rich PR snapshot for inlining in a feedback-mode agent prompt: title,
+  // state, comments, reviews, review threads, CI status. The shape is
+  // host-native (no shared schema) — the orchestrator wraps the returned
+  // string in a `## PR <url>` block and lets the agent read it as JSON.
+  // Implementations should fence the payload as ```json ... ``` themselves
+  // so multi-PR concatenation stays readable.
+  fetchFeedbackContext: (url: string) => Promise<string>;
 }

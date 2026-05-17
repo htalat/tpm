@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { github, mapGithub, GITHUB_PR_JSON_FIELDS, type GithubPrJson } from "./github.ts";
+import { github, mapGithub, GITHUB_PR_JSON_FIELDS, GITHUB_FEEDBACK_FIELDS, type GithubPrJson } from "./github.ts";
 
 function pr(extra: GithubPrJson = {}): GithubPrJson {
   return { url: "https://github.com/x/y/pull/1", state: "OPEN", isDraft: false, ...extra };
@@ -258,5 +258,19 @@ test("GITHUB_PR_JSON_FIELDS: stable contract for the poller's gh request", () =>
   // Any removal here without updating mapGithub would silently miss signal.
   for (const f of ["url", "state", "isDraft", "reviewDecision", "statusCheckRollup", "mergeStateStatus", "latestReviews", "title", "body", "mergedAt", "commits"] as const) {
     assert.ok(GITHUB_PR_JSON_FIELDS.includes(f), `missing field: ${f}`);
+  }
+});
+
+test("GITHUB_FEEDBACK_FIELDS: excludes reviewThreads (not a `gh pr view --json` field)", () => {
+  // Regression guard, same shape as the PR_JSON_FIELDS check in
+  // pr_signal.test.ts. Live failure 2026-05-17: the first cut of
+  // fetchFeedbackContext passed `reviewThreads` to `gh pr view --json`, which
+  // failed with `Unknown JSON field: "reviewThreads"`. Resolution state for
+  // review threads is fetched via `gh api graphql` instead, as a separate
+  // block. See AGENTS.md / SKILL.md feedback-mode notes.
+  assert.ok(!GITHUB_FEEDBACK_FIELDS.includes("reviewThreads" as never));
+  // Spot-check the fields that *are* valid + needed by the agent.
+  for (const f of ["title", "state", "comments", "reviews", "statusCheckRollup"] as const) {
+    assert.ok(GITHUB_FEEDBACK_FIELDS.includes(f), `missing field: ${f}`);
   }
 });

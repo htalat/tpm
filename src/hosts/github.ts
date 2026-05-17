@@ -141,7 +141,103 @@ export const github: PrHost = {
     const raw = JSON.parse(out) as GithubPrJson;
     return { signal: mapGithub(raw), raw };
   },
+
+  async fetchFeedbackContext(url): Promise<string> {
+    if (!hasCli("gh")) {
+      throw new Error("gh CLI not found on PATH");
+    }
+    // Distinct field list from fetchSignal: optimized for the feedback agent
+    // (comments + reviews + CI rollup), not the poller's verdict. Keeping
+    // the two separate avoids dragging the poller through a larger payload
+    // it doesn't use.
+    //
+    // `reviewThreads` isn't a `gh pr view --json` field — fetch resolution
+    // state via `gh api graphql` instead and emit as a second JSON block.
+    // See AGENTS.md / task 041's regression guard.
+    const fields = GITHUB_FEEDBACK_FIELDS.join(",");
+    const prOut = execSync(`gh pr view ${shq(url)} --json ${fields}`, {
+      stdio: ["ignore", "pipe", "pipe"],
+    }).toString().trim();
+    const parts = parseGithubUrl(url);
+    let threadsOut = "[]";
+    if (parts) {
+      try {
+        threadsOut = execSync(
+          `gh api graphql -f query=${shq(REVIEW_THREADS_QUERY)} -F owner=${shq(parts.owner)} -F name=${shq(parts.repo)} -F number=${parts.number}`,
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ).toString().trim();
+      } catch {
+        // Best-effort — auth scope or rate limit shouldn't kill the whole
+        // feedback round. Agent still has the PR body + comments + reviews.
+      }
+    }
+    return [
+      `## PR ${url}`,
+      "",
+      "### PR",
+      "```json",
+      prOut,
+      "```",
+      "",
+      "### ReviewThreads",
+      "```json",
+      threadsOut,
+      "```",
+    ].join("\n");
+  },
 };
+
+// `gh pr view --json` field list for the feedback-context fetch. Smaller and
+// distinct from GITHUB_PR_JSON_FIELDS (the poller's set). Notably excludes
+// `reviewThreads` — that field doesn't exist for `gh pr view --json`; review
+// thread resolution state is fetched separately via `gh api graphql` (see
+// REVIEW_THREADS_QUERY below) and emitted as a second JSON block.
+export const GITHUB_FEEDBACK_FIELDS = [
+  "title",
+  "state",
+  "comments",
+  "reviews",
+  "statusCheckRollup",
+] as const;
+
+interface GithubUrlParts {
+  owner: string;
+  repo: string;
+  number: number;
+}
+
+function parseGithubUrl(url: string): GithubUrlParts | null {
+  const m = url.match(URL_RE);
+  if (!m) return null;
+  return { owner: m[1], repo: m[2], number: Number(m[3]) };
+}
+
+const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 50) {
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          originalLine
+          diffSide
+          comments(first: 50) {
+            nodes {
+              id
+              author { login }
+              body
+              createdAt
+              url
+            }
+          }
+        }
+      }
+    }
+  }
+}`;
 
 function hasCli(name: string): boolean {
   try {
