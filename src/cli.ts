@@ -1,11 +1,11 @@
 import { readFileSync, existsSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findRoot } from "./root.ts";
 import { newProject, newTask } from "./new.ts";
 import { context, repoPath } from "./context.ts";
 import { report } from "./report.ts";
-import { archiveTask, foldTask, loadProjects, flatTasks, rollupStatus } from "./tree.ts";
+import { archiveTask, foldTask, loadProjects, flatTasks, rollupStatus, taskHasReport, taskReportPath } from "./tree.ts";
 import type { Task } from "./tree.ts";
 import { selectNext, selectCandidates, inboxItems } from "./queue.ts";
 import { resolveSameRepoStrategy } from "./strategy.ts";
@@ -17,6 +17,7 @@ import { now } from "./time.ts";
 import * as mutate from "./mutate.ts";
 import * as lock from "./lock.ts";
 import { runOrchestrate } from "./orchestrate.ts";
+import { migrateReportsToTaskFolders } from "./migrate_reports.ts";
 import { runPoll } from "./poll.ts";
 import { runServe } from "./serve.ts";
 import { shouldNotify, fireNotification, NOTIFY_EVENTS } from "./notify.ts";
@@ -168,24 +169,18 @@ try {
       if (exportFmt !== undefined) {
         if (exportFmt !== "text") usage("tpm report <slug> --export text  (only 'text' is supported)");
         const task = resolveLiveTask(slug, "tpm report <slug> --export text");
-        const reportRel = typeof task.data.report === "string" ? task.data.report.trim() : "";
-        if (!reportRel) {
+        if (!taskHasReport(task)) {
           throw new Error(`${task.slug}: no report attached. Run \`tpm report ${slug}\` first.`);
         }
-        const projectDir = projectDirForTaskPath(task.path, task);
-        const absPath = isAbsolute(reportRel) ? reportRel : join(projectDir, reportRel);
-        if (!existsSync(absPath)) throw new Error(`${task.slug}: report file missing at ${absPath}`);
+        const absPath = taskReportPath(task);
         const text = readFileSync(absPath, "utf8");
         // Cheap markdown → text: drop HTML comments. Everything else stays
         // as-is (headings, bullets) — markdown reads fine in a terminal.
         process.stdout.write(text.replace(/<!--[\s\S]*?-->/g, ""));
         break;
       }
-      // args[2] is the optional explicit path (may itself start with `-` if a
-      // future flag lands here — guard that by skipping any leading-dash arg).
-      const pathArg = args[2] && !args[2].startsWith("-") ? args[2] : undefined;
-      const task = resolveLiveTask(slug, "tpm report <slug> [<path>] [--export text]");
-      const r = mutate.addReport(task, pathArg);
+      const task = resolveLiveTask(slug, "tpm report <slug> [--export text]");
+      const r = mutate.addReport(task);
       console.log(r.message);
       break;
     }
@@ -297,11 +292,8 @@ try {
       // into mutate directly.
       if (!args[1]) usage("tpm lgtm <task>");
       const task = resolveLiveTask(args[1], "tpm lgtm <task>");
-      const reportRel = typeof task.data.report === "string" ? task.data.report.trim() : "";
-      if (!reportRel) throw new Error(`${task.slug}: no report attached. Run \`tpm report ${args[1]}\` first.`);
-      const projectDir = projectDirForTaskPath(task.path, task);
-      const absPath = isAbsolute(reportRel) ? reportRel : join(projectDir, reportRel);
-      if (!existsSync(absPath)) throw new Error(`${task.slug}: report file missing at ${absPath}`);
+      if (!taskHasReport(task)) throw new Error(`${task.slug}: no report attached. Run \`tpm report ${args[1]}\` first.`);
+      const absPath = taskReportPath(task);
       const reportText = readFileSync(absPath, "utf8");
       const outcome = mutate.deriveReportOutcome(reportText);
       const r = mutate.complete(task, { outcome });
@@ -434,6 +426,30 @@ try {
         default:
           usage("tpm lock acquire <task> --as <id> | release <task> --as <id> [--force] | heartbeat <task> --as <id> | status [<task>] | list | release-stale [--ttl <minutes>]");
       }
+      break;
+    }
+    case "migrate": {
+      // One-shot migrations. Each sub-verb is meant to run once after
+      // pulling the corresponding schema change; re-runs are no-ops.
+      const sub = args[1];
+      if (sub === "reports") {
+        const root = findRoot();
+        const result = migrateReportsToTaskFolders(root);
+        for (const step of result.steps) {
+          console.log(`${step.project}/${step.slug}: ${step.action} (${step.detail})`);
+        }
+        for (const dir of result.removedReportsDirs) {
+          console.log(`removed empty dir: ${dir}`);
+        }
+        for (const warn of result.warnings) {
+          console.error(`warning: ${warn}`);
+        }
+        if (result.steps.length === 0 && result.removedReportsDirs.length === 0) {
+          console.log("nothing to migrate");
+        }
+        break;
+      }
+      usage("tpm migrate reports");
       break;
     }
     case "drift-check": {
@@ -689,15 +705,6 @@ function parseFlag(args: string[], flag: string): string | undefined {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
-// Mirror of mutate.ts's `projectDirForTask` — kept inline so the export
-// path doesn't need to flow through mutate just for the CLI's `--export
-// text` branch.
-function projectDirForTaskPath(taskPath: string, task: Task): string {
-  if (task.dir) return dirname(dirname(task.dir));
-  if (task.parent) return dirname(dirname(dirname(taskPath)));
-  return dirname(dirname(taskPath));
-}
-
 function resolveLiveTask(query: string | undefined, usageMsg: string): Task {
   if (!query) usage(usageMsg);
   const root = findRoot();
@@ -819,7 +826,7 @@ Usage:
   tpm status <task> <new-status>             generic status setter (validated)
   tpm log <task> "<message>"                 append a single timestamped Log line
   tpm pr <task> <url>                        add URL to prs:, log opened PR
-  tpm report <task> [<path>]                 attach a report artifact (default: <project>/reports/<slug>.md);
+  tpm report <task>                          attach a report artifact at <project>/tasks/<slug>/report.md (auto-folds file-form tasks);
                                              auto-flips in-progress -> needs-review (investigation analogue of tpm pr)
   tpm report <task> --export text            print the report as plain text (drops HTML comments)
   tpm lgtm <task>                            reviewer approval on a report task: derive Outcome + complete
@@ -836,6 +843,7 @@ Usage:
   tpm lock list                              list every claimed task across the tree
   tpm lock release-stale [--ttl <minutes>]   clear locks whose heartbeat is older than ttl
   tpm drift-check <project | task>           verify the project's repo.local is on its default branch + clean
+  tpm migrate reports                        one-shot: move flat <project>/reports/<slug>.md files into <project>/tasks/<slug>/report.md (auto-folds file-form tasks) and strip legacy report: frontmatter; safe to re-run
   tpm next [--project <slug>] [--autonomous] [--claim <id>] [--any-repo]
                                              print next leaf task (needs-feedback > ready, oldest first); --claim atomically locks; affinity from ~/.tpm/agents.json applies unless --any-repo
   tpm agents list                            print the per-host agent registry

@@ -5,7 +5,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadProjects, flatTasks, isParent, rollupStatus } from "./tree.ts";
+import { loadProjects, flatTasks, isParent, rollupStatus, taskHasReport, taskReportPath } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
 import { findRoot } from "./root.ts";
 import { findTask } from "./resolve.ts";
@@ -707,26 +707,25 @@ function renderArtifacts(
   interface ArtifactRow {
     task: Task;
     prs: string[];
-    report: string;
+    hasReport: boolean;
     lastMs: number;
   }
   const rows: ArtifactRow[] = [];
   for (const t of tasks) {
     const prs = (Array.isArray(t.data.prs) ? t.data.prs : []).map(String).filter(u => u.length > 0);
-    const report = typeof t.data.report === "string" ? t.data.report.trim() : "";
     const hasPr = prs.length > 0;
-    const hasReport = report.length > 0;
+    const hasReport = taskHasReport(t);
     if (!hasPr && !hasReport) continue;
     if (filter === "pr" && !hasPr) continue;
     if (filter === "report" && !hasReport) continue;
-    rows.push({ task: t, prs, report, lastMs: lastActivityKey(t) });
+    rows.push({ task: t, prs, hasReport, lastMs: lastActivityKey(t) });
   }
   rows.sort((a, b) => b.lastMs - a.lastMs);
 
   const filterNav = renderArtifactFilter(project.slug, filter);
   const main = rows.length === 0
     ? `<p class="config-empty">No artifacts yet. PRs and reports show up here once tasks ship.</p>`
-    : rows.map(r => renderArtifactRow(project, r.task, r.report, prCache)).join("");
+    : rows.map(r => renderArtifactRow(project, r.task, r.hasReport, prCache)).join("");
 
   const body = `
 ${projectChips(allProjects, project.slug)}
@@ -760,7 +759,7 @@ function renderArtifactFilter(projectSlug: string, active: ArtifactFilter): stri
 function renderArtifactRow(
   project: Project,
   task: Task,
-  reportRel: string,
+  hasReport: boolean,
   prCache: PrCacheReader,
 ): string {
   const slugPath = task.parent
@@ -773,7 +772,7 @@ function renderArtifactRow(
   if (task.archived) classes.push("archived");
   const archivedTag = task.archived ? `<span class="archived-tag">archived</span>` : "";
   const prChips = prChipsFor(task, prCache);
-  const reportChip = reportRel
+  const reportChip = hasReport
     ? `<a class="report-chip badge s-needs-review" href="${href}/report">[report]</a>`
     : "";
   return `<div class="${classes.join(" ")}">
@@ -838,10 +837,10 @@ function renderTask(
 
   const taskUrl = taskHref(project, task);
 
-  const reportRel = typeof task.data.report === "string" ? task.data.report.trim() : "";
+  const hasReport = taskHasReport(task);
   const logLink = renderTaskLogRailLink(taskUrl);
   const runsLink = renderTaskRunsRailLink(taskUrl);
-  const reportPanel = reportRel ? renderTaskReportRailPanel(taskUrl, reportRel) : "";
+  const reportPanel = hasReport ? renderTaskReportRailPanel(taskUrl) : "";
   const prPanel = renderPrPanel(prs, prCache);
   const actionsSection = renderActions(project, task, status, opts);
   const settingsSection = renderSettings(project, task, status, opts);
@@ -924,40 +923,38 @@ function renderTaskRunsRailLink(taskUrl: string): string {
 // "Report →" rail panel pointing at `/t/<proj>/<slug>/report`. Mirrors the
 // PR panel for investigation-shaped tasks: the deliverable lives off the
 // task body, and the rail surfaces a one-click jump.
-function renderTaskReportRailPanel(taskUrl: string, reportRel: string): string {
-  return `<section class="task-report"><h2>Report</h2><p><a href="${taskUrl}/report">View report →</a></p><p class="meta"><code>${esc(reportRel)}</code></p></section>`;
+function renderTaskReportRailPanel(taskUrl: string): string {
+  return `<section class="task-report"><h2>Report</h2><p><a href="${taskUrl}/report">View report →</a></p></section>`;
 }
 
 // `/t/<proj>/<slug>/report` — render the report markdown file as HTML. Falls
 // back to a missing-file message rather than 404'ing so the operator can
-// debug a misconfigured `report:` path.
+// debug a missing report.md.
 function renderTaskReport(projects: Project[], project: Project, task: Task, opts: RouteOpts = {}): string {
   const title = strOr(task.data.title, task.slug);
   const taskUrl = taskHref(project, task);
-  const reportRel = typeof task.data.report === "string" ? task.data.report.trim() : "";
-  const actionsBar = renderReportActionsBar(project, task, reportRel, opts);
+  const hasReport = taskHasReport(task);
+  const actionsBar = renderReportActionsBar(project, task, hasReport, opts);
 
   let main: string;
-  if (!reportRel) {
-    main = `<p class="config-empty">No <code>report:</code> attached. Run <code>tpm report ${esc(task.slug)}</code> to create one.</p>`;
+  if (task.parent) {
+    main = `<p class="config-empty">Child tasks don't have their own reports. Reparent to top-level (<code>tpm reparent ${esc(task.slug)} --top</code>) to attach one.</p>`;
+  } else if (!hasReport) {
+    main = `<p class="config-empty">No report attached. Run <code>tpm report ${esc(task.slug)}</code> to create one.</p>`;
   } else {
-    const absPath = isAbsolute(reportRel) ? reportRel : join(project.dir, reportRel);
-    if (!existsSync(absPath)) {
-      main = `<p class="config-empty">Report file missing at <code>${esc(absPath)}</code>. Edit the <code>report:</code> field or re-create the file.</p>`;
-    } else {
-      let text = "";
-      try { text = readFileSync(absPath, "utf8"); } catch (e) {
-        main = `<p class="config-empty">Failed to read <code>${esc(absPath)}</code>: ${esc((e as Error).message)}</p>`;
-        return layout(`tpm · ${title} · report`, wrapReport(projects, project, task, main, reportRel, taskUrl, actionsBar));
-      }
-      // Drop HTML-comment placeholders (e.g. the template's `<!-- One paragraph… -->`)
-      // so the rendered view shows only what the agent has filled in. Markdown
-      // body text stays untouched.
-      const stripped = text.replace(/<!--[\s\S]*?-->/g, "");
-      main = `<div class="body">${renderMarkdown(stripped)}</div>`;
+    const absPath = taskReportPath(task);
+    let text = "";
+    try { text = readFileSync(absPath, "utf8"); } catch (e) {
+      main = `<p class="config-empty">Failed to read <code>${esc(absPath)}</code>: ${esc((e as Error).message)}</p>`;
+      return layout(`tpm · ${title} · report`, wrapReport(projects, project, task, main, taskUrl, actionsBar));
     }
+    // Drop HTML-comment placeholders (e.g. the template's `<!-- One paragraph… -->`)
+    // so the rendered view shows only what the agent has filled in. Markdown
+    // body text stays untouched.
+    const stripped = text.replace(/<!--[\s\S]*?-->/g, "");
+    main = `<div class="body">${renderMarkdown(stripped)}</div>`;
   }
-  return layout(`tpm · ${title} · report`, wrapReport(projects, project, task, main, reportRel, taskUrl, actionsBar));
+  return layout(`tpm · ${title} · report`, wrapReport(projects, project, task, main, taskUrl, actionsBar));
 }
 
 // Sticky LGTM / Request-changes bar at the top of the report page. The bar is
@@ -965,10 +962,10 @@ function renderTaskReport(projects: Project[], project: Project, task: Task, opt
 // verbs off the task rail to remove the back-and-forth context switch. Gated
 // on needs-review + a report file: other statuses (in-progress, done, etc.)
 // shouldn't surface review verbs at all.
-function renderReportActionsBar(project: Project, task: Task, reportRel: string, opts: RouteOpts): string {
+function renderReportActionsBar(project: Project, task: Task, hasReport: boolean, opts: RouteOpts): string {
   if (opts.mutationsEnabled === false) return "";
   if (task.archived) return "";
-  if (!reportRel) return "";
+  if (!hasReport) return "";
   if (rollupStatus(task) !== "needs-review") return "";
   const href = taskHref(project, task);
   return `<div class="report-actions-bar">
@@ -977,16 +974,15 @@ function renderReportActionsBar(project: Project, task: Task, reportRel: string,
 </div>`;
 }
 
-function wrapReport(projects: Project[], project: Project, task: Task, main: string, reportRel: string, taskUrl: string, actionsBar: string): string {
+function wrapReport(projects: Project[], project: Project, task: Task, main: string, taskUrl: string, actionsBar: string): string {
   const title = strOr(task.data.title, task.slug);
-  const pathHint = reportRel ? ` <span class="meta"><code>${esc(reportRel)}</code></span>` : "";
   return `
 ${projectChips(projects, project.slug)}
 ${breadcrumbFor(project, task, { suffix: "report" })}
 ${actionsBar}
 <header>
   <h1>Report — ${esc(title)}</h1>
-  <p class="meta">Investigation deliverable.${pathHint}  ·  <a href="${taskUrl}">Back to task →</a></p>
+  <p class="meta">Investigation deliverable.  ·  <a href="${taskUrl}">Back to task →</a></p>
 </header>
 ${main}
 `;

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
 import { loadProjects } from "./tree.ts";
 import {
@@ -397,26 +397,50 @@ test("pr: duplicate URL on already-flipped task — no extra status flip, no ext
 
 // ---- addReport ------------------------------------------------------------
 
-test("report: creates default file from template, sets `report:`, logs, flips status", () => {
+test("report: auto-folds file-form task, creates report.md inside task folder, logs, flips status", () => {
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
-    writeTask(dir, "001-finding.md", "in-progress", "investigation");
+    const oldPath = writeTask(dir, "001-finding.md", "in-progress", "investigation");
     const t = loadTask(root, "alpha", "001-finding");
     const r = addReport(t);
-    assert.match(r.message, /created reports\/001-finding\.md/);
+    assert.match(r.message, /created tasks\/001-finding\/report\.md/);
+    assert.match(r.message, /folded task/);
     assert.match(r.message, /-> needs-review/);
-    const text = readFileSync(t.path, "utf8");
+    // File-form was folded: original path is gone, task.md exists in the folder.
+    assert.equal(existsSync(oldPath), false);
+    const newTaskPath = join(dir, "tasks", "001-finding", "task.md");
+    assert.ok(existsSync(newTaskPath));
+    const text = readFileSync(newTaskPath, "utf8");
     const { data } = parse(text);
-    assert.equal(data.report, "reports/001-finding.md");
+    // No `report:` frontmatter — presence of report.md IS the report.
+    assert.equal("report" in data, false);
     assert.match(text, /status: needs-review/);
-    assert.match(text, /opened report reports\/001-finding\.md$/m);
+    assert.match(text, /opened report tasks\/001-finding\/report\.md$/m);
     assert.match(text, /status -> needs-review \(report attached, awaiting review\)$/m);
-    const reportPath = join(dir, "reports", "001-finding.md");
+    const reportPath = join(dir, "tasks", "001-finding", "report.md");
     assert.ok(existsSync(reportPath));
     const reportText = readFileSync(reportPath, "utf8");
     assert.match(reportText, /^# Task 001-finding$/m);
     assert.match(reportText, /## Summary/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("report: already-folder task creates report.md next to task.md (no extra fold)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    const taskDir = join(dir, "tasks", "001-already-folded");
+    mkdirSync(taskDir, { recursive: true });
+    writeFileSync(join(taskDir, "task.md"), taskMd("001-already-folded", "in-progress", "investigation"));
+    const t = loadTask(root, "alpha", "001-already-folded");
+    const r = addReport(t);
+    assert.match(r.message, /created tasks\/001-already-folded\/report\.md/);
+    assert.doesNotMatch(r.message, /folded task/);
+    assert.ok(existsSync(join(taskDir, "report.md")));
+    assert.ok(existsSync(join(taskDir, "task.md")));
   } finally {
     rmTempDir(root);
   }
@@ -436,17 +460,18 @@ test("report: terminus line surfaces on the in-progress flip path", () => {
   }
 });
 
-test("report: idempotent re-attach with same path on already-flipped task — no extra log lines", () => {
+test("report: idempotent re-attach on already-flipped task — no extra log lines", () => {
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
     writeTask(dir, "001-a.md", "in-progress", "investigation");
     const t = loadTask(root, "alpha", "001-a");
     addReport(t);
-    const afterFirst = readFileSync(t.path, "utf8");
+    const newTaskPath = join(dir, "tasks", "001-a", "task.md");
+    const afterFirst = readFileSync(newTaskPath, "utf8");
     const t2 = loadTask(root, "alpha", "001-a");
     addReport(t2);
-    assert.equal(readFileSync(t.path, "utf8"), afterFirst);
+    assert.equal(readFileSync(newTaskPath, "utf8"), afterFirst);
     const flipCount = (afterFirst.match(/status -> needs-review/g) ?? []).length;
     assert.equal(flipCount, 1);
   } finally {
@@ -456,10 +481,10 @@ test("report: idempotent re-attach with same path on already-flipped task — no
 
 test("report: re-attach on needs-feedback (post-feedback round) re-fires the flip", () => {
   // After request-changes flips needs-review -> needs-feedback, the agent
-  // re-attaches via `tpm report <slug>` (no path). The path is already set
-  // so the field write is a no-op, but the status flip should still happen
-  // when status is in-progress. Simulate: agent ran `tpm start` (needs-
-  // feedback -> in-progress) before re-running `tpm report`.
+  // re-attaches via `tpm report <slug>`. The folder + file are already
+  // there so no creation log lines fire, but the status flip should still
+  // happen when status is in-progress. Simulate: agent ran `tpm start`
+  // (needs-feedback -> in-progress) before re-running `tpm report`.
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
@@ -475,7 +500,8 @@ test("report: re-attach on needs-feedback (post-feedback round) re-fires the fli
     const t4 = loadTask(root, "alpha", "001-a");
     const r = addReport(t4);
     assert.match(r.message, /-> needs-review/);
-    const text = readFileSync(t.path, "utf8");
+    const newTaskPath = join(dir, "tasks", "001-a", "task.md");
+    const text = readFileSync(newTaskPath, "utf8");
     assert.match(text, /status: needs-review/);
     const flipCount = (text.match(/status -> needs-review/g) ?? []).length;
     assert.equal(flipCount, 2);
@@ -492,7 +518,8 @@ test("report: non-in-progress status leaves status alone (e.g. ready)", () => {
     const t = loadTask(root, "alpha", "001-a");
     const r = addReport(t);
     assert.doesNotMatch(r.message, /needs-review/);
-    const text = readFileSync(t.path, "utf8");
+    const newTaskPath = join(dir, "tasks", "001-a", "task.md");
+    const text = readFileSync(newTaskPath, "utf8");
     assert.match(text, /status: ready/);
     assert.doesNotMatch(text, /status -> needs-review/);
   } finally {
@@ -500,43 +527,15 @@ test("report: non-in-progress status leaves status alone (e.g. ready)", () => {
   }
 });
 
-test("report: explicit path stored as relative-to-project-root", () => {
+test("report: existing report.md is not overwritten", () => {
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
-    writeTask(dir, "001-a.md", "in-progress", "investigation");
-    const t = loadTask(root, "alpha", "001-a");
-    addReport(t, "reports/custom.md");
-    const text = readFileSync(t.path, "utf8");
-    const { data } = parse(text);
-    assert.equal(data.report, "reports/custom.md");
-    assert.ok(existsSync(join(dir, "reports", "custom.md")));
-  } finally {
-    rmTempDir(root);
-  }
-});
-
-test("report: refuses to switch report: to a different path on the same task", () => {
-  const root = mkTempDir();
-  try {
-    const dir = setupProject(root, "alpha");
-    writeTask(dir, "001-a.md", "in-progress", "investigation");
-    const t = loadTask(root, "alpha", "001-a");
-    addReport(t, "reports/first.md");
-    const t2 = loadTask(root, "alpha", "001-a");
-    assert.throws(() => addReport(t2, "reports/second.md"), /already set to "reports\/first\.md"/);
-  } finally {
-    rmTempDir(root);
-  }
-});
-
-test("report: existing file is not overwritten", () => {
-  const root = mkTempDir();
-  try {
-    const dir = setupProject(root, "alpha");
-    writeTask(dir, "001-a.md", "in-progress", "investigation");
-    const reportPath = join(dir, "reports", "001-a.md");
-    mkdirSync(dirname(reportPath), { recursive: true });
+    // Pre-create a folded task with an existing report.md.
+    const taskDir = join(dir, "tasks", "001-a");
+    mkdirSync(taskDir, { recursive: true });
+    writeFileSync(join(taskDir, "task.md"), taskMd("001-a", "in-progress", "investigation"));
+    const reportPath = join(taskDir, "report.md");
     writeFileSync(reportPath, "# pre-existing\n\nbody.\n");
     const t = loadTask(root, "alpha", "001-a");
     addReport(t);
@@ -546,11 +545,10 @@ test("report: existing file is not overwritten", () => {
   }
 });
 
-test("report: child task (folder-form parent) defaults to reports/<parent>/<child>.md", () => {
+test("report: refuses on child task (no per-task folder for children)", () => {
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
-    // Build a folder-form parent with one child.
     const parentDir = join(dir, "tasks", "001-parent");
     mkdirSync(parentDir, { recursive: true });
     writeFileSync(join(parentDir, "task.md"), taskMd("001-parent", "ready", "investigation"));
@@ -565,11 +563,9 @@ test("report: child task (folder-form parent) defaults to reports/<parent>/<chil
     const [proj] = loadProjects(root, { archived: true }).filter(p => p.slug === "alpha");
     const parent = proj.tasks.find(t => t.slug === "001-parent")!;
     const child = parent.children!.find(c => c.slug === "002-child")!;
-    addReport(child);
-    const text = readFileSync(child.path, "utf8");
-    const { data } = parse(text);
-    assert.equal(data.report, join("reports", "001-parent", "002-child.md"));
-    assert.ok(existsSync(join(dir, "reports", "001-parent", "002-child.md")));
+    assert.throws(() => addReport(child), /child tasks can't have own reports/);
+    // No reports/ dir created, no fold attempted.
+    assert.equal(existsSync(join(dir, "reports")), false);
   } finally {
     rmTempDir(root);
   }
@@ -602,11 +598,12 @@ test("requestReportChanges: flips needs-review -> needs-feedback, appends ## Rev
     const t2 = loadTask(root, "alpha", "001-a");
     const r = requestReportChanges(t2, "missing context on commit X");
     assert.match(r.message, /review requested.*-> needs-feedback/);
-    const text = readFileSync(t.path, "utf8");
+    const newTaskPath = join(dir, "tasks", "001-a", "task.md");
+    const text = readFileSync(newTaskPath, "utf8");
     assert.match(text, /status: needs-feedback/);
     assert.match(text, /: review requested — missing context on commit X$/m);
     assert.match(text, /status -> needs-feedback \(review requested\)$/m);
-    const reportText = readFileSync(join(dir, "reports", "001-a.md"), "utf8");
+    const reportText = readFileSync(join(dir, "tasks", "001-a", "report.md"), "utf8");
     assert.match(reportText, /## Reviewer feedback/);
     assert.match(reportText, /missing context on commit X/);
   } finally {
@@ -627,7 +624,7 @@ test("requestReportChanges: multiple rounds accumulate under one ## Reviewer fee
     addReport(loadTask(root, "alpha", "001-a"));
     // Second round of changes.
     requestReportChanges(loadTask(root, "alpha", "001-a"), "round 2 feedback");
-    const reportText = readFileSync(join(dir, "reports", "001-a.md"), "utf8");
+    const reportText = readFileSync(join(dir, "tasks", "001-a", "report.md"), "utf8");
     // Exactly one heading; both comments present in chronological order.
     const headings = (reportText.match(/^## Reviewer feedback/gm) ?? []).length;
     assert.equal(headings, 1);

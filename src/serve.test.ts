@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
 import { route, routeMutation, isSameOrigin, isLoopback } from "./serve.ts";
 import type { CliRunner, ConfigSnapshot, PrCacheReader } from "./serve.ts";
 import type { Project, Task } from "./tree.ts";
@@ -10,6 +13,33 @@ function task(slug: string, status: string, extra: Record<string, unknown> = {})
     path: `/tmp/${slug}.md`,
     archived: false,
     data: { slug, status, title: `Task ${slug}`, type: "pr", created: "2026-01-01 00:00 PDT", prs: [], ...extra },
+    body: "## Context\nbody.\n\n## Plan\n- step 1\n",
+  };
+}
+
+// Build a folder-form task on disk with an optional `report.md` inside.
+// Used by serve tests that exercise the filesystem-truth report check
+// (task 094 — readers look at <task-dir>/report.md, not frontmatter).
+// Caller must pass a fresh temp `root` and clean it up at end-of-test.
+function folderTask(
+  root: string,
+  slug: string,
+  status: string,
+  opts: { hasReport?: boolean; reportBody?: string; extra?: Record<string, unknown> } = {},
+): Task {
+  const dir = join(root, slug);
+  mkdirSync(dir, { recursive: true });
+  const taskPath = join(dir, "task.md");
+  writeFileSync(taskPath, "---\nstatus: " + status + "\n---\n");
+  if (opts.hasReport) {
+    writeFileSync(join(dir, "report.md"), opts.reportBody ?? "# Report\n\n## Summary\nbody.\n");
+  }
+  return {
+    slug,
+    path: taskPath,
+    dir,
+    archived: false,
+    data: { slug, status, title: `Task ${slug}`, type: "pr", created: "2026-01-01 00:00 PDT", prs: [], ...(opts.extra ?? {}) },
     body: "## Context\nbody.\n\n## Plan\n- step 1\n",
   };
 }
@@ -293,50 +323,65 @@ test("renderProject: header links to the artifacts index", () => {
 });
 
 test("route: /p/<slug>/artifacts renders rows for PRs and reports together", () => {
-  const withPr = task("001-pr", "done", {
-    prs: ["https://github.com/x/y/pull/79"],
-    closed: "2026-04-01 12:00 PDT",
-  });
-  withPr.archived = true;
-  const withReport = task("002-rep", "done", { report: "reports/002-rep.md" });
-  const withBoth = task("003-both", "done", {
-    prs: ["https://github.com/x/y/pull/45"],
-    report: "reports/003-both.md",
-  });
-  const noArtifact = task("004-bare", "ready");
-  const p = project("alpha", [withPr, withReport, withBoth, noArtifact]);
-  const r = route("/p/alpha/artifacts", new URLSearchParams(), [p], { prCache: noPrCache });
-  assert.equal(r.status, 200);
-  assert.match(r.body, /Artifacts —/);
-  // Three artifact rows render; the bare task is excluded.
-  assert.match(r.body, /001-pr/);
-  assert.match(r.body, /002-rep/);
-  assert.match(r.body, /003-both/);
-  assert.doesNotMatch(r.body, /004-bare/);
-  // PR chips link to GitHub and the report chip links in-app.
-  assert.match(r.body, /href="https:\/\/github\.com\/x\/y\/pull\/79"/);
-  assert.match(r.body, /class="report-chip[^"]*"[^>]*href="\/t\/alpha\/002-rep\/report"/);
-  // The task with both gets both chip types.
-  assert.match(r.body, /href="https:\/\/github\.com\/x\/y\/pull\/45"/);
-  assert.match(r.body, /href="\/t\/alpha\/003-both\/report"/);
+  const root = mkTempDir();
+  try {
+    const withPr = task("001-pr", "done", {
+      prs: ["https://github.com/x/y/pull/79"],
+      closed: "2026-04-01 12:00 PDT",
+    });
+    withPr.archived = true;
+    const withReport = folderTask(root, "002-rep", "done", { hasReport: true });
+    const withBoth = folderTask(root, "003-both", "done", {
+      hasReport: true,
+      extra: { prs: ["https://github.com/x/y/pull/45"] },
+    });
+    const noArtifact = task("004-bare", "ready");
+    const p = project("alpha", [withPr, withReport, withBoth, noArtifact]);
+    const r = route("/p/alpha/artifacts", new URLSearchParams(), [p], { prCache: noPrCache });
+    assert.equal(r.status, 200);
+    assert.match(r.body, /Artifacts —/);
+    // Three artifact rows render; the bare task is excluded.
+    assert.match(r.body, /001-pr/);
+    assert.match(r.body, /002-rep/);
+    assert.match(r.body, /003-both/);
+    assert.doesNotMatch(r.body, /004-bare/);
+    // PR chips link to GitHub and the report chip links in-app.
+    assert.match(r.body, /href="https:\/\/github\.com\/x\/y\/pull\/79"/);
+    assert.match(r.body, /class="report-chip[^"]*"[^>]*href="\/t\/alpha\/002-rep\/report"/);
+    // The task with both gets both chip types.
+    assert.match(r.body, /href="https:\/\/github\.com\/x\/y\/pull\/45"/);
+    assert.match(r.body, /href="\/t\/alpha\/003-both\/report"/);
+  } finally {
+    rmTempDir(root);
+  }
 });
 
 test("route: /p/<slug>/artifacts?type=pr narrows to PR-bearing rows", () => {
-  const withPr = task("001-pr", "done", { prs: ["https://github.com/x/y/pull/79"] });
-  const withReport = task("002-rep", "done", { report: "reports/002-rep.md" });
-  const p = project("alpha", [withPr, withReport]);
-  const r = route("/p/alpha/artifacts", new URLSearchParams("type=pr"), [p], { prCache: noPrCache });
-  assert.match(r.body, /001-pr/);
-  assert.doesNotMatch(r.body, /002-rep/);
+  const root = mkTempDir();
+  try {
+    const withPr = task("001-pr", "done", { prs: ["https://github.com/x/y/pull/79"] });
+    const withReport = folderTask(root, "002-rep", "done", { hasReport: true });
+    const p = project("alpha", [withPr, withReport]);
+    const r = route("/p/alpha/artifacts", new URLSearchParams("type=pr"), [p], { prCache: noPrCache });
+    assert.match(r.body, /001-pr/);
+    assert.doesNotMatch(r.body, /002-rep/);
+  } finally {
+    rmTempDir(root);
+  }
 });
 
 test("route: /p/<slug>/artifacts?type=report narrows to report-bearing rows", () => {
-  const withPr = task("001-pr", "done", { prs: ["https://github.com/x/y/pull/79"] });
-  const withReport = task("002-rep", "done", { report: "reports/002-rep.md" });
-  const p = project("alpha", [withPr, withReport]);
-  const r = route("/p/alpha/artifacts", new URLSearchParams("type=report"), [p], { prCache: noPrCache });
-  assert.doesNotMatch(r.body, /001-pr/);
-  assert.match(r.body, /002-rep/);
+  const root = mkTempDir();
+  try {
+    const withPr = task("001-pr", "done", { prs: ["https://github.com/x/y/pull/79"] });
+    const withReport = folderTask(root, "002-rep", "done", { hasReport: true });
+    const p = project("alpha", [withPr, withReport]);
+    const r = route("/p/alpha/artifacts", new URLSearchParams("type=report"), [p], { prCache: noPrCache });
+    assert.doesNotMatch(r.body, /001-pr/);
+    assert.match(r.body, /002-rep/);
+  } finally {
+    rmTempDir(root);
+  }
 });
 
 test("route: /p/<slug>/artifacts renders an empty state when no task has artifacts", () => {
@@ -347,16 +392,21 @@ test("route: /p/<slug>/artifacts renders an empty state when no task has artifac
 });
 
 test("route: /p/<slug>/artifacts sorts rows by most recent task-Log activity first", () => {
-  const older = task("001-older", "done", { prs: ["https://github.com/x/y/pull/10"] });
-  older.body = "## Log\n- 2026-01-01 12:00 PDT: shipped\n";
-  const newer = task("002-newer", "done", { report: "reports/002-newer.md" });
-  newer.body = "## Log\n- 2026-04-01 12:00 PDT: shipped\n";
-  const p = project("alpha", [older, newer]);
-  const r = route("/p/alpha/artifacts", new URLSearchParams(), [p], { prCache: noPrCache });
-  const idxNewer = r.body.indexOf("002-newer");
-  const idxOlder = r.body.indexOf("001-older");
-  assert.ok(idxNewer >= 0 && idxOlder >= 0);
-  assert.ok(idxNewer < idxOlder, "newer Log activity should sort above older");
+  const root = mkTempDir();
+  try {
+    const older = task("001-older", "done", { prs: ["https://github.com/x/y/pull/10"] });
+    older.body = "## Log\n- 2026-01-01 12:00 PDT: shipped\n";
+    const newer = folderTask(root, "002-newer", "done", { hasReport: true });
+    newer.body = "## Log\n- 2026-04-01 12:00 PDT: shipped\n";
+    const p = project("alpha", [older, newer]);
+    const r = route("/p/alpha/artifacts", new URLSearchParams(), [p], { prCache: noPrCache });
+    const idxNewer = r.body.indexOf("002-newer");
+    const idxOlder = r.body.indexOf("001-older");
+    assert.ok(idxNewer >= 0 && idxOlder >= 0);
+    assert.ok(idxNewer < idxOlder, "newer Log activity should sort above older");
+  } finally {
+    rmTempDir(root);
+  }
 });
 
 test("route: /p/<slug>/artifacts exposes active-filter chip styling", () => {
@@ -702,35 +752,49 @@ test("routeMutation: CLI success surfaces stdout in flash", () => {
 
 // ---- report flow (investigation deliverable) ------------------------------
 
-test("renderTask: rail surfaces a Report panel when report: is set", () => {
-  const t = task("001-a", "in-progress", { report: "reports/001-a.md", type: "investigation" });
-  const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
-  assert.match(r.body, /class="task-report"/);
-  assert.match(r.body, /href="\/t\/alpha\/001-a\/report"/);
-  assert.match(r.body, /<code>reports\/001-a\.md<\/code>/);
+test("renderTask: rail surfaces a Report panel when report.md exists in the task folder", () => {
+  const root = mkTempDir();
+  try {
+    const t = folderTask(root, "001-a", "in-progress", { hasReport: true, extra: { type: "investigation" } });
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+    assert.match(r.body, /class="task-report"/);
+    assert.match(r.body, /href="\/t\/alpha\/001-a\/report"/);
+  } finally {
+    rmTempDir(root);
+  }
 });
 
-test("renderTask: no Report panel when report: is unset", () => {
-  const t = task("001-a", "in-progress", { type: "investigation" });
-  const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
-  assert.doesNotMatch(r.body, /class="task-report"/);
+test("renderTask: no Report panel when report.md is absent", () => {
+  const root = mkTempDir();
+  try {
+    const t = folderTask(root, "001-a", "in-progress", { extra: { type: "investigation" } });
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+    assert.doesNotMatch(r.body, /class="task-report"/);
+  } finally {
+    rmTempDir(root);
+  }
 });
 
 test("renderTask: needs-review task rail no longer renders LGTM/request-changes (moved to report page)", () => {
   // Task 083 moved the report-shaped review verbs to the report page itself
   // so the reviewer doesn't switch contexts to act. The rail keeps log/
   // block/reopen for both report-shaped and PR-shaped reviews.
-  const t = task("001-a", "needs-review", { type: "investigation", report: "reports/001-a.md" });
-  const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
-  assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
-  assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/request-changes"/);
-  // The remaining escape-hatch forms still render.
-  assert.match(r.body, /action="\/t\/alpha\/001-a\/log"/);
-  assert.match(r.body, /action="\/t\/alpha\/001-a\/block"/);
-  assert.match(r.body, /action="\/t\/alpha\/001-a\/status"/);
+  const root = mkTempDir();
+  try {
+    const t = folderTask(root, "001-a", "needs-review", { hasReport: true, extra: { type: "investigation" } });
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+    assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
+    assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/request-changes"/);
+    // The remaining escape-hatch forms still render.
+    assert.match(r.body, /action="\/t\/alpha\/001-a\/log"/);
+    assert.match(r.body, /action="\/t\/alpha\/001-a\/block"/);
+    assert.match(r.body, /action="\/t\/alpha\/001-a\/status"/);
+  } finally {
+    rmTempDir(root);
+  }
 });
 
 test("renderTask: needs-review PR-shaped task rail also lacks LGTM/request-changes", () => {
@@ -758,60 +822,82 @@ test("renderTask: needs-review 'Reopen for agent' flips to needs-feedback (not r
 });
 
 test("renderTaskReport: needs-review with report attached renders sticky LGTM + Request-changes bar", () => {
-  const t = task("001-a", "needs-review", { type: "investigation", report: "reports/001-a.md" });
-  const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: true });
-  assert.match(r.body, /class="report-actions-bar"/);
-  assert.match(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
-  assert.match(r.body, /action="\/t\/alpha\/001-a\/request-changes"/);
+  const root = mkTempDir();
+  try {
+    const t = folderTask(root, "001-a", "needs-review", { hasReport: true, extra: { type: "investigation" } });
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: true });
+    assert.match(r.body, /class="report-actions-bar"/);
+    assert.match(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
+    assert.match(r.body, /action="\/t\/alpha\/001-a\/request-changes"/);
+  } finally {
+    rmTempDir(root);
+  }
 });
 
 test("renderTaskReport: bar appears for report-attached non-investigation task at needs-review", () => {
-  // Same OR gate the rail had previously: report: presence is enough.
-  const t = task("001-a", "needs-review", { type: "spike", report: "reports/001-a.md" });
-  const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: true });
-  assert.match(r.body, /class="report-actions-bar"/);
-  assert.match(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
-  assert.match(r.body, /action="\/t\/alpha\/001-a\/request-changes"/);
+  // Same OR gate the rail had previously: report presence is enough.
+  const root = mkTempDir();
+  try {
+    const t = folderTask(root, "001-a", "needs-review", { hasReport: true, extra: { type: "spike" } });
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: true });
+    assert.match(r.body, /class="report-actions-bar"/);
+    assert.match(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
+    assert.match(r.body, /action="\/t\/alpha\/001-a\/request-changes"/);
+  } finally {
+    rmTempDir(root);
+  }
 });
 
 test("renderTaskReport: no bar when status is not needs-review", () => {
-  const t = task("001-a", "in-progress", { type: "investigation", report: "reports/001-a.md" });
-  const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: true });
-  assert.doesNotMatch(r.body, /class="report-actions-bar"/);
-  assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
+  const root = mkTempDir();
+  try {
+    const t = folderTask(root, "001-a", "in-progress", { hasReport: true, extra: { type: "investigation" } });
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: true });
+    assert.doesNotMatch(r.body, /class="report-actions-bar"/);
+    assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
+  } finally {
+    rmTempDir(root);
+  }
 });
 
-test("renderTaskReport: no bar when report: is unset (no deliverable to review)", () => {
-  const t = task("001-a", "needs-review", { type: "investigation" });
-  const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: true });
-  assert.doesNotMatch(r.body, /class="report-actions-bar"/);
+test("renderTaskReport: no bar when report.md is absent (no deliverable to review)", () => {
+  const root = mkTempDir();
+  try {
+    const t = folderTask(root, "001-a", "needs-review", { extra: { type: "investigation" } });
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: true });
+    assert.doesNotMatch(r.body, /class="report-actions-bar"/);
+  } finally {
+    rmTempDir(root);
+  }
 });
 
 test("renderTaskReport: no bar when mutations are disabled (non-loopback bind)", () => {
-  const t = task("001-a", "needs-review", { type: "investigation", report: "reports/001-a.md" });
-  const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: false });
-  assert.doesNotMatch(r.body, /class="report-actions-bar"/);
+  const root = mkTempDir();
+  try {
+    const t = folderTask(root, "001-a", "needs-review", { hasReport: true, extra: { type: "investigation" } });
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: false });
+    assert.doesNotMatch(r.body, /class="report-actions-bar"/);
+  } finally {
+    rmTempDir(root);
+  }
 });
 
-test("route: /t/<slug>/report missing file renders a placeholder, not a 404", () => {
-  const t = task("001-a", "in-progress", { report: "reports/missing.md", type: "investigation" });
-  const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p]);
-  assert.equal(r.status, 200);
-  assert.match(r.body, /Report file missing/);
-});
-
-test("route: /t/<slug>/report with no report: attached renders a stub", () => {
-  const t = task("001-a", "in-progress", { type: "investigation" });
-  const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p]);
-  assert.equal(r.status, 200);
-  assert.match(r.body, /No <code>report:<\/code> attached/);
+test("route: /t/<slug>/report renders a placeholder when report.md is missing, not a 404", () => {
+  const root = mkTempDir();
+  try {
+    const t = folderTask(root, "001-a", "in-progress", { extra: { type: "investigation" } });
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p]);
+    assert.equal(r.status, 200);
+    assert.match(r.body, /No report attached/);
+  } finally {
+    rmTempDir(root);
+  }
 });
 
 test("routeMutation: /t/<slug>/lgtm dispatches `tpm lgtm <slug>`", () => {

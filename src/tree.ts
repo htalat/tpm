@@ -1,4 +1,4 @@
-import { mkdirSync, renameSync, readdirSync, readFileSync, rmdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, readdirSync, readFileSync, rmdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse } from "./frontmatter.ts";
 
@@ -214,6 +214,35 @@ export function archiveTask(task: Task): string {
   if (isFile(archivePath)) throw new Error(`Archived task already exists: ${archivePath}`);
   renameSync(task.path, archivePath);
   return archivePath;
+}
+
+// Where the task's own folder lives — the home for `report.md` and any other
+// per-task artifacts. For file-form tasks this is the dir they'd be folded
+// into, which may not exist yet on disk. Refuses on child tasks: children are
+// sibling files inside a parent folder and don't get their own per-task dir
+// (co-locating their artifacts would orphan them from the parent folder
+// loader). Reparent to top-level (`tpm reparent <slug> --top`) to attach
+// per-task artifacts to a child.
+export function taskFolderPath(task: Task): string {
+  if (task.parent) {
+    throw new Error(`taskFolderPath: child task ${task.slug} has no own folder (lives inside parent ${task.parent})`);
+  }
+  if (task.dir) return task.dir;
+  return join(dirname(task.path), task.slug);
+}
+
+// Conventional path for the investigation deliverable. Doesn't check
+// existence — use `taskHasReport` for the boolean.
+export function taskReportPath(task: Task): string {
+  return join(taskFolderPath(task), "report.md");
+}
+
+// Filesystem-truth "task has a report attached." Single source of truth (the
+// file is the report; no `report:` frontmatter to drift). Children always
+// return false — see `taskFolderPath` for why.
+export function taskHasReport(task: Task): boolean {
+  if (task.parent) return false;
+  return existsSync(taskReportPath(task));
 }
 
 export function foldTask(task: Task): string {

@@ -1,8 +1,8 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, unlinkSync } from "node:fs";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import { parse, stringify } from "./frontmatter.ts";
 import { now } from "./time.ts";
-import { archiveTask, foldTask, isParent } from "./tree.ts";
+import { archiveTask, foldTask, isParent, taskHasReport, taskReportPath } from "./tree.ts";
 import type { Task } from "./tree.ts";
 import { REPORT_TEMPLATE } from "./defaults.ts";
 
@@ -137,43 +137,43 @@ export function addPr(task: Task, url: string): MutateResult {
 // report file (not a PR), so the agent's "your turn is over" signal is
 // running `tpm report <slug>` once the report is written.
 //
-// Path semantics:
-//   - Stored in frontmatter as a path relative to the project root
-//     (`reports/<slug>.md` for top-level tasks, `reports/<parent>/<child>.md`
-//     for children).
-//   - If `path` is omitted, defaults to the convention above.
-//   - If `path` is provided, it's accepted relative to the project root
-//     (absolute paths are normalized to relative when under the project root,
-//     otherwise stored as-is — the agent knows what it's doing).
+// Path semantics (task 094):
+//   - The report is always `<task-folder>/report.md`. Single source of truth
+//     on the filesystem — no `report:` frontmatter field. File-form tasks
+//     are auto-folded so the folder exists to receive it.
+//   - Child tasks can't have own reports (no per-task folder — would orphan
+//     them from the parent folder loader). Reparent to top-level first.
 //
 // Behaviour:
-//   - Creates the report file from `.tpm/templates/report.md` (or the
-//     built-in) if it doesn't exist yet — agent gets a skeleton to fill in.
-//   - Sets `report:` in the task frontmatter, idempotent on equal paths.
-//     Refuses to switch an existing `report:` to a different path (would
-//     orphan the prior file).
-//   - Logs `opened report <path>` on the first attach.
+//   - If the task is file-form, fold it (`tasks/<slug>.md` →
+//     `tasks/<slug>/task.md`) so the report sits next to the task body.
+//   - Creates `report.md` from `.tpm/templates/report.md` (or the built-in)
+//     if it doesn't exist yet — agent gets a skeleton to fill in.
+//   - Logs `opened report <relpath>` on first creation (or on the fold-then-
+//     attach path where the file existed but wasn't co-located yet).
 //   - Auto-flips `in-progress -> needs-review` (mirrors `addPr`), re-fires
 //     on every call so a re-attach after a feedback round bounces the task
 //     back into the human queue.
-export function addReport(task: Task, pathArg?: string): MutateResult {
+export function addReport(task: Task): MutateResult {
   guardArchived(task);
-  const { data, body } = readParsed(task);
-
-  const projectDir = projectDirForTask(task);
-  const defaultRelPath = defaultReportRelPath(task);
-  const inputRel = pathArg && pathArg.trim().length > 0
-    ? normalizeReportPath(pathArg.trim(), projectDir)
-    : defaultRelPath;
-
-  const existing = typeof data.report === "string" ? data.report.trim() : "";
-  if (existing.length > 0 && existing !== inputRel) {
+  if (task.parent) {
     throw new Error(
-      `${task.slug}: report already set to "${existing}". Edit the file directly or clear the field to re-attach.`,
+      `${task.slug}: child tasks can't have own reports — they live inside parent ${task.parent}'s folder. ` +
+      `Reparent to top-level (\`tpm reparent ${task.slug} --top\`) or attach the report to the parent.`,
     );
   }
+  const { data, body } = readParsed(task);
 
-  const absPath = isAbsolute(inputRel) ? inputRel : join(projectDir, inputRel);
+  // Fold file-form tasks so the folder exists to receive `report.md`.
+  let folded = false;
+  if (!task.dir) {
+    const newPath = foldTask(task);
+    task.path = newPath;
+    task.dir = dirname(newPath);
+    folded = true;
+  }
+
+  const absPath = taskReportPath(task);
   let createdFile = false;
   if (!existsSync(absPath)) {
     mkdirSync(dirname(absPath), { recursive: true });
@@ -185,11 +185,11 @@ export function addReport(task: Task, pathArg?: string): MutateResult {
     createdFile = true;
   }
 
+  const relPath = projectRelativeReportPath(task);
   let newBody = body;
   let registered = false;
-  if (existing !== inputRel) {
-    data.report = inputRel;
-    newBody = appendLog(newBody, `${now()}: opened report ${inputRel}`);
+  if (createdFile || folded) {
+    newBody = appendLog(newBody, `${now()}: opened report ${relPath}`);
     registered = true;
   }
 
@@ -201,19 +201,18 @@ export function addReport(task: Task, pathArg?: string): MutateResult {
     flipped = true;
   }
 
-  // Skip the write when nothing changed (already-set path, non-in-progress
-  // status, file already on disk): keep `tpm report <slug>` byte-identical
-  // idempotent for re-runs that aren't actually advancing state.
+  // Skip the write when nothing changed: keep `tpm report <slug>` byte-
+  // identical idempotent for re-runs that aren't actually advancing state.
   if (registered || flipped) {
     writeFileSync(task.path, stringify(data, newBody));
     syncInMemory(task, data, newBody);
   }
 
   const parts: string[] = [];
-  if (createdFile) parts.push(`created ${inputRel}`);
-  if (registered) parts.push(`linked ${inputRel}`);
-  else if (!flipped) parts.push(`already linked (${inputRel})`);
-  const summary = parts.length ? parts.join(", ") : `report on file (${inputRel})`;
+  if (createdFile) parts.push(`created ${relPath}`);
+  else if (!flipped && !folded) parts.push(`report on file (${relPath})`);
+  if (folded) parts.push("folded task");
+  const summary = parts.length ? parts.join(", ") : `report on file (${relPath})`;
   const suffix = flipped ? " — status -> needs-review" : "";
   const terminus = flipped
     ? "\n✓ Report attached. Your turn is complete — exit. A reviewer LGTMs or requests changes via `tpm serve`."
@@ -235,19 +234,14 @@ export function requestReportChanges(task: Task, comment: string): MutateResult 
     throw new Error("tpm: request-changes requires a comment");
   }
   const { data, body } = readParsed(task);
-  const reportRel = typeof data.report === "string" ? data.report.trim() : "";
-  if (!reportRel) {
+  if (!taskHasReport(task)) {
     throw new Error(`${task.slug}: no report attached. Run \`tpm report <slug>\` first.`);
   }
   const current = String(data.status ?? "");
   if (current !== "needs-review") {
     throw new Error(`${task.slug}: request-changes requires status=needs-review (current: ${current || "?"})`);
   }
-  const projectDir = projectDirForTask(task);
-  const absPath = isAbsolute(reportRel) ? reportRel : join(projectDir, reportRel);
-  if (!existsSync(absPath)) {
-    throw new Error(`${task.slug}: report file missing at ${absPath}`);
-  }
+  const absPath = taskReportPath(task);
 
   const trimmedComment = comment.trim();
   const stamp = now();
@@ -267,34 +261,13 @@ export function requestReportChanges(task: Task, comment: string): MutateResult 
   return { message: `${task.slug}: review requested — status -> needs-feedback` };
 }
 
-// Project root for a task. `task.dir` is set on folder-form parents;
-// otherwise the path layout tells us how many directories to walk up:
-//   - top-level file: <root>/<project>/tasks/NNN-slug.md
-//   - child of parent: <root>/<project>/tasks/NNN-parent/NNN-child.md
-//   - folder-form parent: <root>/<project>/tasks/NNN-slug/task.md (task.dir set)
-function projectDirForTask(task: Task): string {
-  if (task.dir) return dirname(dirname(task.dir));
-  if (task.parent) return dirname(dirname(dirname(task.path)));
-  return dirname(dirname(task.path));
-}
-
-// Default `reports/...` path under the project root. Children of folder-form
-// parents land at `reports/<parent>/<child>.md` to mirror the task tree
-// layout; everything else (top-level file, top-level folder-form parent)
-// lands at `reports/<slug>.md`.
-function defaultReportRelPath(task: Task): string {
-  if (task.parent) return join("reports", task.parent, `${task.slug}.md`);
-  return join("reports", `${task.slug}.md`);
-}
-
-function normalizeReportPath(input: string, projectDir: string): string {
-  if (!isAbsolute(input)) return input;
-  const rel = relative(projectDir, input);
-  // Inside the project tree → store relative; outside → keep absolute (caller
-  // knows where they want the file). `relative` returns `..` segments for
-  // out-of-tree paths, which is the cue.
-  if (rel.startsWith("..")) return input;
-  return rel;
+// Path to the task's report.md relative to the project root — for log lines
+// and operator-friendly messages. Mirror of taskReportPath's structure but
+// rooted at `tasks/...` instead of an absolute path.
+function projectRelativeReportPath(task: Task): string {
+  // task.dir is set after the fold step in addReport; the report lives at
+  // <task-dir>/report.md, so the project-relative path is tasks/<slug>/report.md.
+  return join("tasks", task.slug, "report.md");
 }
 
 // Derive an Outcome line from a report's contents: the first heading (sans

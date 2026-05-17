@@ -774,7 +774,7 @@ test("buildExecutionPrompt: includes all execution rules verbatim", () => {
   assert.match(prompt, /- If `prs:` is non-empty and any linked PR is OPEN, fetch its comments and reviews via the host CLI \(dispatch on `Host:` in the briefing\) before any other discovery\. Unaddressed comments are almost certainly why you're seeing this task — address them first\./);
   assert.match(prompt, /- Follow the Plan above\./);
   assert.match(prompt, /- If type=pr: after opening a PR, run `tpm pr <slug> <url>` \(CLI auto-flips to needs-review\)\. Stop\./);
-  assert.match(prompt, /- If type=investigation: your deliverable is a \*\*report\*\*, not a PR\. Write findings into `<project>\/reports\/<slug>\.md` \(run `tpm report <slug>` to create it from template \+ register it\)\. When done, `tpm report <slug>` auto-flips to needs-review\. Don't run `tpm pr`\./);
+  assert.match(prompt, /- If type=investigation: your deliverable is a \*\*report\*\*, not a PR\. Run `tpm report <slug>` to fold the task into a folder and scaffold `<project>\/tasks\/<slug>\/report\.md` from the template\. Write findings into that file\. When done, re-run `tpm report <slug>` — the CLI auto-flips to needs-review\. Don't run `tpm pr`\./);
   assert.match(prompt, /- Can't proceed\? `tpm revert <slug> "<reason>"` \(back to ready\) or `tpm block <slug> "<reason>"` \(human queue\)\. Never exit at in-progress\./);
   assert.match(prompt, /- Unanticipated decision\? Ship the smaller \/ more local change, file follow-ups, don't halt\./);
 });
