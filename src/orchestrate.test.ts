@@ -346,6 +346,74 @@ test("classifyDisposition: non-zero non-124 exit → failed regardless of progre
   );
 });
 
+test("classifyDisposition: in-progress → in-progress with report attached → shipped (task 080)", () => {
+  // `tpm report` flips in-progress -> needs-review under normal flow, so we
+  // shouldn't usually see this exact transition. But if the agent attaches
+  // a report and the orchestrator's snapshot races a status flip, the
+  // empty→set transition is itself the shipping signal.
+  assert.equal(
+    classifyDisposition({
+      exitCode: 0,
+      before: { status: "in-progress", prs: 0, report: false },
+      after: { status: "in-progress", prs: 0, report: true },
+    }),
+    "shipped",
+  );
+});
+
+test("classifyDisposition: in-progress → needs-review with report attached → shipped (canonical investigation flow)", () => {
+  assert.equal(
+    classifyDisposition({
+      exitCode: 0,
+      before: { status: "in-progress", prs: 0, report: false },
+      after: { status: "needs-review", prs: 0, report: true },
+    }),
+    "shipped",
+  );
+});
+
+test("classifyDisposition: ready → in-progress with report attached counts as shipping (overrides entry-flip rule)", () => {
+  // Agent did the full ready → start → report cycle in one run but didn't
+  // emit the needs-review flip yet — report-set still wins, mirroring the
+  // ready→in-progress+prs=+1 case.
+  assert.equal(
+    classifyDisposition({
+      exitCode: 0,
+      before: { status: "ready", prs: 0, report: false },
+      after: { status: "in-progress", prs: 0, report: true },
+    }),
+    "shipped",
+  );
+});
+
+test("classifyDisposition: existing report (no transition) on stalled run stays stalled", () => {
+  // Round-trip case: report already set, agent picked up needs-feedback,
+  // re-attached (no transition because report:empty→set didn't happen, but
+  // status flipped via the re-fire path). Without a status change AND no
+  // report transition, the run is genuinely stalled.
+  assert.equal(
+    classifyDisposition({
+      exitCode: 0,
+      before: { status: "in-progress", prs: 0, report: true },
+      after: { status: "in-progress", prs: 0, report: true },
+    }),
+    "stalled",
+  );
+});
+
+test("classifyDisposition: exit 124 with report attached → shipped", () => {
+  // Same 068 timing pattern as PR shipping: agent attached report then
+  // lingered past the time bound. Delivery wins over the SIGTERM.
+  assert.equal(
+    classifyDisposition({
+      exitCode: 124,
+      before: { status: "ready", prs: 0, report: false },
+      after: { status: "needs-review", prs: 0, report: true },
+    }),
+    "shipped",
+  );
+});
+
 test("formatDispositionLine: stable schema for stalled run", () => {
   assert.equal(
     formatDispositionLine(
@@ -382,6 +450,34 @@ test("formatDispositionLine: archived-mid-run renders after-status as ?", () => 
       null,
     ),
     "disposition tpm/051-foo shipped exit=0 status=in-progress->? prs=1->1",
+  );
+});
+
+test("formatDispositionLine: appends report=empty->set when the report field flipped", () => {
+  assert.equal(
+    formatDispositionLine(
+      "tpm/080-investigation",
+      "shipped",
+      0,
+      { status: "in-progress", prs: 0, report: false },
+      { status: "needs-review", prs: 0, report: true },
+    ),
+    "disposition tpm/080-investigation shipped exit=0 status=in-progress->needs-review prs=0->0 report=empty->set",
+  );
+});
+
+test("formatDispositionLine: omits report= field when no report has ever been attached (back-compat)", () => {
+  // PR-shaped tasks (every pre-080 run) shouldn't grow a useless
+  // report=empty->empty suffix in the envelope log.
+  assert.equal(
+    formatDispositionLine(
+      "tpm/045-pr",
+      "shipped",
+      0,
+      { status: "in-progress", prs: 0, report: false },
+      { status: "needs-review", prs: 1, report: false },
+    ),
+    "disposition tpm/045-pr shipped exit=0 status=in-progress->needs-review prs=0->1",
   );
 });
 
@@ -600,6 +696,33 @@ test("shouldAutoRevert: terminationReason=early-term → false (task went termin
   );
 });
 
+test("shouldAutoRevert: report attached this run → false (task 080)", () => {
+  // Agent attached a report (empty→set) but the orchestrator's snapshot
+  // raced the auto-flip and still sees in-progress. Don't auto-revert: the
+  // report-shipped signal means the agent delivered.
+  assert.equal(
+    shouldAutoRevert({
+      exitCode: 0,
+      before: { status: "in-progress", prs: 0, report: false },
+      after: { status: "in-progress", prs: 0, report: true },
+    }),
+    false,
+  );
+});
+
+test("shouldAutoRevert: report unchanged (no transition this run) → true", () => {
+  // Existing report, agent picked up and exited without further progress.
+  // No transition means nothing shipped this run.
+  assert.equal(
+    shouldAutoRevert({
+      exitCode: 0,
+      before: { status: "in-progress", prs: 0, report: true },
+      after: { status: "in-progress", prs: 0, report: true },
+    }),
+    true,
+  );
+});
+
 test("shouldAutoRevert: after=null (task archived mid-run) → false", () => {
   assert.equal(
     shouldAutoRevert({
@@ -621,14 +744,15 @@ test("buildExecutionPrompt: prompt starts with the briefing and is not /tpm <slu
   assert.doesNotMatch(prompt, /^\/tpm /, "prompt should not be the legacy /tpm <slug> form");
 });
 
-test("buildExecutionPrompt: includes all four execution rules verbatim", () => {
+test("buildExecutionPrompt: includes all execution rules verbatim", () => {
   // These rules replace the SKILL.md "Start a task" section for orchestrator
   // runs; any drift between this prompt and the skill's guidance needs to be
   // intentional (cross-ref in 077). Pin each line so a typo trips the test.
   const prompt = buildExecutionPrompt("BRIEFING");
   assert.match(prompt, /You are executing this task\. Rules:/);
   assert.match(prompt, /- Follow the Plan above\./);
-  assert.match(prompt, /- After opening a PR, run `tpm pr <slug> <url>` \(CLI auto-flips to needs-review\)\. Stop\./);
+  assert.match(prompt, /- If type=pr: after opening a PR, run `tpm pr <slug> <url>` \(CLI auto-flips to needs-review\)\. Stop\./);
+  assert.match(prompt, /- If type=investigation: your deliverable is a \*\*report\*\*, not a PR\. Write findings into `<project>\/reports\/<slug>\.md` \(run `tpm report <slug>` to create it from template \+ register it\)\. When done, `tpm report <slug>` auto-flips to needs-review\. Don't run `tpm pr`\./);
   assert.match(prompt, /- Can't proceed\? `tpm revert <slug> "<reason>"` \(back to ready\) or `tpm block <slug> "<reason>"` \(human queue\)\. Never exit at in-progress\./);
   assert.match(prompt, /- Unanticipated decision\? Ship the smaller \/ more local change, file follow-ups, don't halt\./);
 });

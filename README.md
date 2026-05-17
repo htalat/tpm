@@ -413,6 +413,12 @@ tpm revert <task> ["<reason>"]            # flip in-progress -> ready, log a tim
 tpm status <task> <new-status>            # generic status setter (validated)
 tpm log <task> "<message>"                # append a single timestamped Log line
 tpm pr <task> <url>                       # add URL to prs:, log opened PR
+tpm report <task> [<path>]                # attach a report artifact to an investigation task
+                                          # (default: <project>/reports/<slug>.md); auto-flips
+                                          # in-progress -> needs-review (investigation analogue of tpm pr)
+tpm report <task> --export text           # print the report as plain text (drops HTML comments)
+tpm lgtm <task>                           # reviewer LGTM on a report task: derive Outcome + complete
+tpm request-changes <task> "<comment>"    # reviewer pushback: append to ## Reviewer feedback + flip to needs-feedback
 tpm archive <task | project/task>         # move a done/dropped task (or whole folder-form parent) to tasks/archive/
 tpm fold <task | project/task>            # promote a file-form task to folder-form (idempotent)
 tpm reparent <task> <new-parent | --top>  # move a task under a new parent (or to top-level); folds the new parent if needed
@@ -427,7 +433,7 @@ tpm lock list                             # every claimed task across the tree
 tpm lock release-stale [--ttl <minutes>]  # clear locks past TTL (default: time-bound + 5min)
 tpm notify <start|finish|fail> <task>     # best-effort osascript notification (cascade: task > project > global)
 tpm serve [--port 7777] [--host 127.0.0.1]  # start a localhost HTTP UI (read + status-gated mutation forms)
-tpm report [--md]
+tpm report [--md]                         # rollup of every project/task -> reports/index.{html,md}
 tpm root                                  # print the tree root
 tpm path <project | task | project/task>  # print the local checkout path
 tpm now                                   # timestamp in the configured timezone
