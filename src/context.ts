@@ -33,7 +33,6 @@ export function context(root: string, query: string): string {
   const lines: string[] = [];
   lines.push(`# Task briefing: ${str(task.data.title) ?? task.slug}`);
   lines.push("");
-  lines.push(`- File: ${task.path}`);
   lines.push(`- Project: ${str(project.data.name) ?? project.slug} (${project.slug})`);
   if (repo.remote) lines.push(`- Repo: ${repo.remote}`);
   if (repo.local) lines.push(`- Local: ${repo.local}`);
@@ -46,11 +45,10 @@ export function context(root: string, query: string): string {
   }
   const workflow = str(task.data.workflow) ?? str(project.data.workflow);
   if (workflow) lines.push(`- Workflow: ${workflow}`);
-  lines.push(`- Status: ${str(task.data.status) ?? "?"}  ·  Type: ${str(task.data.type) ?? "?"}`);
+  lines.push(`- Type: ${str(task.data.type) ?? "?"}`);
   if (Array.isArray(task.data.prs) && task.data.prs.length) {
     lines.push(`- PRs: ${task.data.prs.join(", ")}`);
   }
-  if (str(task.data.created)) lines.push(`- Created: ${str(task.data.created)}`);
 
   lines.push("");
   lines.push("---");
@@ -72,7 +70,7 @@ export function context(root: string, query: string): string {
   lines.push("");
   lines.push("## Task");
   lines.push("");
-  lines.push(task.body.trim());
+  lines.push(trimTaskBody(task.body));
 
   lines.push("");
   lines.push("---");
@@ -106,6 +104,31 @@ function extractSection(body: string, heading: string): string | null {
   if (!m) return null;
   const content = m[1].trim();
   return content.length ? content : null;
+}
+
+// Strip historical / placeholder sections from a task body before embedding it
+// in the briefing. `## Log` is always dropped (chronological flips, already
+// happened). `## Outcome` is dropped only when its body is empty or just the
+// `<!-- Filled when closed: ... -->` placeholder — a non-empty Outcome means
+// the task already shipped and the agent benefits from seeing what landed.
+export function trimTaskBody(body: string): string {
+  let out = stripSection(body, "Log");
+  out = stripSectionIfPlaceholder(out, "Outcome");
+  return out.trim();
+}
+
+function stripSection(body: string, heading: string): string {
+  const re = new RegExp(`(?:^|\\n)##\\s+${escapeRe(heading)}\\s*\\n[\\s\\S]*?(?=\\n##\\s+|$)`, "i");
+  return body.replace(re, "");
+}
+
+function stripSectionIfPlaceholder(body: string, heading: string): string {
+  const re = new RegExp(`(?:^|\\n)##\\s+${escapeRe(heading)}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|$)`, "i");
+  const m = body.match(re);
+  if (!m) return body;
+  const content = m[1].replace(/<!--[\s\S]*?-->/g, "").trim();
+  if (content.length > 0) return body;
+  return body.replace(re, "");
 }
 
 function escapeRe(s: string): string {

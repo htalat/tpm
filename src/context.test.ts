@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
-import { context, repoPath, resolveRepo } from "./context.ts";
+import { context, repoPath, resolveRepo, trimTaskBody } from "./context.ts";
 import { loadProjects } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
 
@@ -107,12 +107,134 @@ test("context: builds briefing for unique slug", () => {
     const out = context(root, "alpha-only");
     assert.match(out, /# Task briefing: Alpha only/);
     assert.match(out, /Project: Alpha \(alpha\)/);
-    assert.match(out, /Status: open  ·  Type: pr/);
+    assert.match(out, /^- Type: pr$/m);
     assert.match(out, /Alpha goal\./);
     assert.match(out, /## Working agreement/);
   } finally {
     rmTempDir(root);
   }
+});
+
+test("context: drops File / Status / Created / Closed metadata lines", () => {
+  const root = mkTempDir();
+  try {
+    mkdirSync(join(root, "p", "tasks"), { recursive: true });
+    writeFileSync(
+      join(root, "p", "project.md"),
+      `---\nname: P\nslug: p\nstatus: active\n---\n\n# P\n`,
+    );
+    writeFileSync(
+      join(root, "p", "tasks", "001-t.md"),
+      `---\ntitle: T\nslug: t\nproject: p\nstatus: open\ntype: pr\ncreated: 2026-05-16 21:10 PDT\nclosed: 2026-05-17 09:00 PDT\n---\n\n# T\n`,
+    );
+    const out = context(root, "p/t");
+    assert.doesNotMatch(out, /^- File:/m);
+    assert.doesNotMatch(out, /^- Status:/m);
+    assert.doesNotMatch(out, /Status: open/);
+    assert.doesNotMatch(out, /^- Created:/m);
+    assert.doesNotMatch(out, /^- Closed:/m);
+    // Type still present on its own line.
+    assert.match(out, /^- Type: pr$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("context: omits PRs line when prs is empty", () => {
+  const root = mkTempDir();
+  try {
+    setup(root);
+    const out = context(root, "alpha-only");
+    assert.doesNotMatch(out, /^- PRs:/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("context: renders PRs line when prs is non-empty", () => {
+  const root = mkTempDir();
+  try {
+    mkdirSync(join(root, "p", "tasks"), { recursive: true });
+    writeFileSync(
+      join(root, "p", "project.md"),
+      `---\nname: P\nslug: p\nstatus: active\n---\n\n# P\n`,
+    );
+    writeFileSync(
+      join(root, "p", "tasks", "001-t.md"),
+      `---\ntitle: T\nslug: t\nproject: p\nstatus: needs-review\ntype: pr\nprs:\n  - https://github.com/example/repo/pull/42\n---\n\n# T\n`,
+    );
+    const out = context(root, "p/t");
+    assert.match(out, /^- PRs: https:\/\/github\.com\/example\/repo\/pull\/42$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("context: strips ## Log section from task body", () => {
+  const root = mkTempDir();
+  try {
+    mkdirSync(join(root, "p", "tasks"), { recursive: true });
+    writeFileSync(
+      join(root, "p", "project.md"),
+      `---\nname: P\nslug: p\nstatus: active\n---\n\n# P\n`,
+    );
+    writeFileSync(
+      join(root, "p", "tasks", "001-t.md"),
+      `---\ntitle: T\nslug: t\nproject: p\nstatus: open\ntype: pr\n---\n\n# T\n\n## Plan\nDo the thing.\n\n## Log\n- 2026-05-16 21:10 PDT: created\n- 2026-05-16 21:11 PDT: promoted to ready\n\n## Outcome\n<!-- Filled when closed: ... -->\n`,
+    );
+    const out = context(root, "p/t");
+    assert.doesNotMatch(out, /## Log/);
+    assert.doesNotMatch(out, /promoted to ready/);
+    // Plan content survives.
+    assert.match(out, /## Plan\nDo the thing\./);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("context: strips placeholder-only ## Outcome section but keeps non-empty one", () => {
+  const root = mkTempDir();
+  try {
+    mkdirSync(join(root, "p", "tasks"), { recursive: true });
+    writeFileSync(
+      join(root, "p", "project.md"),
+      `---\nname: P\nslug: p\nstatus: active\n---\n\n# P\n`,
+    );
+    // Empty Outcome — should be stripped.
+    writeFileSync(
+      join(root, "p", "tasks", "001-empty.md"),
+      `---\ntitle: Empty\nslug: empty\nproject: p\nstatus: open\ntype: pr\n---\n\n# Empty\n\n## Plan\nWork.\n\n## Outcome\n<!-- Filled when closed: what shipped, what changed, what we learned -->\n`,
+    );
+    // Real Outcome — should be retained.
+    writeFileSync(
+      join(root, "p", "tasks", "002-real.md"),
+      `---\ntitle: Real\nslug: real\nproject: p\nstatus: done\ntype: pr\n---\n\n# Real\n\n## Plan\nWork.\n\n## Outcome\nShipped X, learned Y.\n`,
+    );
+    const emptyOut = context(root, "p/empty");
+    assert.doesNotMatch(emptyOut, /## Outcome/);
+    assert.doesNotMatch(emptyOut, /Filled when closed/);
+    const realOut = context(root, "p/real");
+    assert.match(realOut, /## Outcome\nShipped X, learned Y\./);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("trimTaskBody: drops Log, drops empty Outcome, keeps real Outcome", () => {
+  const withLogOnly = `# T\n\n## Plan\nWork.\n\n## Log\n- 2026: x\n`;
+  assert.equal(trimTaskBody(withLogOnly), `# T\n\n## Plan\nWork.`);
+
+  const withEmptyOutcome = `# T\n\n## Plan\nWork.\n\n## Outcome\n<!-- placeholder -->\n`;
+  assert.equal(trimTaskBody(withEmptyOutcome), `# T\n\n## Plan\nWork.`);
+
+  const withRealOutcome = `# T\n\n## Plan\nWork.\n\n## Outcome\nShipped.\n`;
+  assert.equal(trimTaskBody(withRealOutcome), `# T\n\n## Plan\nWork.\n\n## Outcome\nShipped.`);
+
+  const logBetweenSections = `# T\n\n## Plan\nWork.\n\n## Log\n- a\n- b\n\n## Outcome\nReal outcome.\n`;
+  assert.equal(
+    trimTaskBody(logBetweenSections),
+    `# T\n\n## Plan\nWork.\n\n## Outcome\nReal outcome.`,
+  );
 });
 
 test("context: project/task disambiguates", () => {
