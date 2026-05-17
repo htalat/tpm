@@ -4,15 +4,14 @@ Claude Code dispatches tpm via a slash command (`/tpm`). The skill at `skills/tp
 
 ## Install
 
-`tpm` ships its own user-scoped Claude Code skill. Symlink it once at setup:
+`tpm` ships its own user-scoped Claude Code skill. After cloning the repo, run:
 
 ```sh
-mkdir -p ~/.claude/skills
-ln -sfn "$PWD/skills/tpm" ~/.claude/skills/tpm
+tpm refresh-skills
 # Restart any running Claude Code session, then `/tpm` becomes available.
 ```
 
-The repo's [README setup section](../../README.md#setup-on-a-new-device) does this for every directory under `skills/` in one loop, so future skills get picked up automatically.
+This walks every directory under `skills/` and installs it into `~/.claude/skills/`. On macOS/Linux it creates symlinks so edits to `SKILL.md` flow live; on Windows (where symlinks need admin or Developer Mode) it does a recursive copy — re-run `tpm refresh-skills` after editing a `SKILL.md` to refresh the copy. The command is idempotent and safe to re-run any time.
 
 ## Usage
 

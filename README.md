@@ -60,11 +60,13 @@ tpm init ~/Documents/projects                 # writes ~/.tpm/config.json -> ~/D
 tpm root                                      # confirms the tree root
 
 # 4. (Optional) Install the user-scoped Claude Code skills.
-# Symlink every dir under skills/ into ~/.claude/skills/. Repo-scoped skills
-# under .claude/skills/ are auto-loaded by Claude Code inside this repo and
-# don't need symlinking — see "Skill scoping" below.
-mkdir -p ~/.claude/skills
-for d in skills/*/; do ln -sfn "$PWD/$d" "$HOME/.claude/skills/$(basename "$d")"; done
+# Walk every dir under skills/ and install it into ~/.claude/skills/.
+# macOS/Linux: symlinks (so SKILL.md edits flow live).
+# Windows:     recursive copy (symlinks need admin or Developer Mode); re-run
+#              after editing a SKILL.md.
+# Repo-scoped skills under .claude/skills/ are auto-loaded by Claude Code
+# inside this repo and don't need installing — see "Skill scoping" below.
+tpm refresh-skills
 # Restart any running Claude Code session, then `/tpm` becomes available.
 
 # 5. (Optional) Skip permission prompts for the tpm CLI.
@@ -86,7 +88,7 @@ tpm report && open reports/index.html
 
 Claude Code skills in this repo come in two flavors. The directory decides which:
 
-- `skills/<name>/SKILL.md` — **user-scoped**. Useful from any repo (e.g. `/tpm` for tracking work). Symlinked into `~/.claude/skills/` once during setup; the loop above handles future additions automatically.
+- `skills/<name>/SKILL.md` — **user-scoped**. Useful from any repo (e.g. `/tpm` for tracking work). Installed into `~/.claude/skills/` by `tpm refresh-skills`; future additions are picked up the next time the command runs.
 - `.claude/skills/<name>/SKILL.md` — **repo-scoped**. Only useful when working inside this repo (e.g. `/release` for cutting tpm releases). Auto-loaded by Claude Code when cwd is under the repo. No symlink, no setup step.
 
 If a skill could go either way, force a choice. Useful outside the repo → user-scope. Otherwise → repo-scope. Don't add a third category.
@@ -103,8 +105,8 @@ The CLI install (this repo) and the data tree are independent — you can replac
 ### Re-running setup (idempotency)
 
 - `tpm init <path>` is safe to re-run — it only creates missing files and updates the config pointer.
-- `ln -sf` overwrites broken symlinks but doesn't touch the target.
-- The skill symlink picks up edits to `skills/tpm/SKILL.md` immediately; no restart needed for content changes (only for first install).
+- `tpm refresh-skills` is idempotent: existing symlinks pointing at the right source are left alone; stale links and copy-installs are replaced.
+- On macOS/Linux the skill symlink picks up edits to `skills/tpm/SKILL.md` immediately; no restart needed for content changes (only for first install). On Windows the install is a copy, so re-run `tpm refresh-skills` after editing a `SKILL.md` to push the new contents into `~/.claude/skills/`.
 
 ## Install (TL;DR)
 

@@ -26,6 +26,7 @@ import type { NotifyEvent } from "./notify.ts";
 import { resolveRepo } from "./context.ts";
 import { checkDrift } from "./drift.ts";
 import { getScheduler } from "./scheduler/types.ts";
+import { refreshSkills } from "./refresh_skills.ts";
 
 const VERSION = readVersion();
 
@@ -757,6 +758,21 @@ try {
       }
       break;
     }
+    case "refresh-skills": {
+      // Install/refresh the user-scoped skills from this checkout into
+      // ~/.claude/skills/. On macOS/Linux it's a symlink (so edits flow
+      // live); on Windows it's a recursive copy (symlinks need admin) and
+      // must be re-run after editing a SKILL.md.
+      const entries = refreshSkills();
+      if (entries.length === 0) {
+        console.log("(no skills found in source)");
+        break;
+      }
+      for (const e of entries) {
+        console.log(`${e.name}: ${e.action} (${e.source} -> ${e.target})`);
+      }
+      break;
+    }
     case "version":
     case "--version":
     case "-V":
@@ -957,6 +973,7 @@ Usage:
   tpm schedule status [<name>]               with a name: installed | missing; without: list everything installed
   tpm schedule list                          print the names of all tpm-managed scheduled jobs
   tpm notify <start|finish|fail> <task>      best-effort osascript notification (cascade: task > project > global)
+  tpm refresh-skills                         install/refresh user-scoped skills into ~/.claude/skills/ (macOS/Linux: symlink, Windows: copy)
   tpm serve [--port 7777] [--host 127.0.0.1] start a localhost HTTP UI for the queues (read-only)
   tpm report [--md]                          generate a rollup of every project/task to reports/index.{html,md}
   tpm root                                   print the tree root
