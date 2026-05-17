@@ -14,7 +14,8 @@ import { shouldNotify, fireNotification } from "./notify.ts";
 import { context as buildBriefing, resolveRepo, type Repo } from "./context.ts";
 import { hostFor } from "./pr_signal.ts";
 import { resolveSameRepoStrategy, worktreePath, worktreeBranch } from "./strategy.ts";
-import { newRunLogPath } from "./run_log.ts";
+import { newRunLogPath, formatRunLogHeader } from "./run_log.ts";
+import { resolveAgentCli, type AgentCli } from "./agent_cli.ts";
 import type { Project, Task } from "./tree.ts";
 
 export interface ResolveTimeBoundInput {
@@ -347,7 +348,13 @@ export function checkProjectRepo(
 }
 
 export interface OrchestrateOpts {
+  // Back-compat override for the claude binary path. Honored only when the
+  // resolved agent is claude (the only agent the flag knew about pre-092).
+  // New callers should use the CLAUDE_BIN env var or `agentName` instead.
   claudeBin?: string;
+  // Invocation-time agent override (the `--agent <name>` flag on
+  // `tpm orchestrate`). Wins over task/project/config selection.
+  agentName?: string;
   minutesOverride?: number;
   graceSeconds?: number;
   // Pre-claimed task slug. Caller (e.g. cron line that ran `tpm next --claim`
@@ -382,10 +389,12 @@ export function noPickLogEntry(candidatesCount: number): { level: "INFO" | "WARN
 
 // Run one orchestrator turn:
 //   1. tpm next --autonomous (filters to allow_orchestrator: true)
-//   2. spawn `<claudeBin> -p "<briefing + execution rules>"` with a hard time
-//      bound. The prompt is built inline (briefing from `context()`, rules from
-//      `buildExecutionPrompt`) so the agent skips skill discovery and starts
-//      executing the Plan immediately.
+//   2. spawn `<agentBin> <agent.buildArgs(prompt, repoLocal)>` with a hard
+//      time bound. The agent CLI (claude, copilot, …) is resolved from the
+//      task/project/config registry in src/agent_cli.ts. The prompt is built
+//      inline (briefing from `context()`, rules from `buildExecutionPrompt`)
+//      so the agent skips skill discovery and starts executing the Plan
+//      immediately.
 //   3. on timeout, SIGTERM (then SIGKILL after grace), then `tpm revert <slug>`
 //   4. additionally, poll the task every ~5s; if it goes terminal externally
 //      (done/dropped/archived) SIGTERM the child early — disposition: terminal.
@@ -476,7 +485,19 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     cfg.time_bound_minutes,
   );
   const grace = (opts.graceSeconds ?? 10) * 1000;
-  const claudeBin = opts.claudeBin ?? process.env.CLAUDE_BIN ?? "claude";
+  // Resolve agent CLI: task > project > config > registry default. The
+  // back-compat `claudeBin` opt is layered on top of the resolved bin only
+  // when the resolved agent is claude — preserves the pre-092 `--claude
+  // /path/to/claude` flag without letting it override a copilot dispatch.
+  const agentCli = resolveAgentCli({
+    task: pick.task,
+    project: pick.project,
+    configAgent: cfg.agent,
+    override: opts.agentName,
+  });
+  const agentBin = opts.claudeBin && agentCli.name === "claude"
+    ? opts.claudeBin
+    : agentCli.bin;
 
   // Resolve and verify the project's local clone before spawning. Sandbox
   // requires a usable cwd; missing clone → bail so the orchestrator can
@@ -496,12 +517,15 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     return { exitCode: 1 };
   }
 
-  // Per-run log: capture the claude session output so `tpm serve` can show
+  // Per-run log: capture the agent's session output so `tpm serve` can show
   // what the agent is doing live, and so a post-mortem after a failed run has
   // more than just the start/finish envelope to work from. The orchestrator's
-  // own log stays clean — start/finish/disposition lines only.
+  // own log stays clean — start/finish/disposition lines only. The first line
+  // is a `# tpm-run agent=… outputFormat=…` header so the viewer can dispatch
+  // on the right interpreter when the run wasn't claude.
   const logFile = newRunLogPath(slug);
-  logLine("INFO", `start ${slug} as ${agentId} time-bound=${minutes}m claude=${claudeBin}`);
+  const logHeader = formatRunLogHeader(agentCli.name, agentCli.outputFormat);
+  logLine("INFO", `start ${slug} as ${agentId} time-bound=${minutes}m agent=${agentCli.name} bin=${agentBin}`);
   logLine("INFO", `run log: ${logFile}`);
 
   // Heartbeat the lock every 60s so a long-running agent doesn't get
@@ -539,11 +563,12 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   let result: OrchestrateResult;
   try {
     result = await runWithTimeout(
-      claudeBin,
-      // --output-format stream-json --verbose emits NDJSON events as they
+      agentBin,
+      // Args come from the agent CLI registry (src/agent_cli.ts). Each entry
+      // knows the right flag combination to emit NDJSON events as they
       // happen (tool calls, text deltas, results) — that's what makes the
       // per-run log a live transcript instead of just the final message.
-      ["-p", "--output-format", "stream-json", "--verbose", prompt],
+      agentCli.buildArgs(prompt, repoCheck.cwd),
       minutes,
       grace,
       () => {
@@ -568,6 +593,7 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
       undefined,
       logFile,
       repoCheck.cwd,
+      logHeader,
     );
   } finally {
     clearInterval(heartbeatTimer);
@@ -661,6 +687,10 @@ export function runWithTimeout(
   pollIntervalMs: number = POLL_INTERVAL_MS,
   logFile?: string,
   cwd?: string,
+  // Optional first-line preamble written to logFile before the child's output
+  // is piped in. The orchestrator uses this for the `# tpm-run agent=…` line
+  // (task 092) so the viewer can dispatch on outputFormat without a sidecar.
+  logHeader?: string,
 ): Promise<OrchestrateResult> {
   return new Promise((resolve) => {
     let logStream: ReturnType<typeof createWriteStream> | null = null;
@@ -668,6 +698,7 @@ export function runWithTimeout(
       try {
         mkdirSync(dirname(logFile), { recursive: true });
         logStream = createWriteStream(logFile);
+        if (logHeader) logStream.write(logHeader);
       } catch (e) {
         // Logging is a nice-to-have — don't block the run if the FS is hostile.
         logLine("WARN", `run log unavailable (${(e as Error).message}); continuing without capture`);

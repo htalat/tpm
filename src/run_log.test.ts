@@ -7,12 +7,14 @@ import {
   allRunLogs,
   compactUtc,
   encodeSlug,
+  formatRunLogHeader,
   isValidRunLogName,
   latestRunLog,
   newRunLogPath,
   parseLine,
   parseEvents,
   parseRunLog,
+  parseRunLogHeader,
 } from "./run_log.ts";
 
 test("compactUtc: ISO timestamp collapses to YYYYMMDDTHHMMSSZ", () => {
@@ -405,4 +407,133 @@ test("parseRunLog: unclosed object at end of line is counted as skipped (truncat
   assert.equal(r.skipped, 1);
   assert.equal(r.events.length, 1);
   assert.equal(r.events[0].kind, "system");
+});
+
+// ---- header sniff + format dispatch (task 092) ----------------------------
+
+test("formatRunLogHeader: emits the canonical `# tpm-run agent=… outputFormat=…\\n`", () => {
+  assert.equal(
+    formatRunLogHeader("claude", "claude-stream-json"),
+    "# tpm-run agent=claude outputFormat=claude-stream-json\n",
+  );
+  assert.equal(
+    formatRunLogHeader("copilot", "copilot-json"),
+    "# tpm-run agent=copilot outputFormat=copilot-json\n",
+  );
+});
+
+test("parseRunLogHeader: round-trips formatRunLogHeader output", () => {
+  const line = "# tpm-run agent=copilot outputFormat=copilot-json";
+  assert.deepEqual(parseRunLogHeader(line), {
+    agent: "copilot",
+    outputFormat: "copilot-json",
+  });
+});
+
+test("parseRunLogHeader: ignores unknown outputFormat values (defensive)", () => {
+  // A future agent's outputFormat shouldn't be parsed as a known one; the
+  // viewer should fall back to its caller-provided default.
+  const h = parseRunLogHeader("# tpm-run agent=cursor outputFormat=cursor-stream");
+  assert.equal(h?.agent, "cursor");
+  assert.equal(h?.outputFormat, undefined);
+});
+
+test("parseRunLogHeader: non-header line returns null", () => {
+  assert.equal(parseRunLogHeader("{}"), null);
+  assert.equal(parseRunLogHeader(""), null);
+  assert.equal(parseRunLogHeader("# unrelated comment"), null);
+});
+
+test("parseRunLog: header on first line sets format and is not surfaced as an event", () => {
+  const buf =
+    "# tpm-run agent=claude outputFormat=claude-stream-json\n" +
+    JSON.stringify({ type: "system", subtype: "init" }) + "\n";
+  const r = parseRunLog(buf);
+  assert.equal(r.format, "claude-stream-json");
+  assert.equal(r.header?.agent, "claude");
+  assert.equal(r.events.length, 1);
+  assert.equal(r.events[0].kind, "system");
+});
+
+test("parseRunLog: header outputFormat wins over caller-provided default", () => {
+  // The orchestrator wrote the header; the viewer must dispatch on the
+  // recorded format, not whatever the caller guessed.
+  const buf =
+    "# tpm-run agent=copilot outputFormat=copilot-json\n" +
+    JSON.stringify({ role: "assistant", content: "hello" }) + "\n";
+  const r = parseRunLog(buf, { format: "claude-stream-json" });
+  assert.equal(r.format, "copilot-json");
+  assert.equal(r.events.length, 1);
+  assert.equal(r.events[0].kind, "text");
+  if (r.events[0].kind === "text") assert.match(r.events[0].text, /assistant: hello/);
+});
+
+test("parseRunLog: no header defaults to claude-stream-json (back-compat with pre-092 logs)", () => {
+  const buf = JSON.stringify({ type: "system", subtype: "init", model: "x" }) + "\n";
+  const r = parseRunLog(buf);
+  assert.equal(r.format, "claude-stream-json");
+  assert.equal(r.events.length, 1);
+  assert.equal(r.events[0].kind, "system");
+});
+
+test("parseRunLog: copilot-json route extracts role + content from a chat-style object", () => {
+  const buf =
+    "# tpm-run agent=copilot outputFormat=copilot-json\n" +
+    JSON.stringify({ role: "assistant", content: "ran tests, all green" }) + "\n";
+  const r = parseRunLog(buf);
+  assert.equal(r.events.length, 1);
+  assert.equal(r.events[0].kind, "text");
+  if (r.events[0].kind === "text") {
+    assert.match(r.events[0].text, /assistant: ran tests, all green/);
+  }
+});
+
+test("parseRunLog: copilot-json route extracts text from typed content array", () => {
+  // Anthropic-style block array — copilot may emit structured content too.
+  const buf =
+    "# tpm-run agent=copilot outputFormat=copilot-json\n" +
+    JSON.stringify({
+      role: "assistant",
+      content: [{ type: "text", text: "part one" }, { type: "text", text: "part two" }],
+    }) + "\n";
+  const r = parseRunLog(buf);
+  assert.equal(r.events.length, 1);
+  if (r.events[0].kind === "text") assert.match(r.events[0].text, /assistant: part one part two/);
+});
+
+test("parseRunLog: copilot-json route falls back to raw preview for unknown shapes", () => {
+  // The minimal common renderer can't extract role+text from a wrapper-only
+  // object — keep it visible as a raw JSON preview so a stuck copilot run
+  // isn't a blank panel.
+  const buf =
+    "# tpm-run agent=copilot outputFormat=copilot-json\n" +
+    JSON.stringify({ unfamiliar: "shape", with: 42 }) + "\n";
+  const r = parseRunLog(buf);
+  assert.equal(r.events.length, 1);
+  assert.equal(r.events[0].kind, "raw");
+});
+
+test("parseRunLog: text format treats each non-empty line as a raw event", () => {
+  const buf =
+    "# tpm-run agent=cursor outputFormat=text\n" +
+    "line one\n" +
+    "line two\n";
+  // The header registers an unknown outputFormat; opts.format forces text.
+  const r = parseRunLog(buf, { format: "text" });
+  assert.equal(r.format, "text");
+  assert.equal(r.events.length, 2);
+  assert.equal(r.events[0].kind, "raw");
+  assert.equal(r.events[1].kind, "raw");
+});
+
+test("parseLine: format param dispatches copilot vs claude on the same JSON", () => {
+  // Same wire object, two interpreters: claude looks for `type:"assistant"`
+  // (no match → empty); copilot pulls role+content into a text event. The
+  // dispatch is the whole point of the format parameter.
+  const obj = JSON.stringify({ role: "assistant", content: "hi" });
+  const claude = parseLine(obj, "claude-stream-json");
+  assert.equal(claude.length, 0);
+  const copilot = parseLine(obj, "copilot-json");
+  assert.equal(copilot.length, 1);
+  assert.equal(copilot[0].kind, "text");
 });

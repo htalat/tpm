@@ -582,14 +582,27 @@ try {
     case "orchestrate": {
       const minutesArg = parseFlag(args, "--minutes");
       const claudeArg = parseFlag(args, "--claude");
+      const agentArg = parseFlag(args, "--agent");
       const taskArg = parseFlag(args, "--task");
-      const opts: { minutesOverride?: number; claudeBin?: string; preClaimedTask?: string } = {};
+      const opts: {
+        minutesOverride?: number;
+        claudeBin?: string;
+        agentName?: string;
+        preClaimedTask?: string;
+      } = {};
       if (minutesArg !== undefined) {
         const n = Number(minutesArg);
         if (!Number.isInteger(n) || n <= 0) usage("--minutes must be a positive integer");
         opts.minutesOverride = n;
       }
-      if (claudeArg !== undefined) opts.claudeBin = claudeArg;
+      // `--claude <path>` is the pre-092 flag — kept as a back-compat alias
+      // that pins the agent to claude AND overrides its bin path. `--agent
+      // <name>` is the new selector (claude, copilot, …).
+      if (claudeArg !== undefined) {
+        opts.claudeBin = claudeArg;
+        if (agentArg === undefined) opts.agentName = "claude";
+      }
+      if (agentArg !== undefined) opts.agentName = agentArg;
       if (taskArg !== undefined) opts.preClaimedTask = taskArg;
       const r = await runOrchestrate(opts);
       process.exit(r.exitCode);
@@ -829,8 +842,9 @@ Usage:
   tpm agents add <id> --repo <slug> [--comment <s>]   register an agent's preferred repo
   tpm agents remove <id>                     drop an agent entry
   tpm inbox                                  list human-queue tasks (needs-review, blocked, open) cross-project
-  tpm orchestrate [--minutes <N>] [--claude <path>] [--task <slug>]
-                                             pick next --autonomous task (or --task pre-claimed) and run claude with a hard time bound
+  tpm orchestrate [--minutes <N>] [--agent <name>] [--claude <path>] [--task <slug>]
+                                             pick next --autonomous task (or --task pre-claimed) and run the agent CLI (claude, copilot, …) with a hard time bound;
+                                             --claude <path> is a back-compat alias that pins the agent to claude with a bin override
   tpm poll [--dry-run]                       PR-signal poller: walk linked PRs, flip status, auto-close on merge
   tpm notify <start|finish|fail> <task>      best-effort osascript notification (cascade: task > project > global)
   tpm serve [--port 7777] [--host 127.0.0.1] start a localhost HTTP UI for the queues (read-only)

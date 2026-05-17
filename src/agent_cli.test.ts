@@ -1,0 +1,155 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  AGENT_CLIS,
+  DEFAULT_AGENT_CLI,
+  resolveAgentCli,
+} from "./agent_cli.ts";
+import type { Project, Task } from "./tree.ts";
+
+function task(extra: Record<string, unknown> = {}): Task {
+  return {
+    slug: "001-t",
+    path: "/tmp/t.md",
+    archived: false,
+    data: { slug: "001-t", status: "ready", ...extra },
+    body: "",
+  };
+}
+
+function project(extra: Record<string, unknown> = {}): Project {
+  return {
+    slug: "p",
+    path: "/tmp/p/project.md",
+    dir: "/tmp/p",
+    data: { slug: "p", status: "active", ...extra },
+    body: "",
+    tasks: [],
+  };
+}
+
+test("registry: claude entry has the canonical claude stream-json shape", () => {
+  // Pin the args contract — these flags are what make claude emit NDJSON
+  // events as they happen instead of just the final message.
+  const claude = AGENT_CLIS["claude"];
+  assert.equal(claude.name, "claude");
+  assert.equal(claude.outputFormat, "claude-stream-json");
+  assert.equal(claude.envVar, "CLAUDE_BIN");
+  const args = claude.buildArgs("PROMPT", "/path/to/repo");
+  assert.deepEqual(args, [
+    "-p",
+    "--add-dir", "/path/to/repo",
+    "--output-format", "stream-json",
+    "--verbose",
+    "PROMPT",
+  ]);
+});
+
+test("registry: copilot entry includes the non-interactive flag triad", () => {
+  // `--allow-all-tools` (skip permission prompts), `--no-ask-user` (the
+  // copilot equivalent of task 085's prompt rule), `--autopilot` (don't
+  // bail after one turn). Any of these missing turns a copilot dispatch
+  // into a one-shot or a hang on the first permission gate.
+  const copilot = AGENT_CLIS["copilot"];
+  assert.equal(copilot.name, "copilot");
+  assert.equal(copilot.outputFormat, "copilot-json");
+  assert.equal(copilot.envVar, "COPILOT_BIN");
+  const args = copilot.buildArgs("PROMPT", "/path/to/repo");
+  assert.deepEqual(args, [
+    "-p", "PROMPT",
+    "--add-dir", "/path/to/repo",
+    "--output-format", "json",
+    "--allow-all-tools",
+    "--no-ask-user",
+    "--autopilot",
+  ]);
+});
+
+test("resolveAgentCli: returns the registry default when nothing is set", () => {
+  const cli = resolveAgentCli({});
+  assert.equal(cli.name, DEFAULT_AGENT_CLI);
+  assert.equal(cli.name, "claude");
+});
+
+test("resolveAgentCli: config wins over default", () => {
+  const cli = resolveAgentCli({ configAgent: "copilot" });
+  assert.equal(cli.name, "copilot");
+});
+
+test("resolveAgentCli: project frontmatter wins over config", () => {
+  const cli = resolveAgentCli({
+    project: project({ agent: "copilot" }),
+    configAgent: "claude",
+  });
+  assert.equal(cli.name, "copilot");
+});
+
+test("resolveAgentCli: task frontmatter wins over project", () => {
+  const cli = resolveAgentCli({
+    task: task({ agent: "copilot" }),
+    project: project({ agent: "claude" }),
+    configAgent: "claude",
+  });
+  assert.equal(cli.name, "copilot");
+});
+
+test("resolveAgentCli: explicit override wins over task frontmatter", () => {
+  // The `--agent <name>` flag on `tpm orchestrate`. Sanity-check path for
+  // an operator wanting to dispatch a claude-default task as copilot once.
+  const cli = resolveAgentCli({
+    override: "copilot",
+    task: task({ agent: "claude" }),
+    project: project({ agent: "claude" }),
+    configAgent: "claude",
+  });
+  assert.equal(cli.name, "copilot");
+});
+
+test("resolveAgentCli: ignores empty / non-string frontmatter values", () => {
+  // A hand-edited `agent:` field that's an empty string or wrong type
+  // shouldn't poison the cascade — fall through to the next level.
+  const cli = resolveAgentCli({
+    task: task({ agent: "" }),
+    project: project({ agent: 42 }),
+    configAgent: "copilot",
+  });
+  assert.equal(cli.name, "copilot");
+});
+
+test("resolveAgentCli: unknown agent name throws with the known list", () => {
+  // A typo in frontmatter should fail the dispatch loudly so it surfaces in
+  // the orchestrator log envelope, not deep inside a child process spawning
+  // a binary that doesn't exist.
+  assert.throws(
+    () => resolveAgentCli({ override: "cursor" }),
+    /unknown agent "cursor"\. Known: claude, copilot/,
+  );
+});
+
+test("resolveAgentCli: env var override replaces bin path on the resolved entry", () => {
+  // The pre-092 CLAUDE_BIN path stays honored; COPILOT_BIN is the new
+  // analogue. The override is shallow-copied so the registry constant
+  // doesn't get mutated mid-process.
+  const prev = process.env.CLAUDE_BIN;
+  try {
+    process.env.CLAUDE_BIN = "/custom/claude";
+    const cli = resolveAgentCli({});
+    assert.equal(cli.bin, "/custom/claude");
+    // Registry unchanged.
+    assert.equal(AGENT_CLIS["claude"].bin, "claude");
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_BIN;
+    else process.env.CLAUDE_BIN = prev;
+  }
+});
+
+test("resolveAgentCli: env var override leaves bin alone when env var is unset", () => {
+  const prev = process.env.COPILOT_BIN;
+  try {
+    delete process.env.COPILOT_BIN;
+    const cli = resolveAgentCli({ override: "copilot" });
+    assert.equal(cli.bin, "copilot");
+  } finally {
+    if (prev !== undefined) process.env.COPILOT_BIN = prev;
+  }
+});

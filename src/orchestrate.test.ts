@@ -1084,6 +1084,36 @@ test("runWithTimeout: undefined cwd preserves pre-084 behavior (inherits parent 
   }
 });
 
+test("runWithTimeout: writes the logHeader as the first line of the log file (task 092)", async () => {
+  // The orchestrator writes `# tpm-run agent=<name> outputFormat=<fmt>` so
+  // the per-run log viewer can dispatch on the right interpreter. The header
+  // must precede any captured child output — assert position, not just
+  // presence.
+  const dir = mkdtempSync(resolve(tmpdir(), "tpm-orch-header-"));
+  const logFile = resolve(dir, "run.log");
+  try {
+    const result = await runWithTimeout(
+      "sh",
+      ["-c", "echo child-line-one; echo child-line-two"],
+      5,
+      100,
+      () => { throw new Error("onTimeout should not fire"); },
+      () => null,
+      50,
+      logFile,
+      undefined,
+      "# tpm-run agent=copilot outputFormat=copilot-json\n",
+    );
+    assert.equal(result.exitCode, 0);
+    const captured = readFileSync(logFile, "utf8");
+    const lines = captured.split("\n");
+    assert.equal(lines[0], "# tpm-run agent=copilot outputFormat=copilot-json");
+    assert.match(captured, /child-line-one/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("runWithTimeout: ignores isTaskTerminal exceptions and keeps running", async () => {
   // Tree read failures shouldn't kill the agent — time bound is the backstop.
   let attempts = 0;

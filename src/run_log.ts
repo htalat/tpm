@@ -1,6 +1,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { CONFIG_DIR } from "./config.ts";
+import type { AgentOutputFormat } from "./agent_cli.ts";
 
 // Per-run logs live under `~/.tpm/runs/`. One file per orchestrator-spawned
 // claude session. The orchestrator pipes the child's stdout/stderr into the
@@ -64,6 +65,44 @@ export function isValidRunLogName(name: string): boolean {
   return /^[a-z0-9][a-z0-9-]*--\d{8}T\d{6}Z\.log$/i.test(name);
 }
 
+// ---- per-run log header ---------------------------------------------------
+//
+// When the orchestrator opens a per-run log it writes a metadata header line
+// as the first line: `# tpm-run agent=<name> outputFormat=<format>`. The
+// parser sniffs the header to pick the right interpreter; logs without a
+// header (every run before task 092) default to claude-stream-json so
+// existing transcripts keep rendering.
+
+export interface RunLogHeader {
+  agent?: string;
+  outputFormat?: AgentOutputFormat;
+}
+
+const HEADER_RE = /^#\s*tpm-run\s+(.*)$/;
+
+export function formatRunLogHeader(agent: string, outputFormat: AgentOutputFormat): string {
+  return `# tpm-run agent=${agent} outputFormat=${outputFormat}\n`;
+}
+
+export function parseRunLogHeader(line: string): RunLogHeader | null {
+  const m = line.match(HEADER_RE);
+  if (!m) return null;
+  const out: RunLogHeader = {};
+  for (const part of m[1].split(/\s+/)) {
+    const eq = part.indexOf("=");
+    if (eq <= 0) continue;
+    const k = part.slice(0, eq);
+    const v = part.slice(eq + 1);
+    if (k === "agent") out.agent = v;
+    else if (k === "outputFormat") {
+      if (v === "claude-stream-json" || v === "copilot-json" || v === "text") {
+        out.outputFormat = v;
+      }
+    }
+  }
+  return out;
+}
+
 // ---- NDJSON event parsing -------------------------------------------------
 //
 // `claude -p --output-format stream-json --verbose` emits one JSON object per
@@ -73,6 +112,14 @@ export function isValidRunLogName(name: string): boolean {
 //   {type:"assistant", message:{content:[{type:"text",text}|{type:"tool_use",name,input}]}}
 //   {type:"user", message:{content:[{type:"tool_result",content,is_error?}]}}
 //   {type:"result", subtype, is_error, result, duration_ms, total_cost_usd}
+//
+// Copilot (`copilot -p --output-format json`) emits a different NDJSON
+// dialect — the generic interpreter below extracts role + text from common
+// shapes (`{role, content}`, `{event, message}`) and falls back to a raw
+// JSON preview so the panel still surfaces *something* when the schema is
+// unknown. Per-agent richer rendering is a follow-up; the first cut keeps
+// the dispatch wired without claiming knowledge of a wire schema we haven't
+// pinned down yet.
 //
 // In practice the capture path (the tee under `~/.tpm/runs/`) doesn't always
 // land each event on its own line — observed shapes include `{...}{...}` on
@@ -93,11 +140,27 @@ export interface ParsedRunLog {
   events: RunEvent[];
   parsed: number;  // top-level JSON objects that parsed cleanly
   skipped: number; // brace-spans that didn't parse, or unclosed tails
+  // Resolved format used to interpret events (header wins, then opts.format,
+  // then the back-compat default of claude-stream-json).
+  format: AgentOutputFormat;
+  // Header metadata when present — useful to the viewer for surfacing the
+  // agent name in the panel chrome ("Last run · copilot").
+  header?: RunLogHeader;
 }
 
-export function parseLine(line: string): RunEvent[] {
+export interface ParseRunLogOpts {
+  // Fallback format when no header is present. Tests / new callers pass this
+  // explicitly; defaults to claude-stream-json so a pre-092 capture (no
+  // header) keeps parsing exactly as it did before.
+  format?: AgentOutputFormat;
+}
+
+export function parseLine(line: string, format: AgentOutputFormat = "claude-stream-json"): RunEvent[] {
   const trimmed = line.trim();
   if (!trimmed) return [];
+  if (format === "text") {
+    return [{ kind: "raw", line: truncate(trimmed, 200) }];
+  }
   const split = splitJsonObjects(trimmed);
   if (split.objects.length === 0 && !split.hasBraces) {
     // No JSON-shaped content at all — surface as raw so the panel still shows it.
@@ -111,7 +174,7 @@ export function parseLine(line: string): RunEvent[] {
     } catch {
       continue; // malformed object — parseRunLog tracks the count for the banner
     }
-    for (const ev of interpret(obj)) out.push(ev);
+    for (const ev of interpretFor(format, obj, slice)) out.push(ev);
   }
   return out;
 }
@@ -119,13 +182,34 @@ export function parseLine(line: string): RunEvent[] {
 // Parse a whole NDJSON buffer to a flat event stream + counts. The counts let
 // the renderer surface "N parsed, M skipped" when a file is truncated or
 // corrupted, instead of silently dropping events.
-export function parseRunLog(text: string): ParsedRunLog {
+//
+// Format resolution: header > opts.format > claude-stream-json. A header
+// like `# tpm-run agent=copilot outputFormat=copilot-json` on the first
+// non-empty line wins over any caller-provided default — that's the path
+// the orchestrator writes when it spawns a non-claude agent.
+export function parseRunLog(text: string, opts: ParseRunLogOpts = {}): ParsedRunLog {
+  let header: RunLogHeader | undefined;
+  let format: AgentOutputFormat = opts.format ?? "claude-stream-json";
   const events: RunEvent[] = [];
   let parsed = 0;
   let skipped = 0;
+  let headerConsumed = false;
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
+    if (!headerConsumed) {
+      headerConsumed = true;
+      const h = parseRunLogHeader(trimmed);
+      if (h) {
+        header = h;
+        if (h.outputFormat) format = h.outputFormat;
+        continue;
+      }
+    }
+    if (format === "text") {
+      events.push({ kind: "raw", line: truncate(trimmed, 200) });
+      continue;
+    }
     const split = splitJsonObjects(trimmed);
     if (split.objects.length === 0 && !split.hasBraces) {
       events.push({ kind: "raw", line: truncate(trimmed, 200) });
@@ -140,16 +224,16 @@ export function parseRunLog(text: string): ParsedRunLog {
         continue;
       }
       parsed++;
-      for (const ev of interpret(obj)) events.push(ev);
+      for (const ev of interpretFor(format, obj, slice)) events.push(ev);
     }
     if (split.unclosedTail) skipped++;
   }
-  return { events, parsed, skipped };
+  return { events, parsed, skipped, format, header };
 }
 
 // Backwards-compatible flat-stream view over parseRunLog.
-export function parseEvents(text: string): RunEvent[] {
-  return parseRunLog(text).events;
+export function parseEvents(text: string, opts: ParseRunLogOpts = {}): RunEvent[] {
+  return parseRunLog(text, opts).events;
 }
 
 interface SplitResult {
@@ -193,6 +277,67 @@ function splitJsonObjects(s: string): SplitResult {
     }
   }
   return { objects, unclosedTail: depth > 0, hasBraces };
+}
+
+// Dispatch on format. claude has a richer interpreter (system/text/tool_use/
+// tool_result/result event kinds); copilot starts as a minimal common
+// renderer that pulls role + text from common JSON shapes and degrades the
+// rest to a JSON preview. Per-agent richer rendering is a follow-up.
+function interpretFor(format: AgentOutputFormat, obj: unknown, slice: string): RunEvent[] {
+  if (format === "claude-stream-json") return interpret(obj);
+  if (format === "copilot-json") {
+    const events = interpretCopilot(obj);
+    if (events.length > 0) return events;
+    // Unknown shape — keep it visible as a raw JSON preview so a stuck
+    // copilot run isn't a blank panel.
+    return [{ kind: "raw", line: truncate(slice, 200) }];
+  }
+  // `text` format never reaches here (parseLine / parseRunLog short-circuit),
+  // but be defensive: fall through to raw.
+  return [{ kind: "raw", line: truncate(slice, 200) }];
+}
+
+// Generic "role + text" extractor for copilot-json. Tries shapes documented
+// or observed in the wild: `{role, content}` (assistant chat-style),
+// `{event, message}` / `{kind, message}` (event-stream-style). When nothing
+// matches, returns [] and the caller surfaces a raw JSON preview.
+function interpretCopilot(j: unknown): RunEvent[] {
+  if (!j || typeof j !== "object") return [];
+  const obj = j as Record<string, unknown>;
+  // `{role, content}` — chat-message shape. Content can be a string or an
+  // array of typed parts (matching anthropic-style blocks). Either way we
+  // surface a `say` event so the panel reads like a transcript.
+  if (typeof obj.role === "string") {
+    const text = extractText(obj.content);
+    if (text) return [{ kind: "text", text: truncate(`${obj.role}: ${text}`, 240) }];
+  }
+  // `{event|kind|type, message}` — observed wrapper around a message blob.
+  for (const key of ["event", "kind", "type"] as const) {
+    const tag = obj[key];
+    if (typeof tag !== "string") continue;
+    const text = extractText(obj.message);
+    if (text) return [{ kind: "text", text: truncate(`${tag}: ${text}`, 240) }];
+  }
+  return [];
+}
+
+function extractText(content: unknown): string | null {
+  if (typeof content === "string") {
+    const t = content.trim();
+    return t.length ? t : null;
+  }
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const raw of content) {
+      if (typeof raw === "string") { parts.push(raw); continue; }
+      if (!raw || typeof raw !== "object") continue;
+      const item = raw as Record<string, unknown>;
+      if (typeof item.text === "string") parts.push(item.text);
+    }
+    const joined = parts.join(" ").trim();
+    return joined.length ? joined : null;
+  }
+  return null;
 }
 
 function interpret(j: unknown): RunEvent[] {

@@ -10,6 +10,10 @@ export interface Config {
   timezone?: string;
   time_bound_minutes?: number;
   notifications?: NotificationsConfig;
+  // Default agent CLI for `tpm orchestrate` (claude, copilot, …). Per-task
+  // and per-project `agent:` frontmatter overrides this; the orchestrator's
+  // `--agent <name>` flag wins over both. See src/agent_cli.ts.
+  agent?: string;
 }
 
 export interface NotificationsConfig {
@@ -56,6 +60,9 @@ export function readConfig(): Config {
   }
   if (record.notifications !== undefined) {
     cfg.notifications = expectNotifications(record.notifications);
+  }
+  if (record.agent !== undefined) {
+    cfg.agent = expectString(record.agent, "agent");
   }
   return cfg;
 }
