@@ -17,6 +17,7 @@ import { now } from "./time.ts";
 import * as mutate from "./mutate.ts";
 import * as lock from "./lock.ts";
 import { runOrchestrate } from "./orchestrate.ts";
+import { runPoll } from "./poll.ts";
 import { runServe } from "./serve.ts";
 import { shouldNotify, fireNotification, NOTIFY_EVENTS } from "./notify.ts";
 import type { NotifyEvent } from "./notify.ts";
@@ -506,6 +507,15 @@ try {
       // Best-effort — never propagate failure.
       break;
     }
+    case "poll":
+    case "check-pr-signal": {
+      // `tpm poll` is the in-process PR-signal poller; `check-pr-signal` is a
+      // back-compat alias so existing cron/launchd entries don't have to flip
+      // on the same tick as the install.
+      const dryRun = args.includes("--dry-run");
+      await runPoll({ dryRun });
+      break;
+    }
     case "orchestrate": {
       const minutesArg = parseFlag(args, "--minutes");
       const claudeArg = parseFlag(args, "--claude");
@@ -744,6 +754,7 @@ Usage:
   tpm inbox                                  list human-queue tasks (needs-review, blocked, open) cross-project
   tpm orchestrate [--minutes <N>] [--claude <path>] [--task <slug>]
                                              pick next --autonomous task (or --task pre-claimed) and run claude with a hard time bound
+  tpm poll [--dry-run]                       PR-signal poller: walk linked PRs, flip status, auto-close on merge
   tpm notify <start|finish|fail> <task>      best-effort osascript notification (cascade: task > project > global)
   tpm serve [--port 7777] [--host 127.0.0.1] start a localhost HTTP UI for the queues (read-only)
   tpm report [--md]

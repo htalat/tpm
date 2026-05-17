@@ -9,7 +9,8 @@
 //
 // Each log mixes two kinds of lines:
 //   1. Structured (task 042): `<timestamp> <level> <script> <message>` written
-//      via `src/orchestrate.ts` / `scripts/recurring/_log.sh`.
+//      via `src/log.ts` (used by `tpm orchestrate`, `tpm poll`) or
+//      `scripts/recurring/_log.sh` (sourced by bash recurring scripts).
 //   2. Free-form: anything the child agent or a non-instrumented script wrote
 //      to stdout/stderr. We surface those verbatim as `raw` lines so the
 //      operator sees the whole tape, not just the structured slice.

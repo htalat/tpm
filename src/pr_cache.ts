@@ -1,7 +1,7 @@
 // Persistent cache of host-native PR snapshots, keyed by PR URL.
 //
-// Why this exists: the PR-signal poller (scripts/recurring/check-pr-signal.sh)
-// already fetches per-PR JSON every poll tick. `tpm serve`'s task page wants
+// Why this exists: the PR-signal poller (`tpm poll`, src/poll.ts) already
+// fetches per-PR JSON every poll tick. `tpm serve`'s task page wants
 // to show that state (open/merged, CI, review, mergeable) without blocking
 // the render on a 0.5-2s `gh` / `az` network call. So the poller writes each
 // snapshot here and the renderer reads it back — stale-while-revalidate,
