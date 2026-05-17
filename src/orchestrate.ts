@@ -14,7 +14,7 @@ import { shouldNotify, fireNotification } from "./notify.ts";
 import { context as buildBriefing, resolveRepo, type Repo } from "./context.ts";
 import { hostFor } from "./pr_signal.ts";
 import { resolveSameRepoStrategy, worktreePath, worktreeBranch } from "./strategy.ts";
-import { newRunLogPath, formatRunLogHeader } from "./run_log.ts";
+import { prepareRunLogPath, formatRunLogHeader } from "./run_log.ts";
 import { resolveAgentCli, type AgentCli } from "./agent_cli.ts";
 import type { Project, Task } from "./tree.ts";
 
@@ -522,10 +522,22 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   // own log stays clean — start/finish/disposition lines only. The first line
   // is a `# tpm-run agent=… outputFormat=…` header so the viewer can dispatch
   // on the right interpreter when the run wasn't claude.
-  const logFile = newRunLogPath(slug);
+  //
+  // Runs land inside the task's own folder (`<task>/runs/<utc>.log`, task 095)
+  // so `tpm archive` carries them with the rest of the task. File-form
+  // top-level tasks auto-fold here; children share their parent's runs/ with
+  // a `<child-slug>--` prefix. If the fold or mkdir fails, log a warning and
+  // fall back to no-capture (the orchestrator's start/finish envelope still
+  // tells the post-mortem story).
+  let logFile: string | undefined;
+  try {
+    logFile = prepareRunLogPath(pick.task).logFile;
+  } catch (e) {
+    logLine("WARN", `${slug}: could not prepare run log path (${(e as Error).message}); continuing without capture`);
+  }
   const logHeader = formatRunLogHeader(agentCli.name, agentCli.outputFormat);
   logLine("INFO", `start ${slug} as ${agentId} time-bound=${minutes}m agent=${agentCli.name} bin=${agentBin}`);
-  logLine("INFO", `run log: ${logFile}`);
+  if (logFile) logLine("INFO", `run log: ${logFile}`);
 
   // Heartbeat the lock every 60s so a long-running agent doesn't get
   // reclaimed by a sibling's stale-lock sweep.

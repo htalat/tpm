@@ -1007,8 +1007,8 @@ test("runWithTimeout: captures child stderr to the same logFile", async () => {
 });
 
 test("runWithTimeout: creates parent directories for the logFile path", async () => {
-  // The orchestrator passes `~/.tpm/runs/<file>` — on a fresh machine that
-  // directory may not exist yet. The lazy mkdirSync must handle that.
+  // The orchestrator passes `<task>/runs/<file>` — for a fresh task the
+  // runs/ subfolder may not exist yet. The lazy mkdirSync must handle that.
   const dir = mkdtempSync(resolve(tmpdir(), "tpm-orch-log-"));
   const logFile = resolve(dir, "nested", "deeper", "run.log");
   try {

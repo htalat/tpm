@@ -1087,7 +1087,7 @@ test("taskRow: PR chip renders without a state label on a cache miss (still a li
 import type { RunLogListReader, RunLogReader, RunLogRawReader } from "./serve.ts";
 
 // Helper: stub the run-log reader with an in-memory NDJSON transcript.
-function runLogOf(text: string, name = "alpha-001--20260515T120000Z.log"): RunLogReader {
+function runLogOf(text: string, name = "20260515T120000Z.log"): RunLogReader {
   return () => ({ name, text });
 }
 
@@ -1109,7 +1109,7 @@ test("route: /t/<proj>/<slug>/runs renders 'Current run' on an in-progress task 
   ].join("\n");
   const r = route("/t/alpha/001-foo/runs", new URLSearchParams(), [p], {
     runLog: runLogOf(text),
-    runLogList: runLogListOf("alpha-001--20260515T120000Z.log"),
+    runLogList: runLogListOf("20260515T120000Z.log"),
   });
   assert.equal(r.status, 200);
   assert.match(r.body, /class="run-panel"/);
@@ -1121,8 +1121,9 @@ test("route: /t/<proj>/<slug>/runs renders 'Current run' on an in-progress task 
   assert.match(r.body, /line one line two/);
   assert.match(r.body, /result success/);
   assert.match(r.body, /PR opened\./);
-  // Raw log link points at /runs/<file>.
-  assert.match(r.body, /href="\/runs\/alpha-001--20260515T120000Z\.log"/);
+  // Raw log link points at the per-task viewer (task 095 — runs are now
+  // task-scoped, not a flat `/runs/<file>` URL).
+  assert.match(r.body, /href="\/t\/alpha\/001-foo\/runs\/20260515T120000Z\.log"/);
 });
 
 test("route: /t/<proj>/<slug>/runs labels 'Last run' on a non-in-progress task", () => {
@@ -1263,17 +1264,18 @@ test("route: /t/<proj>/<slug>/runs lists every run for the task newest-first wit
     // No inline run panel — focus the test on the list itself.
     runLog: () => null,
     runLogList: runLogListOf(
-      "alpha-001-foo--20260601T080000Z.log",
-      "alpha-001-foo--20260515T120000Z.log",
-      "alpha-001-foo--20260101T000000Z.log",
+      "20260601T080000Z.log",
+      "20260515T120000Z.log",
+      "20260101T000000Z.log",
     ),
   });
   assert.equal(r.status, 200);
   assert.match(r.body, /All runs <span class="meta">\(3\)<\/span>/);
-  // Each file is a link to the raw viewer with a human-readable timestamp.
-  assert.match(r.body, /href="\/runs\/alpha-001-foo--20260601T080000Z\.log"/);
-  assert.match(r.body, /href="\/runs\/alpha-001-foo--20260515T120000Z\.log"/);
-  assert.match(r.body, /href="\/runs\/alpha-001-foo--20260101T000000Z\.log"/);
+  // Each file is a link to the per-task raw viewer (task 095) with a
+  // human-readable timestamp.
+  assert.match(r.body, /href="\/t\/alpha\/001-foo\/runs\/20260601T080000Z\.log"/);
+  assert.match(r.body, /href="\/t\/alpha\/001-foo\/runs\/20260515T120000Z\.log"/);
+  assert.match(r.body, /href="\/t\/alpha\/001-foo\/runs\/20260101T000000Z\.log"/);
   assert.match(r.body, /2026-06-01 08:00 UTC/);
   // Newest first.
   const idxNew = r.body.indexOf("20260601T080000Z");
@@ -1301,28 +1303,95 @@ test("route: /t/<unknown>/runs returns 404", () => {
   assert.equal(r.status, 404);
 });
 
-test("route: /runs/<file> serves raw log contents as text/plain", () => {
-  const raw: RunLogRawReader = (name) =>
-    name === "alpha-001--20260515T120000Z.log" ? '{"type":"system","subtype":"init"}\n' : null;
-  const r = route("/runs/alpha-001--20260515T120000Z.log", new URLSearchParams(), [], { runLogRaw: raw });
+test("route: /t/<proj>/<slug>/runs/<basename> serves raw log contents as text/plain (task 095)", () => {
+  const t = task("001-foo", "in-progress");
+  const p = project("alpha", [t]);
+  const raw: RunLogRawReader = (_task, name) =>
+    name === "20260515T120000Z.log" ? '{"type":"system","subtype":"init"}\n' : null;
+  const r = route("/t/alpha/001-foo/runs/20260515T120000Z.log", new URLSearchParams(), [p], { runLogRaw: raw });
   assert.equal(r.status, 200);
   assert.match(r.contentType, /text\/plain/);
   assert.match(r.body, /"subtype":"init"/);
 });
 
-test("route: /runs/<unknown> returns 404", () => {
+test("route: /t/<proj>/<slug>/runs/<unknown> returns 404", () => {
+  const t = task("001-foo", "in-progress");
+  const p = project("alpha", [t]);
   const raw: RunLogRawReader = () => null;
-  const r = route("/runs/alpha-001--20260101T000000Z.log", new URLSearchParams(), [], { runLogRaw: raw });
+  const r = route("/t/alpha/001-foo/runs/20260101T000000Z.log", new URLSearchParams(), [p], { runLogRaw: raw });
   assert.equal(r.status, 404);
 });
 
-test("route: /runs/<bad-name> rejects traversal attempts before reading", () => {
+test("route: /t/<proj>/<slug>/runs/<bad-name> rejects names that don't match the task's pattern", () => {
   // The reader stub should never be called for an invalid name.
+  const t = task("001-foo", "in-progress");
+  const p = project("alpha", [t]);
   let calls = 0;
   const raw: RunLogRawReader = () => { calls++; return "leaked"; };
-  const r = route("/runs/..%2Fetc%2Fpasswd", new URLSearchParams(), [], { runLogRaw: raw });
-  assert.equal(r.status, 404);
+  // Slug-prefixed name (the pre-095 shape) is not the canonical on-disk name
+  // for a top-level task post-095 — must be rejected.
+  const r1 = route("/t/alpha/001-foo/runs/001-foo--20260101T000000Z.log", new URLSearchParams(), [p], { runLogRaw: raw });
+  assert.equal(r1.status, 404);
+  // Path-traversal attempt — the route regex matches a single segment, but
+  // double-check with an encoded slash too.
+  const r2 = route("/t/alpha/001-foo/runs/..%2Fetc%2Fpasswd", new URLSearchParams(), [p], { runLogRaw: raw });
+  assert.equal(r2.status, 404);
   assert.equal(calls, 0);
+});
+
+test("route: /t/<proj>/<parent>/<child>/runs/<basename> accepts <child-slug>--<utc>.log (child shares parent's runs/)", () => {
+  // Children write to <parent-dir>/runs/<child-slug>--<utc>.log; the raw
+  // viewer URL carries that disambiguator in the filename.
+  const child = task("003-child", "in-progress");
+  child.parent = "002-parent";
+  const parent = task("002-parent", "in-progress");
+  parent.children = [child];
+  const p = project("alpha", [parent]);
+  let captured: string | null = null;
+  const raw: RunLogRawReader = (_task, name) => {
+    captured = name;
+    return name === "003-child--20260515T120000Z.log" ? "ok" : null;
+  };
+  const r = route("/t/alpha/002-parent/003-child/runs/003-child--20260515T120000Z.log", new URLSearchParams(), [p], { runLogRaw: raw });
+  assert.equal(r.status, 200);
+  assert.equal(captured, "003-child--20260515T120000Z.log");
+  assert.equal(r.body, "ok");
+});
+
+test("route: /runs/<legacy-file> 302-redirects to the new per-task URL (task 095 back-compat)", () => {
+  // Pre-095 bookmarks pointed at `/runs/<encoded-slug>--<utc>.log` in the
+  // flat dir. After task 095 the file moved into the task's own folder; the
+  // old URL redirects to the new viewer for one release window.
+  const t = task("001-foo", "in-progress");
+  const p = project("alpha", [t]);
+  const r = route("/runs/alpha-001-foo--20260515T120000Z.log", new URLSearchParams(), [p]);
+  assert.equal(r.status, 302);
+  assert.equal(r.location, "/t/alpha/001-foo/runs/20260515T120000Z.log");
+});
+
+test("route: /runs/<legacy-file> for a child task redirects to the parent-scoped URL with <child-slug>--<utc>.log basename", () => {
+  // Children's legacy filename: `<project>-<parent>-<child>--<utc>.log`. The
+  // new layout shares the parent's runs/ with the slug prefix, so the new
+  // basename keeps the `<child-slug>--<utc>.log` shape.
+  const child = task("003-child", "in-progress");
+  child.parent = "002-parent";
+  const parent = task("002-parent", "in-progress");
+  parent.children = [child];
+  const p = project("alpha", [parent]);
+  const r = route("/runs/alpha-002-parent-003-child--20260515T120000Z.log", new URLSearchParams(), [p]);
+  assert.equal(r.status, 302);
+  assert.equal(r.location, "/t/alpha/002-parent/003-child/runs/003-child--20260515T120000Z.log");
+});
+
+test("route: /runs/<legacy-file> for an unknown encoded slug returns 404", () => {
+  const r = route("/runs/orphan-001--20260515T120000Z.log", new URLSearchParams(), [project("alpha", [])]);
+  assert.equal(r.status, 404);
+});
+
+test("route: /runs/<bad-name> rejects traversal attempts before resolving", () => {
+  // The legacy redirect helper should never be reached for an invalid name.
+  const r = route("/runs/..%2Fetc%2Fpasswd", new URLSearchParams(), [project("alpha", [])]);
+  assert.equal(r.status, 404);
 });
 
 // ---- /config page ---------------------------------------------------------
