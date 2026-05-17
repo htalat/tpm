@@ -15,7 +15,7 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
 ## Schema
 
 - **Project frontmatter**: `name, slug, status, created, repo: {remote, local}, host, tags`. `host` is `github` (default) or `ado` — see the dispatch bullet under Conventions.
-- **Task frontmatter**: `title, slug, project, status, type, created, closed, prs, tags` (inherits `repo` from project; can override by adding own `repo:` block). Optional `parent: <parent-slug>` marks the task as a child within a folder-form parent. Optional `report: <path>` points at an investigation's deliverable file (relative to the project root, conventionally `reports/<slug>.md`) — set automatically by `tpm report <slug>`.
+- **Task frontmatter**: `title, slug, project, status, type, created, closed, prs, tags` (inherits `repo` from project; can override by adding own `repo:` block). Optional `parent: <parent-slug>` marks the task as a child within a folder-form parent. Optional `report: <path>` points at an investigation's deliverable file (relative to the project root, conventionally `reports/<slug>.md`) — set automatically by `tpm report <slug>`. Optional `agent: <name>` (e.g. `claude`, `copilot`) picks which CLI `tpm orchestrate` invokes for this task; same field works on project frontmatter for a per-project default, and `agent` in `~/.tpm/config.json` is the global default (fallback: `claude`).
 - **Task shapes**:
   - **File form** (default): `tasks/NNN-slug.md`. Single file.
   - **Folder form**: `tasks/NNN-slug/task.md` plus optional `NNN-<sub>.md` siblings (each with `parent: NNN-slug` in frontmatter) and any other files (scratch notes, screenshots, design docs). The directory name is the parent's slug.

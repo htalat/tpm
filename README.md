@@ -258,6 +258,8 @@ The `--autonomous` gate is the safety boundary between "an agent can run this wh
 - **Time bound + revert** — the dispatched run is hard-killed at the `time_bound_minutes` boundary (cascade: task > project > global config > built-in default 30m). On timeout, `tpm revert <task>` flips the task back to `ready` so the next cron tick can retry. Exit codes mirror `timeout(1)` (`124` on timeout).
 - **Notifications** — `osascript` pings at start/finish/fail, gated by a `notifications` cascade (task > project > global config > default `{ start: false, finish: true, fail: true }`). v0 channel is mac only; non-darwin runs log to stderr and skip. `tpm notify <event> <task>` is the same hook as a CLI verb.
 
+**Agent CLI.** `tpm orchestrate` defaults to invoking `claude`. To dispatch via the GitHub Copilot CLI instead, set `agent: copilot` in task or project frontmatter (cascade: task > project > `agent` in `~/.tpm/config.json` > built-in default `claude`), or pass `--agent copilot` to the verb. The registry in `src/agent_cli.ts` lists the supported entries (today: `claude`, `copilot`); each entry knows the right NDJSON output flags and the non-interactive flag set (claude relies on `~/.claude/settings.json` plus task 085's prompt rule; copilot uses `--allow-all-tools --no-ask-user --autopilot`). Bin path comes from the matching env var — `CLAUDE_BIN`, `COPILOT_BIN` — so cron entries can pin a specific binary without code changes. For unattended copilot runs, the cron/launchd env also needs `COPILOT_GITHUB_TOKEN` (or `GH_TOKEN`). The per-run log carries a `# tpm-run agent=… outputFormat=…` header as its first line so `tpm serve`'s viewer dispatches on the right NDJSON dialect; pre-092 logs default to `claude-stream-json`.
+
 ### Recurring scripts
 
 Tasks don't have to be human-authored. A recurring script harvests state on a clock (open PRs, stale deps, alert spikes) and creates pre-shaped `ready` tasks via the CLI. No LLM, no judgment — mechanical intake.
@@ -424,7 +426,7 @@ tpm fold <task | project/task>            # promote a file-form task to folder-f
 tpm reparent <task> <new-parent | --top>  # move a task under a new parent (or to top-level); folds the new parent if needed
 tpm next [--project <slug>] [--autonomous] [--claim <id>]  # print next leaf task (--claim atomically locks it); exits non-zero if none/all-locked
 tpm inbox                                 # list human-queue tasks (needs-review, blocked, open) cross-project
-tpm orchestrate [--minutes <N>] [--claude <path>] [--task <slug>]  # claim next --autonomous (or use --task pre-claimed) and run claude with a hard time bound
+tpm orchestrate [--minutes <N>] [--agent <name>] [--claude <path>] [--task <slug>]  # claim next --autonomous (or use --task pre-claimed) and run the agent CLI (claude, copilot, …) with a hard time bound; --claude <path> is a back-compat alias pinning the agent to claude with a bin override
 tpm lock acquire <task> --as <id>         # claim a per-task lock (atomic O_CREAT|O_EXCL)
 tpm lock release <task> --as <id> [--force]  # release a per-task lock
 tpm lock heartbeat <task> --as <id>       # refresh a held lock so stale-lock sweeps don't reclaim it
