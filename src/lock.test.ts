@@ -501,3 +501,30 @@ test("listTaskLocks: surfaces repo locks alongside per-task locks", () => {
     rmTempDir(root);
   }
 });
+
+// ---- Windows-portability: lock filenames must be safe on NTFS -------------
+// NTFS rejects <>:"|?* in filenames. Slugs are lowercase letters/digits/hyphens
+// by grammar, but the qualifiedSlug-to-filename flattening is the one place
+// `/` separators get rewritten; verify the result never produces a forbidden
+// char. The check runs on the basename so we don't trip on the absolute
+// path's drive-letter colon when these tests eventually run on Windows.
+
+test("taskLockPath: basename has no Windows-forbidden chars", () => {
+  for (const slug of [
+    "alpha/001-foo",
+    "tpm/018-orchestrator/003-time-bound",
+    "proj-with-hyphens/0042-some-task",
+  ]) {
+    const path = taskLockPath("/tmp/root", slug);
+    const base = path.split(/[\/\\]/).pop()!;
+    assert.doesNotMatch(base, /[<>:"|?*]/, `forbidden char in basename for slug ${slug}: ${base}`);
+  }
+});
+
+test("repoLockPath: basename has no Windows-forbidden chars", () => {
+  for (const proj of ["alpha", "proj-with-hyphens", "tpm"]) {
+    const path = repoLockPath("/tmp/root", proj);
+    const base = path.split(/[\/\\]/).pop()!;
+    assert.doesNotMatch(base, /[<>:"|?*]/, `forbidden char in basename for project ${proj}: ${base}`);
+  }
+});

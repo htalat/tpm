@@ -1,0 +1,18 @@
+# Force LF for shell scripts, source, and docs — these are interpreted on
+# every platform and CRLF would break the shebang line on Unix / confuse the
+# TypeScript/Node test runner.
+*.sh        text eol=lf
+*.ts        text eol=lf
+*.md        text eol=lf
+*.json      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# Force CRLF for Windows-only scripts so `cmd.exe` doesn't choke on bare LF.
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+*.ps1       text eol=crlf
+
+# The bash shim (no extension) is executed on Unix only — keep LF so the
+# shebang line works.
+bin/tpm     text eol=lf
