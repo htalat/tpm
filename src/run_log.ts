@@ -65,8 +65,12 @@ export function isValidRunLogName(name: string): boolean {
 //   {type:"user", message:{content:[{type:"tool_result",content,is_error?}]}}
 //   {type:"result", subtype, is_error, result, duration_ms, total_cost_usd}
 //
-// Anything we don't recognize we degrade to `raw` so the panel still shows
-// *something* — better than a silently empty tail when the schema shifts.
+// In practice the capture path (the tee under `~/.tpm/runs/`) doesn't always
+// land each event on its own line — observed shapes include `{...}{...}` on
+// the same line, and the whole transcript on one line with no `\n` at all.
+// So the parser walks each input line with a brace-depth tokenizer and emits
+// each top-level object independently. Anything we can't recognize we degrade
+// to `raw` so the panel still shows *something* when the schema shifts.
 
 export type RunEvent =
   | { kind: "system"; subtype: string; model?: string }
@@ -76,26 +80,110 @@ export type RunEvent =
   | { kind: "result"; subtype: string; isError: boolean; preview: string; durationMs?: number; totalCostUsd?: number }
   | { kind: "raw"; line: string };
 
+export interface ParsedRunLog {
+  events: RunEvent[];
+  parsed: number;  // top-level JSON objects that parsed cleanly
+  skipped: number; // brace-spans that didn't parse, or unclosed tails
+}
+
 export function parseLine(line: string): RunEvent[] {
   const trimmed = line.trim();
   if (!trimmed) return [];
-  let json: unknown;
-  try {
-    json = JSON.parse(trimmed);
-  } catch {
+  const split = splitJsonObjects(trimmed);
+  if (split.objects.length === 0 && !split.hasBraces) {
+    // No JSON-shaped content at all — surface as raw so the panel still shows it.
     return [{ kind: "raw", line: truncate(trimmed, 200) }];
   }
-  return interpret(json);
-}
-
-// Parse a whole NDJSON buffer to a flat event stream. Used by the serve panel
-// to tail the latest log.
-export function parseEvents(text: string): RunEvent[] {
   const out: RunEvent[] = [];
-  for (const line of text.split(/\r?\n/)) {
-    for (const ev of parseLine(line)) out.push(ev);
+  for (const slice of split.objects) {
+    let obj: unknown;
+    try {
+      obj = JSON.parse(slice);
+    } catch {
+      continue; // malformed object — parseRunLog tracks the count for the banner
+    }
+    for (const ev of interpret(obj)) out.push(ev);
   }
   return out;
+}
+
+// Parse a whole NDJSON buffer to a flat event stream + counts. The counts let
+// the renderer surface "N parsed, M skipped" when a file is truncated or
+// corrupted, instead of silently dropping events.
+export function parseRunLog(text: string): ParsedRunLog {
+  const events: RunEvent[] = [];
+  let parsed = 0;
+  let skipped = 0;
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const split = splitJsonObjects(trimmed);
+    if (split.objects.length === 0 && !split.hasBraces) {
+      events.push({ kind: "raw", line: truncate(trimmed, 200) });
+      continue;
+    }
+    for (const slice of split.objects) {
+      let obj: unknown;
+      try {
+        obj = JSON.parse(slice);
+      } catch {
+        skipped++;
+        continue;
+      }
+      parsed++;
+      for (const ev of interpret(obj)) events.push(ev);
+    }
+    if (split.unclosedTail) skipped++;
+  }
+  return { events, parsed, skipped };
+}
+
+// Backwards-compatible flat-stream view over parseRunLog.
+export function parseEvents(text: string): RunEvent[] {
+  return parseRunLog(text).events;
+}
+
+interface SplitResult {
+  objects: string[];      // each entry is a top-level `{...}` slice
+  unclosedTail: boolean;  // saw `{` but never matched it before EOL
+  hasBraces: boolean;     // line contained at least one `{`
+}
+
+// Brace-depth walker. Emits one slice per top-level `{...}` pair. Ignores text
+// outside braces (handles `{...}{...}` and `garbage{...}more` alike) and
+// respects JSON string semantics so a `}{` literal inside a value doesn't
+// split the surrounding object.
+function splitJsonObjects(s: string): SplitResult {
+  const objects: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escape = false;
+  let hasBraces = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escape) { escape = false; continue; }
+      if (ch === "\\") { escape = true; continue; }
+      if (ch === '"') { inString = false; }
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === "{") {
+      hasBraces = true;
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}") {
+      if (depth > 0) {
+        depth--;
+        if (depth === 0 && start >= 0) {
+          objects.push(s.slice(start, i + 1));
+          start = -1;
+        }
+      }
+    }
+  }
+  return { objects, unclosedTail: depth > 0, hasBraces };
 }
 
 function interpret(j: unknown): RunEvent[] {

@@ -160,6 +160,7 @@ a.pr-chip:hover { text-decoration: none; opacity: .8; }
 .run-panel h2 .meta { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .7em; color: #8d96a0; }
 .run-empty { color: #8d96a0; font-size: .9em; margin: .5rem 0; font-style: italic; }
 .run-meta { color: #8d96a0; font-size: .8em; margin: .55rem 0 0; }
+.run-warning { color: #9a6700; background: #fff8c5; border: 1px solid #eac54f; border-radius: 4px; padding: .3rem .55rem; font-size: .82em; margin: .55rem 0; }
 .run-events { list-style: none; padding: 0; margin: .5rem 0 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .82em; line-height: 1.45; }
 .run-events .ev { display: flex; gap: .65rem; padding: .15rem 0; border-top: 1px solid #f0f3f6; }
 .run-events .ev:first-child { border-top: 0; }
@@ -182,6 +183,7 @@ a.pr-chip:hover { text-decoration: none; opacity: .8; }
   .run-events .ev-result .ev-tag { color: #56d364; }
   .run-events .ev-final .ev-tag { color: #56d364; }
   .run-events .ev-error .ev-tag { color: #ff7b72; }
+  .run-warning { color: #d4a72c; background: #1f1e16; border-color: #5c4a1a; }
 }
 @media (max-width: 900px) {
   .layout, .layout.no-rail { grid-template-columns: 1fr; }
