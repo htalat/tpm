@@ -320,9 +320,9 @@ Cron pattern combining intake, signal poller, and drain:
 
 The pipeline: **scripts populate the queue → loops drain it.** Don't put judgment work in scripts; if a job needs an LLM, do it in a `/tpm <slug>` flavor instead.
 
-#### Linux: `tpm schedule` (systemd / cron wrapper)
+#### `tpm schedule` (cross-platform scheduler wrapper)
 
-On Linux you can skip the manual `crontab -e` step and let tpm write the scheduler entry for you:
+`tpm schedule` writes the recurring-job entry for you instead of asking you to hand-edit `crontab` / Task Scheduler. Same verbs everywhere:
 
 ```sh
 tpm schedule install poll --every 60 -- tpm poll
@@ -332,13 +332,15 @@ tpm schedule status poll                       # installed
 tpm schedule uninstall poll
 ```
 
-Default writer is **systemd `--user`**: writes `~/.config/systemd/user/tpm-<name>.{service,timer}` (Type=oneshot service, OnUnitActiveSec timer), then runs `systemctl --user daemon-reload && systemctl --user enable --now tpm-<name>.timer`. Survives reboots because the unit is enabled; `Persistent=true` catches up missed runs after the user session reappears.
+**Linux** — default writer is **systemd `--user`**: writes `~/.config/systemd/user/tpm-<name>.{service,timer}` (Type=oneshot service, OnUnitActiveSec timer), then runs `systemctl --user daemon-reload && systemctl --user enable --now tpm-<name>.timer`. Survives reboots because the unit is enabled; `Persistent=true` catches up missed runs after the user session reappears.
 
-**Fallback to crontab**: if `systemctl --user show-environment` exits non-zero (no user manager, e.g. SSH-as-non-login or a container without systemd-user), the same verb writes/removes a crontab line tagged with a `# tpm:<name>` sentinel — the sentinel makes `uninstall` idempotent and dupe-free across re-installs. Both writers preserve unrelated entries.
+**Linux fallback to crontab**: if `systemctl --user show-environment` exits non-zero (no user manager, e.g. SSH-as-non-login or a container without systemd-user), the same verb writes/removes a crontab line tagged with a `# tpm:<name>` sentinel — the sentinel makes `uninstall` idempotent and dupe-free across re-installs. Both writers preserve unrelated entries.
 
-A bare `tpm` as the command (i.e. `-- tpm <args>`) is auto-resolved to this install's absolute `bin/tpm` so the unit/cron line keeps working under the stripped `PATH` that systemd-user and cron see. Override with `TPM_BIN=/abs/path/to/tpm tpm schedule install ...` if you keep multiple installs.
+**Windows** — writer is **Task Scheduler** via `schtasks.exe`: shells out to `schtasks /Create /TN tpm-<name> /SC MINUTE /MO <minutes> /TR "<cmd>" /RU <current-user> /IT /F`. Tasks land at the root of the Task Scheduler library (visible in `taskschd.msc` as `tpm-poll`, `tpm-orchestrate`, etc.); `/IT` keeps the job in the current user's interactive context so no admin / password setup is required. `--every` is rounded to whole minutes (schtasks' `/SC MINUTE` minimum), which is fine for the typical 15-minute cadence. `list` / `status` / `uninstall` operate via `schtasks /Query` and `schtasks /Delete /F`.
 
 **macOS:** `tpm schedule` is not yet wired up on Darwin — the launchd adapter is a follow-up (separate task). For now, stick with the manual `crontab` examples above on macOS.
+
+A bare `tpm` as the command (i.e. `-- tpm <args>`) is auto-resolved to this install's absolute `bin/tpm` so the unit/cron/Task Scheduler line keeps working under the stripped `PATH` that systemd-user, cron, and schtasks all see. Override with `TPM_BIN=/abs/path/to/tpm tpm schedule install ...` if you keep multiple installs. On Windows, the binary install shim lands in a follow-up task — until then, pass an absolute path to your `tpm.cmd` (or whatever shim you've wired up) instead of bare `tpm`.
 
 **Where to keep your scripts.** tpm doesn't care; pick whichever fits your sync model:
 
@@ -454,7 +456,7 @@ tpm lock status [<task>]                  # holder + age (legacy global if no ta
 tpm lock list                             # every claimed task across the tree
 tpm lock release-stale [--ttl <minutes>]  # clear locks past TTL (default: time-bound + 5min)
 tpm notify <start|finish|fail> <task>     # best-effort osascript notification (cascade: task > project > global)
-tpm schedule install <name> --every <sec> -- <cmd> [args...]  # install a recurring job (Linux: systemd --user timer, or crontab fallback)
+tpm schedule install <name> --every <sec> -- <cmd> [args...]  # install a recurring job (Linux: systemd --user timer / cron fallback; Windows: Task Scheduler via schtasks)
 tpm schedule uninstall <name>             # remove a tpm-managed scheduled job
 tpm schedule status [<name>]              # named: installed | missing; bare: list everything installed
 tpm schedule list                         # names of all tpm-managed jobs (one per line)

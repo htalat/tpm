@@ -1,7 +1,8 @@
 import { systemdScheduler } from "./systemd.ts";
+import { windowsScheduler } from "./task-scheduler.ts";
 
-// One scheduler interface, per-platform writers underneath. Today only the
-// Linux/systemd adapter exists; macOS launchd lands in a follow-up.
+// One scheduler interface, per-platform writers underneath. Linux/systemd
+// and Windows/schtasks adapters exist today; macOS launchd lands in a follow-up.
 
 export type SchedulerJob = {
   // Stable job identifier — used as the unit name (`tpm-<name>`) and the
@@ -26,13 +27,14 @@ export interface Scheduler {
 
 export function getScheduler(platform: NodeJS.Platform = process.platform): Scheduler {
   if (platform === "linux") return systemdScheduler();
+  if (platform === "win32") return windowsScheduler();
   if (platform === "darwin") {
     throw new Error(
       `tpm schedule: macOS launchd adapter is not yet implemented. ` +
       `Install recurring jobs via crontab for now (see the README's "Recurring scripts" section).`,
     );
   }
-  throw new Error(`tpm schedule: unsupported platform "${platform}" (supported: linux).`);
+  throw new Error(`tpm schedule: unsupported platform "${platform}" (supported: linux, win32).`);
 }
 
 export const SCHEDULER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_\-]*$/;

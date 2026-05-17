@@ -123,7 +123,7 @@ test("getScheduler: throws a clear message for darwin (no launchd adapter yet)",
 });
 
 test("getScheduler: throws for unsupported platforms", () => {
-  assert.throws(() => getScheduler("win32"), /unsupported platform/);
+  assert.throws(() => getScheduler("aix" as NodeJS.Platform), /unsupported platform/);
 });
 
 // Higher-level orchestration tests — drive the public Scheduler surface

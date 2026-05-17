@@ -952,7 +952,7 @@ Usage:
                                              --claude <path> is a back-compat alias that pins the agent to claude with a bin override
   tpm poll [--dry-run]                       PR-signal poller: walk linked PRs, flip status, auto-close on merge
   tpm schedule install <name> --every <sec> -- <cmd> [args...]
-                                             install a recurring job (Linux: systemd --user timer, or crontab fallback)
+                                             install a recurring job (Linux: systemd --user timer / cron fallback; Windows: Task Scheduler via schtasks)
   tpm schedule uninstall <name>              remove a job by name
   tpm schedule status [<name>]               with a name: installed | missing; without: list everything installed
   tpm schedule list                          print the names of all tpm-managed scheduled jobs
