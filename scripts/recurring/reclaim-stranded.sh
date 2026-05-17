@@ -46,8 +46,8 @@ SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 command -v tpm >/dev/null || { log_error "tpm CLI not found"; exit 1; }
 
-# Enumerate qualified slugs of every in-progress task. Same parser shape as
-# check-pr-signal.sh — `tpm ls --status in-progress --flat`:
+# Enumerate qualified slugs of every in-progress task. `tpm ls --status
+# in-progress --flat` shape:
 #   <project name>  (<project-slug>)  [<project-status>]
 #     · <status>  <type>  <task-slug>  [prs...]
 in_progress_slugs=$(tpm ls --status in-progress --flat | awk '

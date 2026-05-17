@@ -31,7 +31,7 @@ export interface QueueItem {
 // Within each bucket, oldest by `created` first. Parents and archived excluded.
 //
 // `needs-close` is intentionally absent: task 045 made the poller auto-close
-// inline (`tpm complete` from check-pr-signal.sh) right after the
+// inline (`mutate.complete` from `tpm poll`) right after the
 // `needs-close` flip, so under normal operation the status is transient and
 // already gone by the next tick. Stragglers (auto-close failed — body empty,
 // lock contention, Outcome pre-filled) stay at `needs-close` for the manual

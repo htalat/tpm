@@ -1,6 +1,6 @@
-// PR signal registry + classifier shim for the poller (scripts/recurring/check-pr-signal.sh).
+// PR signal registry + classifier for the poller (src/poll.ts).
 //
-// The classifier itself lives in src/hosts/<name>.ts now — each host adapter
+// The classifier itself lives in src/hosts/<name>.ts — each host adapter
 // answers the same coarse question in its own dialect (mapGithub, mapAdo).
 // This module is the registry: it picks the adapter that matches a PR URL,
 // dispatches the fetch, and aggregates per-PR signals into the single
@@ -13,14 +13,11 @@
 // / no-action / abandoned — so each adapter answers in its own dialect and
 // the harness only sees the verdict.
 //
-// CLI protocol (consumed by check-pr-signal.sh) — same as before:
-//   DECIDE pr=<url> host=<h> action=<a> reason=<r>
-//   FLIP <new-status> <reason1>; <reason2>; ...
-//   OUTCOME_BEGIN / OUTCOME_END   (for needs-close + derivable outcome only)
-//
-// Input is now a list of PR URLs on stdin (one per line) instead of a JSON
-// array of `gh pr view` payloads — fetch responsibility moved into the
-// adapters so the shell no longer needs to know how each host talks.
+// The legacy stdin-driven `main()` entrypoint below stays for back-compat
+// with anything still piping URLs into `node src/pr_signal.ts` (it emits
+// DECIDE / FLIP / OUTCOME_BEGIN/_END lines on stdout). `tpm poll` calls
+// `aggregateSignals` / `deriveOutcomeFromSignals` directly — no spawn, no
+// stdin/stdout protocol.
 
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -49,7 +46,7 @@ export async function fetchSignal(url: string): Promise<FetchedSignal> {
   return host.fetchSignal(url);
 }
 
-// ---- Backward-compatible exports for src/serve.ts (PR panel rendering) ---
+// ---- Exports for src/serve.ts (PR panel rendering) ---------------------
 //
 // The serve UI renders GitHub-specific badges (CI rollup, mergeable=CLEAN/...,
 // reviewDecision); it needs the richer per-field view, not the coarse signal.

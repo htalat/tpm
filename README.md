@@ -171,7 +171,7 @@ stateDiagram-v2
     dropped --> [*]
 ```
 
-The poller that flips `in-progress` → `done` (inline auto-close on merge) / `needs-feedback` / `needs-review` ships at `scripts/recurring/check-pr-signal.sh` — see [Recurring scripts](#recurring-scripts) below.
+The poller that flips `in-progress` → `done` (inline auto-close on merge) / `needs-feedback` / `needs-review` is `tpm poll` — see [Recurring scripts](#recurring-scripts) below.
 
 ### Drain the agent queue: three flavors
 
@@ -262,11 +262,11 @@ The `--autonomous` gate is the safety boundary between "an agent can run this wh
 
 Tasks don't have to be human-authored. A recurring script harvests state on a clock (open PRs, stale deps, alert spikes) and creates pre-shaped `ready` tasks via the CLI. No LLM, no judgment — mechanical intake.
 
-Three ship in this repo:
+Two recurring scripts ship in this repo, plus one CLI-native poller:
 
 - **`scripts/recurring/template.sh`** — copy this, fill in the four TODO blocks (source command, slug derivation, optional Context/Plan population, summary line). Idempotent on re-run via the `tpm context "$PROJECT/$slug" >/dev/null 2>&1` existence check.
-- **`scripts/recurring/reclaim-stranded.sh`** — the stranded-`in-progress` sweeper (task 065). Reverts any task that's been at `in-progress` with no per-task lock for longer than `--threshold-min` (default 30m, matching the default time bound). Distinct from `tpm lock release-stale` (task 018), which handles the inverse failure: lock file present, holder dead. Run on the same cadence as `check-pr-signal.sh` (every poll tick) — together with the in-queue admission in `src/queue.ts`, the worst-case strand is bounded by the next orchestrator tick on a hot queue and by the sweeper threshold otherwise.
-- **`scripts/recurring/check-pr-signal.sh`** — the PR-signal poller. Walks every non-terminal task with a linked PR (plus every `in-progress` task — the round may open its PR mid-tick): `ready`, `in-progress`, `needs-review`, `needs-feedback`, `needs-close`. The PR is alive across all of those — review states, CI runs, eventual merge — so the watch set spans the whole non-terminal lifecycle rather than just the in-flight slice. `open` / `blocked` / `done` / `dropped` are skipped. The rule lives in `shouldWatchForPrSignal` in `src/pr_signal.ts`. Each candidate dispatches to a host adapter per linked PR URL. Adapters ship for GitHub (`gh pr view`) and Azure DevOps (`az repos pr show` + `az pipelines runs list`); adding a new host is one file under `src/hosts/<name>.ts` plus an entry in the `HOSTS` array in `src/pr_signal.ts`. Each adapter answers the same coarse question in its own dialect — `merged` / `needs-agent` / `needs-human` / `abandoned` / `no-action` — so the harness never carries `if host === 'ado'` branches. Per-host CLI presence is checked inside the adapter (an ADO-only user doesn't need `gh` installed). Aggregated signal flips status to `needs-feedback` (merge conflict / CI red / branch behind / open threads — agent attempts the rebase and other fixes via `/tpm feedback`), `needs-review` (`CHANGES_REQUESTED`, ADO vote ≤ -5, or a PR closed-without-merge — the human decides whether to reopen or drop), or **auto-closes inline** when any linked PR merged: flips to `needs-close`, derives an Outcome from PR title + body (Test plan + Claude Code footer stripped), and calls `tpm complete --outcome "<derived>"` in the same tick. No claude session spawned, no orchestrator wait. If the inline auto-close fails (body empty, Outcome already filled, lock contention) the task stays at `needs-close` for manual `/tpm done <slug>`.
+- **`scripts/recurring/reclaim-stranded.sh`** — the stranded-`in-progress` sweeper (task 065). Reverts any task that's been at `in-progress` with no per-task lock for longer than `--threshold-min` (default 30m, matching the default time bound). Distinct from `tpm lock release-stale` (task 018), which handles the inverse failure: lock file present, holder dead. Run on the same cadence as `tpm poll` (every poll tick) — together with the in-queue admission in `src/queue.ts`, the worst-case strand is bounded by the next orchestrator tick on a hot queue and by the sweeper threshold otherwise.
+- **`tpm poll`** — the PR-signal poller, in-process CLI subcommand (was `scripts/recurring/check-pr-signal.sh` before task 079 folded the bash glue back into the CLI; `tpm check-pr-signal` remains as a back-compat alias). Walks every non-terminal task with a linked PR (plus every `in-progress` task — the round may open its PR mid-tick): `ready`, `in-progress`, `needs-review`, `needs-feedback`, `needs-close`. The PR is alive across all of those — review states, CI runs, eventual merge — so the watch set spans the whole non-terminal lifecycle rather than just the in-flight slice. `open` / `blocked` / `done` / `dropped` are skipped. The rule lives in `shouldWatchForPrSignal` in `src/pr_signal.ts`. Each candidate dispatches to a host adapter per linked PR URL. Adapters ship for GitHub (`gh pr view`) and Azure DevOps (`az repos pr show` + `az pipelines runs list`); adding a new host is one file under `src/hosts/<name>.ts` plus an entry in the `HOSTS` array in `src/pr_signal.ts`. Each adapter answers the same coarse question in its own dialect — `merged` / `needs-agent` / `needs-human` / `abandoned` / `no-action` — so the harness never carries `if host === 'ado'` branches. Per-host CLI presence is checked inside the adapter (an ADO-only user doesn't need `gh` installed). Aggregated signal flips status to `needs-feedback` (merge conflict / CI red / branch behind / open threads — agent attempts the rebase and other fixes via `/tpm feedback`), `needs-review` (`CHANGES_REQUESTED`, ADO vote ≤ -5, or a PR closed-without-merge — the human decides whether to reopen or drop), or **auto-closes inline** when any linked PR merged: flips to `needs-close`, derives an Outcome from PR title + body (Test plan + Claude Code footer stripped), and calls the same code path as `tpm complete --outcome "<derived>"` in the same tick. No claude session spawned, no orchestrator wait. If the inline auto-close fails (body empty, Outcome already filled, lock contention) the task stays at `needs-close` for manual `/tpm done <slug>`. `tpm poll --dry-run` previews decisions without mutating.
 
 Customize the template for your own intake (review my open PRs, sweep stale dependency reports, file an alert-driven task, etc.):
 
@@ -284,16 +284,16 @@ By default, tasks created by a recurring script are `ready` but **not** `allow_o
 **Use the structured log helper.** All recurring scripts (and `tpm orchestrate`) emit one line per event in the same format so a single log file greps + sorts cleanly:
 
 ```
-2026-05-15T09:14:33-07:00  INFO   check-pr-signal  start
-2026-05-15T09:14:34-07:00  WARN   check-pr-signal  skip tpm/036 (tpm context exit=4) — task missing
-2026-05-15T09:14:35-07:00  INFO   check-pr-signal  decide tpm/040-serve-mutations pr=https://… host=github action=no-signal reason=no-action
-2026-05-15T09:14:36-07:00  ERROR  check-pr-signal  classifier exit=1 for tpm/039
-2026-05-15T09:14:37-07:00  INFO   check-pr-signal  summary checked=6 flipped=0 no-signal=1 fetch-failed=5
+2026-05-15T09:14:33-07:00  INFO   poll             no tasks to watch
+2026-05-15T09:14:35-07:00  INFO   poll             decide tpm/040-serve-mutations pr=https://… host=github action=no-signal reason=no-action
+2026-05-15T09:14:36-07:00  INFO   poll             flipped tpm/041-foo -> needs-feedback (CI FAIL on https://…)
+2026-05-15T09:14:37-07:00  INFO   poll             auto-closed tpm/042-bar (merged https://…)
+2026-05-15T09:14:38-07:00  INFO   poll             summary checked=6 flipped=2 no-signal=3 fetch-failed=1
 ```
 
 ISO-8601 second precision in the configured TZ (from `~/.tpm/config.json`, falls back to UTC) with explicit `±HH:MM` offset; level padded to 5 chars; script padded to 16 chars; free-form single-line message. The format is lexicographically sortable within a single TZ (DST transitions stay ordered because the offset is part of the string) and unambiguous if logs are ever shipped cross-host. INFO/WARN write to stdout, ERROR to stderr (cron's `>> log 2>&1` collapses both — the split is for interactive runs that want `2>/dev/null` for warn-free output).
 
-Source `scripts/recurring/_log.sh` from any new recurring script:
+Bash recurring scripts source `scripts/recurring/_log.sh` to emit the same envelope shape (`tpm poll` and `tpm orchestrate` use `src/log.ts` directly — same format, no shell wrapper):
 
 ```sh
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -303,7 +303,7 @@ log_warn  "skip foo (gh exit=4)"
 log_error "classifier exited 1 for tpm/041"
 ```
 
-`grep -E '^\d{4}.*ERROR' ~/.tpm/*.log` returns only the actual errors. `grep 'action=no-signal'` shows everything the PR-signal classifier passed on (was previously invisible — silent no-signal skips were lumped into the same `skipped=N` bucket as fetch-failures). The poller's summary line splits that bucket into honest counters: `checked=N flipped=N no-signal=N fetch-failed=N` add up to `checked`.
+`grep -E '^\d{4}.*ERROR' ~/.tpm/*.log` returns only the actual errors. `grep 'action=no-signal'` shows everything the PR-signal poller passed on (was previously invisible — silent no-signal skips were lumped into the same `skipped=N` bucket as fetch-failures). The poller's summary line splits that bucket into honest counters: `checked=N flipped=N no-signal=N fetch-failed=N` add up to `checked`.
 
 Cron pattern combining intake, signal poller, and drain:
 
@@ -311,7 +311,7 @@ Cron pattern combining intake, signal poller, and drain:
 # Monday morning: harvest open PRs into review tasks
 0 16 * * 1   ~/.tpm/scripts/recurring/intake-prs.sh tpm >> ~/.tpm/recurring-intake-prs.log 2>&1
 # Every 15 min during work hours: flip in-flight PRs to needs-feedback / needs-review
-*/15 9-19 * * 1-5   ~/Developer/tpm/scripts/recurring/check-pr-signal.sh >> ~/.tpm/recurring-check-pr-signal.log 2>&1
+*/15 9-19 * * 1-5   /opt/homebrew/bin/tpm poll >> ~/.tpm/recurring-poll.log 2>&1
 # Nightly: drain whatever is ready or needs-feedback + allow_orchestrator: true
 0 6 * * *    TPM_AGENT_ID=nightly-runner task=$(/opt/homebrew/bin/tpm next --autonomous --claim "$TPM_AGENT_ID") && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/tpm orchestrate --task "$task" --claude /opt/homebrew/bin/claude >> ~/.tpm/orchestrator-nightly-runner.log 2>&1
 ```
@@ -337,7 +337,7 @@ tmux kill-session -t tpm-web     # stop
 
 Routes: `/` (Your inbox / Agent queue / In flight, with a project-chip nav across the top to jump into any project; append `?project=<slug>` to filter the queues; rows for tasks with linked PRs carry a `[PR #N <state>]` chip linking out to GitHub), `/p/<project>` (project view — sidebar with project frontmatter, rendered Goal / Context / Notes / Log, and tasks grouped by status; archived tasks hidden by default, append `?archived=1` or use the "Show archived" toggle), `/t/<project>/<slug>` (task view with rendered Context / Plan / Log / Outcome, a PR panel — one card per linked PR with state / CI / review / mergeable badges + a GitHub link — and an Actions panel; resolves archived tasks too), `/api/refresh` (JSON for client polling). Auto-refreshes every 30s via meta-refresh — no JS framework. The markdown subset rendered in task bodies covers headings, lists, fenced code, links, and basic emphasis; intentionally rejects GFM tables / footnotes (write HTML in the body if you need them).
 
-The PR panel reads host-native PR snapshots cached at `~/.tpm/pr-cache/<host-namespaced-path>.json` (GitHub: `<owner>/<repo>/<number>.json`; Azure DevOps: `ado/<org>/<project>/<repo>/<id>.json`), written by the PR-signal poller (`scripts/recurring/check-pr-signal.sh`) on each tick — stale-while-revalidate, so the page renders instantly and the badges are at most one poll interval old (the "fetched X ago" hint says when). A cache miss or a snapshot older than an hour renders a placeholder instead of blocking on a live `gh` / `az` call; it fills in on the next poll. The rich badge set (CI rollup / mergeable / review decision) is GitHub-only today; ADO entries currently render a minimal card with the host label — host-idiomatic ADO rendering (vote scores, policy state) is a follow-up.
+The PR panel reads host-native PR snapshots cached at `~/.tpm/pr-cache/<host-namespaced-path>.json` (GitHub: `<owner>/<repo>/<number>.json`; Azure DevOps: `ado/<org>/<project>/<repo>/<id>.json`), written by `tpm poll` on each tick — stale-while-revalidate, so the page renders instantly and the badges are at most one poll interval old (the "fetched X ago" hint says when). A cache miss or a snapshot older than an hour renders a placeholder instead of blocking on a live `gh` / `az` call; it fills in on the next poll. The rich badge set (CI rollup / mergeable / review decision) is GitHub-only today; ADO entries currently render a minimal card with the host label — host-idiomatic ADO rendering (vote scores, policy state) is a follow-up.
 
 Mutations are POST endpoints (`/t/<project>/<slug>/<action>`) backing the Actions panel. Each shells out to the matching CLI verb (`ready`, `block`, `reopen`, `complete`, `log`, `pr`, `status`, `allow-orchestrator`) and 303-redirects back to the task view with the CLI's stdout/stderr surfaced as a flash banner. Safety: mutations register only when the server is bound to loopback; explicit `--host 0.0.0.0` disables them with a startup warning. A same-origin check on `Origin`/`Referer` blocks drive-by cross-tab POSTs. No auth, no CSRF token — single-user, localhost-only.
 

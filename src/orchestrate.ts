@@ -9,7 +9,7 @@ import { findTask } from "./resolve.ts";
 import * as mutate from "./mutate.ts";
 import * as lock from "./lock.ts";
 import { readConfig, DEFAULT_TIME_BOUND_MINUTES } from "./config.ts";
-import { isoWithOffset } from "./time.ts";
+import { logLine as sharedLogLine, type LogLevel } from "./log.ts";
 import { shouldNotify, fireNotification } from "./notify.ts";
 import { context as buildBriefing, resolveRepo } from "./context.ts";
 import { resolveSameRepoStrategy, worktreePath, worktreeBranch } from "./strategy.ts";
@@ -207,22 +207,12 @@ function snapshotTask(task: Task): DispositionSnapshot {
   };
 }
 
-// Structured log line — matches scripts/recurring/_log.sh format so a tail of
-// any tpm log file (recurring scripts, orchestrator runs) sorts/greps cleanly.
-//
-//   2026-05-15T09:14:23-07:00  INFO   orchestrate      <message>
-//
-// Timestamp is ISO-8601 second precision in the configured TZ with explicit
-// offset (task 061 — readable when live-tailing; unambiguous if ever shipped
-// cross-host). INFO/WARN go to stdout, ERROR to stderr — same split as the
-// bash helper. Cron entries redirect both to the same log file in practice;
-// the split lets an interactive run filter warnings without losing errors.
-function logLine(level: "INFO" | "WARN" | "ERROR", message: string): void {
-  const ts = isoWithOffset();
-  const padded = level.padEnd(5);
-  const line = `${ts}  ${padded}  ${"orchestrate".padEnd(16)} ${message}`;
-  if (level === "ERROR") console.error(line);
-  else console.log(line);
+// Thin wrapper around src/log.ts's shared structured emitter — the orchestrator
+// always logs as `orchestrate`, so callers don't repeat the script name. The
+// envelope shape (timestamp + level + script + message) is defined once in
+// src/log.ts and shared with src/poll.ts.
+function logLine(level: LogLevel, message: string): void {
+  sharedLogLine(level, "orchestrate", message);
 }
 
 export interface OrchestrateOpts {

@@ -12,7 +12,7 @@ Every change — behavior, docs, tests, comment edits — goes via PR. Branch of
 ## Wait for CI green before merge (humans only)
 After pushing the PR, the `test` workflow runs against the branch. **Don't merge until it's green.** If it fails, fix the underlying issue (don't disable the check, don't merge anyway). `gh pr checks <PR>` polls the status from the terminal; the PR page surfaces it too.
 
-**Agents: after `tpm pr`, your turn ends.** Don't run `gh pr checks` (or any CI poll) from inside an orchestrator-spawned run — that's the PR-signal poller's job (`scripts/recurring/check-pr-signal.sh`), and burning the time bound waiting for CI is the canonical 050/053 failure mode. If CI fails, the poller flips the task to `needs-feedback` and the next orchestrator tick re-picks it.
+**Agents: after `tpm pr`, your turn ends.** Don't run `gh pr checks` (or any CI poll) from inside an orchestrator-spawned run — that's the PR-signal poller's job (`tpm poll`), and burning the time bound waiting for CI is the canonical 050/053 failure mode. If CI fails, the poller flips the task to `needs-feedback` and the next orchestrator tick re-picks it.
 
 ## Closing the task
 After opening the PR, run `tpm pr <slug> <url>` — the CLI flips status to `needs-review` automatically (your handoff to the human). **Don't stamp `done` on PR open.** After the PR merges, the poller closes it inline (per the task 045 close-out path); manual `/tpm done <task>` is the escape hatch if the auto-Outcome can't be derived.

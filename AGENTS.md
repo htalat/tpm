@@ -24,7 +24,7 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
   - `open` = author's queue (not yet shaped for an agent).
   - `ready` = agent's queue (Plan is well-specified, an agent can pick it up). Promoted via the **shape an open task** action.
   - `in-progress` = work in flight; for `type: pr` tasks this includes the period after the PR is opened, awaiting merge.
-  - `needs-feedback` = agent's queue for in-flight PRs — merge conflict, CI red, branch behind main, or open review threads with a fixable suggestion. Routed to the **handle PR feedback** action. Set by the PR-signal poller (`scripts/recurring/check-pr-signal.sh`) or by the agent during a feedback round.
+  - `needs-feedback` = agent's queue for in-flight PRs — merge conflict, CI red, branch behind main, or open review threads with a fixable suggestion. Routed to the **handle PR feedback** action. Set by the PR-signal poller (`tpm poll`) or by the agent during a feedback round.
   - `needs-close` = transient/escape-hatch state for merged PRs. The PR-signal poller flips a task to `needs-close` and immediately calls `tpm complete --outcome "<derived from PR title + body>"` in the same tick, so under normal operation the task is `done` by the time anyone looks. A task only lingers at `needs-close` when the inline auto-close fails (PR body empty, `Outcome` already filled, lock contention) — surface those with `tpm ls --status needs-close` and run the **close out** action manually.
   - `needs-review` = human's queue — agent escalated (e.g. design pushback on a thread, `CHANGES_REQUESTED`, a merge conflict the agent couldn't resolve cleanly). Surfaced via `tpm inbox`.
   - `blocked` = human's queue, external dep. Surfaced via `tpm inbox`.
@@ -129,7 +129,7 @@ This is the primary action.
 
     If you find yourself about to exit while the task is still `in-progress`, stop and pick one of the above first. `tpm revert` is the safe default if you can't make a confident classification.
 
-**After `tpm pr` on a `type: pr` task, your turn is over.** Don't poll CI, don't re-read the task body, don't run extra checks. Exit. The PR-signal poller (`scripts/recurring/check-pr-signal.sh`) closes the task inline when the PR merges and re-flags it to `needs-feedback` if CI fails or a reviewer requests changes — that's the poller's job, not yours. Manual close-out is only the escape hatch for stragglers. Burning your time bound waiting for CI is the canonical 050/053 failure mode.
+**After `tpm pr` on a `type: pr` task, your turn is over.** Don't poll CI, don't re-read the task body, don't run extra checks. Exit. The PR-signal poller (`tpm poll`) closes the task inline when the PR merges and re-flags it to `needs-feedback` if CI fails or a reviewer requests changes — that's the poller's job, not yours. Manual close-out is only the escape hatch for stragglers. Burning your time bound waiting for CI is the canonical 050/053 failure mode.
 
 **Default for unanticipated decisions.** When a fork comes up during implementation that the task body didn't pre-answer, pick the smaller / more local change, ship it, and note the deferred consideration in the Outcome (or file a follow-up task). Don't stop to ask — the user reviews the PR; redirection happens there. The canonical anti-pattern: task 046 (2026-05-10) — the agent finished correct in-scope work, then halted to ask about a related-but-out-of-scope extension; the work sat uncommitted until the user picked it up manually.
 
@@ -199,7 +199,7 @@ For the in-flight phase of a `type: pr` task — the PR is open, the task is `in
 9. **Log + status** after a successful round:
    - `tpm log <slug> "addressed feedback — <one-line summary of what shipped this round>"`
    - If the task was `needs-feedback`, run `tpm status <slug> in-progress` (the round is done; PR returns to passive-wait until the next signal lands or it merges). If already `in-progress`, this is a no-op.
-10. The PR-signal poller (`scripts/recurring/check-pr-signal.sh`) will re-flag the task to `needs-feedback` if the next CI run fails or new threads land. Each round = one more invocation of this action.
+10. The PR-signal poller (`tpm poll`) will re-flag the task to `needs-feedback` if the next CI run fails or new threads land. Each round = one more invocation of this action.
 
 Don't:
 - **Auto-merge** the PR. Always a deliberate human decision.
