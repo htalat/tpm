@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findRoot } from "./root.ts";
 import { newProject, newTask } from "./new.ts";
@@ -25,6 +25,7 @@ import { shouldNotify, fireNotification, NOTIFY_EVENTS } from "./notify.ts";
 import type { NotifyEvent } from "./notify.ts";
 import { resolveRepo } from "./context.ts";
 import { checkDrift } from "./drift.ts";
+import { getScheduler } from "./scheduler/types.ts";
 
 const VERSION = readVersion();
 
@@ -694,6 +695,68 @@ try {
       }
       break;
     }
+    case "schedule": {
+      const sub = args[1];
+      const scheduler = getScheduler();
+      switch (sub) {
+        case "install": {
+          const name = args[2];
+          if (!name) usage("tpm schedule install <name> --every <seconds> -- <cmd> [args...]");
+          const everyArg = parseFlag(args, "--every");
+          if (everyArg === undefined) usage("tpm schedule install <name> --every <seconds> -- <cmd> [args...]");
+          const intervalSeconds = Number(everyArg);
+          if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) {
+            usage("--every must be a positive number of seconds");
+          }
+          const dashIdx = args.indexOf("--");
+          if (dashIdx < 0 || dashIdx === args.length - 1) {
+            usage("tpm schedule install <name> --every <seconds> -- <cmd> [args...]");
+          }
+          const cmdArgs = args.slice(dashIdx + 1);
+          // Convenience: if the user typed bare `tpm` (no path separator),
+          // substitute the absolute path of THIS install. Systemd's PATH for
+          // user services is usually thin and cron's is thinner — an absolute
+          // path makes the unit work without further env wiring.
+          if (cmdArgs[0] === "tpm") cmdArgs[0] = resolveTpmBin();
+          scheduler.install({ name, args: cmdArgs, intervalSeconds });
+          console.log(`scheduled ${name} (every ${intervalSeconds}s)`);
+          break;
+        }
+        case "uninstall": {
+          const name = args[2];
+          if (!name) usage("tpm schedule uninstall <name>");
+          scheduler.uninstall(name);
+          console.log(`unscheduled ${name}`);
+          break;
+        }
+        case "status": {
+          const name = args[2];
+          if (name) {
+            console.log(scheduler.status(name));
+            break;
+          }
+          const jobs = scheduler.list();
+          if (jobs.length === 0) {
+            console.log("(no scheduled jobs)");
+            break;
+          }
+          for (const j of jobs) console.log(`${j}\tinstalled`);
+          break;
+        }
+        case "list": {
+          const jobs = scheduler.list();
+          if (jobs.length === 0) {
+            console.log("(no scheduled jobs)");
+            break;
+          }
+          for (const j of jobs) console.log(j);
+          break;
+        }
+        default:
+          usage("tpm schedule install <name> --every <sec> -- <cmd> [args...] | uninstall <name> | status [<name>] | list");
+      }
+      break;
+    }
     case "version":
     case "--version":
     case "-V":
@@ -822,6 +885,24 @@ function readVersion(): string {
   return typeof pkg.version === "string" ? pkg.version : "0.0.0";
 }
 
+// Resolve the absolute path to this install's `bin/tpm`, so `tpm schedule
+// install <name> ... -- tpm <args>` writes a unit/cron line that runs even
+// when the scheduler's PATH doesn't include the user's normal shell PATH.
+// Honors $TPM_BIN as an explicit override. Falls back to bare "tpm" if the
+// shim isn't where we expect (someone reorganized the repo).
+function resolveTpmBin(): string {
+  const override = process.env.TPM_BIN;
+  if (override && isAbsolute(override) && existsSync(override)) return override;
+  try {
+    const here = fileURLToPath(import.meta.url);
+    const candidate = resolve(dirname(here), "..", "bin", "tpm");
+    if (existsSync(candidate)) return candidate;
+  } catch {
+    // ignore
+  }
+  return "tpm";
+}
+
 function help(): void {
   console.log(`tpm ${VERSION} — task & project manager
 
@@ -870,6 +951,11 @@ Usage:
                                              pick next --autonomous task (or --task pre-claimed) and run the agent CLI (claude, copilot, …) with a hard time bound;
                                              --claude <path> is a back-compat alias that pins the agent to claude with a bin override
   tpm poll [--dry-run]                       PR-signal poller: walk linked PRs, flip status, auto-close on merge
+  tpm schedule install <name> --every <sec> -- <cmd> [args...]
+                                             install a recurring job (Linux: systemd --user timer, or crontab fallback)
+  tpm schedule uninstall <name>              remove a job by name
+  tpm schedule status [<name>]               with a name: installed | missing; without: list everything installed
+  tpm schedule list                          print the names of all tpm-managed scheduled jobs
   tpm notify <start|finish|fail> <task>      best-effort osascript notification (cascade: task > project > global)
   tpm serve [--port 7777] [--host 127.0.0.1] start a localhost HTTP UI for the queues (read-only)
   tpm report [--md]                          generate a rollup of every project/task to reports/index.{html,md}
