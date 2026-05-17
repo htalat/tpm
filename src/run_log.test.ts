@@ -1,108 +1,244 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   allRunLogs,
   compactUtc,
-  encodeSlug,
   formatRunLogHeader,
+  isLegacyRunLogName,
   isValidRunLogName,
   latestRunLog,
+  newRunLogName,
   newRunLogPath,
   parseLine,
   parseEvents,
   parseRunLog,
   parseRunLogHeader,
+  prepareRunLogPath,
+  taskRunsDir,
 } from "./run_log.ts";
+import type { Task } from "./tree.ts";
+
+function topLevelFileForm(root: string, slug: string): Task {
+  const path = join(root, `${slug}.md`);
+  writeFileSync(path, "---\nstatus: ready\n---\n");
+  return { slug, path, archived: false, data: { slug, status: "ready" }, body: "" };
+}
+
+function topLevelFolderForm(root: string, slug: string): Task {
+  const dir = join(root, slug);
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "task.md");
+  writeFileSync(path, "---\nstatus: ready\n---\n");
+  return { slug, path, dir, archived: false, data: { slug, status: "ready" }, body: "" };
+}
+
+function childOfFolderForm(root: string, parentSlug: string, slug: string): Task {
+  const parentDir = join(root, parentSlug);
+  mkdirSync(parentDir, { recursive: true });
+  writeFileSync(join(parentDir, "task.md"), "---\nstatus: ready\n---\n");
+  const path = join(parentDir, `${slug}.md`);
+  writeFileSync(path, `---\nstatus: ready\nparent: ${parentSlug}\n---\n`);
+  return { slug, path, archived: false, parent: parentSlug, data: { slug, status: "ready", parent: parentSlug }, body: "" };
+}
 
 test("compactUtc: ISO timestamp collapses to YYYYMMDDTHHMMSSZ", () => {
   const d = new Date("2026-05-15T23:05:44.123Z");
   assert.equal(compactUtc(d), "20260515T230544Z");
 });
 
-test("encodeSlug: replaces path separators with dash", () => {
-  assert.equal(encodeSlug("tpm/057-foo"), "tpm-057-foo");
-  assert.equal(encodeSlug("tpm/parent/child"), "tpm-parent-child");
-  assert.equal(encodeSlug("flat-slug"), "flat-slug");
-});
-
-test("newRunLogPath: composes <slug>--<utc>.log under the runs dir", () => {
-  const d = new Date("2026-05-15T23:05:44Z");
-  const p = newRunLogPath("tpm/057-foo", d);
-  assert.match(p, /\/runs\/tpm-057-foo--20260515T230544Z\.log$/);
-});
-
-test("isValidRunLogName: accepts canonical filenames", () => {
-  assert.equal(isValidRunLogName("tpm-057-foo--20260515T230544Z.log"), true);
-  assert.equal(isValidRunLogName("alpha-001--20260101T000000Z.log"), true);
-});
-
-test("isValidRunLogName: rejects traversal / oddities", () => {
-  assert.equal(isValidRunLogName("../etc/passwd"), false);
-  assert.equal(isValidRunLogName("foo/bar.log"), false);
-  assert.equal(isValidRunLogName(".hidden.log"), false);
-  assert.equal(isValidRunLogName("no-timestamp.log"), false);
-  assert.equal(isValidRunLogName("tpm-057--20260515T230544Z.txt"), false);
-});
-
-test("latestRunLog: returns null on missing directory", () => {
-  assert.equal(latestRunLog("tpm/057-foo", "/nonexistent/path/xyz"), null);
-});
-
-test("latestRunLog: picks newest by lexicographic filename order", () => {
-  const dir = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+test("taskRunsDir: top-level folder-form points at <task-dir>/runs/", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
   try {
-    writeFileSync(resolve(dir, "tpm-057--20260101T000000Z.log"), "old");
-    writeFileSync(resolve(dir, "tpm-057--20260515T120000Z.log"), "mid");
-    writeFileSync(resolve(dir, "tpm-057--20260601T080000Z.log"), "new");
-    writeFileSync(resolve(dir, "other-001--20260601T090000Z.log"), "unrelated");
-    const p = latestRunLog("tpm/057", dir);
-    assert.ok(p);
-    assert.match(p!, /20260601T080000Z\.log$/);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+    const t = topLevelFolderForm(root, "001-foo");
+    assert.equal(taskRunsDir(t), join(root, "001-foo", "runs"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("latestRunLog: returns null when no matches for slug", () => {
-  const dir = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+test("taskRunsDir: top-level file-form points at the to-be-folded folder's runs/", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
   try {
-    writeFileSync(resolve(dir, "other-001--20260601T090000Z.log"), "unrelated");
-    assert.equal(latestRunLog("tpm/057", dir), null);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+    const t = topLevelFileForm(root, "001-foo");
+    assert.equal(taskRunsDir(t), join(root, "001-foo", "runs"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("allRunLogs: returns all matches for a slug newest-first; excludes other slugs", () => {
-  const dir = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+test("taskRunsDir: child task points at the parent's runs/", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
   try {
-    writeFileSync(resolve(dir, "tpm-057--20260101T000000Z.log"), "old");
-    writeFileSync(resolve(dir, "tpm-057--20260515T120000Z.log"), "mid");
-    writeFileSync(resolve(dir, "tpm-057--20260601T080000Z.log"), "new");
-    writeFileSync(resolve(dir, "other-001--20260601T090000Z.log"), "unrelated");
-    const all = allRunLogs("tpm/057", dir);
+    const t = childOfFolderForm(root, "001-parent", "002-child");
+    assert.equal(taskRunsDir(t), join(root, "001-parent", "runs"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("newRunLogName: top-level uses bare <utc>.log (folder disambiguates)", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+  try {
+    const t = topLevelFolderForm(root, "001-foo");
+    const d = new Date("2026-05-15T23:05:44Z");
+    assert.equal(newRunLogName(t, d), "20260515T230544Z.log");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("newRunLogName: child carries <child-slug>-- prefix (siblings share parent's runs/)", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+  try {
+    const t = childOfFolderForm(root, "001-parent", "002-child");
+    const d = new Date("2026-05-15T23:05:44Z");
+    assert.equal(newRunLogName(t, d), "002-child--20260515T230544Z.log");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("newRunLogPath: composes dir + filename", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+  try {
+    const t = topLevelFolderForm(root, "001-foo");
+    const d = new Date("2026-05-15T23:05:44Z");
+    assert.equal(newRunLogPath(t, d), join(root, "001-foo", "runs", "20260515T230544Z.log"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("prepareRunLogPath: folder-form top-level mkdir's runs/ and returns the new path", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+  try {
+    const t = topLevelFolderForm(root, "001-foo");
+    const d = new Date("2026-05-15T23:05:44Z");
+    const { logFile, taskPath } = prepareRunLogPath(t, d);
+    assert.equal(logFile, join(root, "001-foo", "runs", "20260515T230544Z.log"));
+    assert.equal(taskPath, t.path); // unchanged
+    assert.ok(statSync(join(root, "001-foo", "runs")).isDirectory());
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("prepareRunLogPath: file-form top-level auto-folds before resolving the path", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+  try {
+    const t = topLevelFileForm(root, "001-foo");
+    assert.ok(existsSync(t.path), "precondition: file-form task exists at <slug>.md");
+    const d = new Date("2026-05-15T23:05:44Z");
+    const { logFile, taskPath } = prepareRunLogPath(t, d);
+    // File got renamed into the folder.
+    assert.ok(!existsSync(join(root, "001-foo.md")));
+    assert.equal(taskPath, join(root, "001-foo", "task.md"));
+    assert.equal(logFile, join(root, "001-foo", "runs", "20260515T230544Z.log"));
+    assert.ok(statSync(join(root, "001-foo", "runs")).isDirectory());
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("prepareRunLogPath: child task passes through (parent already folder-form)", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+  try {
+    const t = childOfFolderForm(root, "001-parent", "002-child");
+    const d = new Date("2026-05-15T23:05:44Z");
+    const { logFile, taskPath } = prepareRunLogPath(t, d);
+    assert.equal(taskPath, t.path);
+    assert.equal(logFile, join(root, "001-parent", "runs", "002-child--20260515T230544Z.log"));
+    assert.ok(statSync(join(root, "001-parent", "runs")).isDirectory());
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("isValidRunLogName: top-level accepts <utc>.log only", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+  try {
+    const t = topLevelFolderForm(root, "001-foo");
+    assert.equal(isValidRunLogName("20260515T230544Z.log", t), true);
+    // Slug-prefixed name doesn't belong in a top-level task's runs/ (would be
+    // an artifact of the legacy flat layout that snuck in).
+    assert.equal(isValidRunLogName("001-foo--20260515T230544Z.log", t), false);
+    assert.equal(isValidRunLogName(".hidden.log", t), false);
+    assert.equal(isValidRunLogName("../etc/passwd", t), false);
+    assert.equal(isValidRunLogName("foo/bar.log", t), false);
+    assert.equal(isValidRunLogName("20260515T230544Z.txt", t), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("isValidRunLogName: child requires <child-slug>--<utc>.log", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+  try {
+    const t = childOfFolderForm(root, "001-parent", "002-child");
+    assert.equal(isValidRunLogName("002-child--20260515T230544Z.log", t), true);
+    // A bare timestamp file in the parent's runs/ belongs to the parent (or
+    // some other sibling), not to this child.
+    assert.equal(isValidRunLogName("20260515T230544Z.log", t), false);
+    // A different sibling's file also doesn't belong to this child.
+    assert.equal(isValidRunLogName("003-other--20260515T230544Z.log", t), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("allRunLogs: returns [] when the runs dir is missing", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+  try {
+    const t = topLevelFolderForm(root, "001-foo");
+    assert.deepEqual(allRunLogs(t), []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("allRunLogs: lists all runs for a top-level task newest-first", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+  try {
+    const t = topLevelFolderForm(root, "001-foo");
+    const runsDir = join(root, "001-foo", "runs");
+    mkdirSync(runsDir);
+    writeFileSync(join(runsDir, "20260101T000000Z.log"), "old");
+    writeFileSync(join(runsDir, "20260515T120000Z.log"), "mid");
+    writeFileSync(join(runsDir, "20260601T080000Z.log"), "new");
+    const all = allRunLogs(t);
     assert.equal(all.length, 3);
-    // Newest first.
     assert.match(all[0], /20260601T080000Z\.log$/);
     assert.match(all[1], /20260515T120000Z\.log$/);
     assert.match(all[2], /20260101T000000Z\.log$/);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("allRunLogs: returns [] when no matches / missing dir", () => {
-  assert.deepEqual(allRunLogs("tpm/057", "/nonexistent/path/xyz"), []);
-  const dir = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+test("allRunLogs: child task filters parent's runs/ by <child-slug>-- prefix", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
   try {
-    writeFileSync(resolve(dir, "other-001--20260601T090000Z.log"), "unrelated");
-    assert.deepEqual(allRunLogs("tpm/057", dir), []);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+    const child = childOfFolderForm(root, "001-parent", "002-child");
+    const runsDir = join(root, "001-parent", "runs");
+    mkdirSync(runsDir);
+    writeFileSync(join(runsDir, "002-child--20260101T000000Z.log"), "mine-old");
+    writeFileSync(join(runsDir, "002-child--20260601T080000Z.log"), "mine-new");
+    // Sibling and parent files share the dir; this child shouldn't see them.
+    writeFileSync(join(runsDir, "003-other--20260515T120000Z.log"), "sibling");
+    writeFileSync(join(runsDir, "20260515T120000Z.log"), "parent");
+    const all = allRunLogs(child);
+    assert.equal(all.length, 2);
+    assert.match(all[0], /002-child--20260601T080000Z\.log$/);
+    assert.match(all[1], /002-child--20260101T000000Z\.log$/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("latestRunLog: picks newest by lexicographic filename order", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+  try {
+    const t = topLevelFolderForm(root, "001-foo");
+    const runsDir = join(root, "001-foo", "runs");
+    mkdirSync(runsDir);
+    writeFileSync(join(runsDir, "20260101T000000Z.log"), "old");
+    writeFileSync(join(runsDir, "20260601T080000Z.log"), "new");
+    const p = latestRunLog(t);
+    assert.ok(p);
+    assert.match(p!, /20260601T080000Z\.log$/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("latestRunLog: returns null when no runs", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+  try {
+    const t = topLevelFolderForm(root, "001-foo");
+    assert.equal(latestRunLog(t), null);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("isLegacyRunLogName: matches the pre-095 flat-dir filename shape", () => {
+  assert.equal(isLegacyRunLogName("tpm-057-foo--20260515T230544Z.log"), true);
+  assert.equal(isLegacyRunLogName("alpha-001--20260101T000000Z.log"), true);
+  assert.equal(isLegacyRunLogName("20260515T230544Z.log"), false); // new shape
+  assert.equal(isLegacyRunLogName("../etc/passwd"), false);
+  assert.equal(isLegacyRunLogName(".hidden.log"), false);
 });
 
 test("parseLine: empty / whitespace lines yield no events", () => {

@@ -18,6 +18,7 @@ import * as mutate from "./mutate.ts";
 import * as lock from "./lock.ts";
 import { runOrchestrate } from "./orchestrate.ts";
 import { migrateReportsToTaskFolders } from "./migrate_reports.ts";
+import { migrateRunsToTaskFolders } from "./migrate_runs.ts";
 import { runPoll } from "./poll.ts";
 import { runServe } from "./serve.ts";
 import { shouldNotify, fireNotification, NOTIFY_EVENTS } from "./notify.ts";
@@ -449,7 +450,21 @@ try {
         }
         break;
       }
-      usage("tpm migrate reports");
+      if (sub === "runs") {
+        const root = findRoot();
+        const result = migrateRunsToTaskFolders(root);
+        for (const step of result.steps) {
+          console.log(`${step.legacyName}: ${step.action} (${step.detail})`);
+        }
+        for (const warn of result.warnings) {
+          console.error(`warning: ${warn}`);
+        }
+        if (result.steps.length === 0) {
+          console.log("nothing to migrate");
+        }
+        break;
+      }
+      usage("tpm migrate reports | runs");
       break;
     }
     case "drift-check": {
@@ -844,6 +859,7 @@ Usage:
   tpm lock release-stale [--ttl <minutes>]   clear locks whose heartbeat is older than ttl
   tpm drift-check <project | task>           verify the project's repo.local is on its default branch + clean
   tpm migrate reports                        one-shot: move flat <project>/reports/<slug>.md files into <project>/tasks/<slug>/report.md (auto-folds file-form tasks) and strip legacy report: frontmatter; safe to re-run
+  tpm migrate runs                           one-shot: move flat ~/.tpm/runs/*.log captures into each task's own <task>/runs/<utc>.log (auto-folds file-form tasks); unresolvable files land in ~/.tpm/runs/orphans/; safe to re-run
   tpm next [--project <slug>] [--autonomous] [--claim <id>] [--any-repo]
                                              print next leaf task (needs-feedback > ready, oldest first); --claim atomically locks; affinity from ~/.tpm/agents.json applies unless --any-repo
   tpm agents list                            print the per-host agent registry

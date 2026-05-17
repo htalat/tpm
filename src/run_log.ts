@@ -1,67 +1,148 @@
-import { existsSync, readdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { CONFIG_DIR } from "./config.ts";
+import { foldTask } from "./tree.ts";
+import type { Task } from "./tree.ts";
 import type { AgentOutputFormat } from "./agent_cli.ts";
 
-// Per-run logs live under `~/.tpm/runs/`. One file per orchestrator-spawned
-// claude session. The orchestrator pipes the child's stdout/stderr into the
-// file; `tpm serve` tails the most recent file for the task's detail page.
+// Per-run logs live alongside the task they describe: top-level tasks get
+// their own `runs/` subfolder inside the task's folder; child tasks share the
+// parent's `runs/` and disambiguate via a `<child-slug>--` filename prefix
+// (children don't have own folders post-094). `tpm archive` already moves the
+// whole task folder, so per-run captures travel with the task automatically.
 //
-// File naming: `<slug-encoded>--<utc-iso-compact>.log`
-//   - slug-encoded: `/` → `-` so the slug survives as a basename.
-//     `tpm/057-foo` → `tpm-057-foo`.
-//   - utc-iso-compact: `YYYYMMDDTHHMMSSZ`. Sorts lexicographically by time, so
+// Layouts:
+//   <project>/tasks/<slug>/runs/<utc>.log                          — top-level
+//   <project>/tasks/<parent>/runs/<child-slug>--<utc>.log          — child of folder-form parent
+//
+// File naming:
+//   utc-iso-compact: `YYYYMMDDTHHMMSSZ`. Sorts lexicographically by time, so
 //     a `readdir().sort().reverse()` gives newest-first without a stat call.
-//   - Separator is `--` (two dashes) — slugs are kebab-case (single dashes), so
-//     this is unambiguous to split on if we ever need the slug back out.
-
-export function runsDir(): string {
-  return resolve(CONFIG_DIR, "runs");
-}
-
-export function encodeSlug(slug: string): string {
-  return slug.replace(/[\/\\]/g, "-");
-}
+//   For children, the `<child-slug>--<utc>.log` shape lets siblings share the
+//     parent's runs/ without collision while still being filterable by prefix.
 
 // `2026-05-15T23:05:44.123Z` → `20260515T230544Z`.
 export function compactUtc(d: Date = new Date()): string {
   return d.toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
 }
 
-export function newRunLogPath(slug: string, when: Date = new Date()): string {
-  return resolve(runsDir(), `${encodeSlug(slug)}--${compactUtc(when)}.log`);
+// Where this task's run logs live on disk. For top-level tasks it's the
+// task's own `runs/` subfolder (the task is folder-form, or will be after
+// `prepareRunLogPath` auto-folds it); for child tasks it's the parent's
+// `runs/`. The returned path may not exist yet — `prepareRunLogPath` is the
+// only caller that mkdir's it.
+export function taskRunsDir(task: Task): string {
+  if (task.parent) {
+    // Child of a folder-form parent: `<parent-dir>/<child-slug>.md` lives
+    // here, so the parent dir is one up.
+    return join(dirname(task.path), "runs");
+  }
+  if (task.dir) return join(task.dir, "runs");
+  // File-form top-level: the to-be-folded folder. `prepareRunLogPath` folds
+  // before writing; readers that hit this branch get an empty list (the
+  // task has never been dispatched).
+  return join(dirname(task.path), task.slug, "runs");
 }
 
-// Most recent run log for a slug, or null if none exist. Sorts by filename
-// (compact UTC sorts chronologically); no fs.stat per file.
-export function latestRunLog(slug: string, dir: string = runsDir()): string | null {
-  const all = allRunLogs(slug, dir);
-  return all.length ? all[0] : null;
+// Filename for the next run inside taskRunsDir(task). Top-level tasks get
+// just the timestamp (their folder disambiguates); children carry their slug
+// as a prefix so sibling children sharing the parent's runs/ don't collide.
+export function newRunLogName(task: Task, when: Date = new Date()): string {
+  const ts = compactUtc(when);
+  return task.parent ? `${task.slug}--${ts}.log` : `${ts}.log`;
 }
 
-// All run logs for a slug, newest-first (compact-UTC suffix sorts
-// chronologically). Returns absolute paths; callers can `basename()` for
-// display. Empty array when the runs dir doesn't exist or the slug has no
-// runs — the page renders a "never dispatched" placeholder either way.
-export function allRunLogs(slug: string, dir: string = runsDir()): string[] {
+export function newRunLogPath(task: Task, when: Date = new Date()): string {
+  return join(taskRunsDir(task), newRunLogName(task, when));
+}
+
+const TS_RE = /\d{8}T\d{6}Z\.log$/;
+
+// Path-traversal guard for the per-task `/runs/<basename>` route. A valid
+// name for a top-level task is `<utc>.log`; for a child task, it must be
+// `<child-slug>--<utc>.log` (the on-disk filename pattern).
+export function isValidRunLogName(name: string, task: Task): boolean {
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]*\.log$/.test(name)) return false;
+  if (name.includes("/") || name.includes("\\") || name.startsWith(".")) return false;
+  if (task.parent) {
+    const expected = new RegExp(`^${escapeRegex(task.slug)}--\\d{8}T\\d{6}Z\\.log$`);
+    return expected.test(name);
+  }
+  return /^\d{8}T\d{6}Z\.log$/.test(name);
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// All run logs for a task, newest-first. Returns absolute paths; callers can
+// `basename()` for display. Empty array when the runs dir doesn't exist or
+// the task has never been dispatched. For child tasks, filters the parent's
+// runs/ to entries matching the `<child-slug>--` prefix.
+export function allRunLogs(task: Task): string[] {
+  const dir = taskRunsDir(task);
   if (!existsSync(dir)) return [];
-  const prefix = `${encodeSlug(slug)}--`;
   let entries: string[];
   try {
     entries = readdirSync(dir);
   } catch {
     return [];
   }
-  const matches = entries.filter(f => f.startsWith(prefix) && f.endsWith(".log"));
+  const matches = entries.filter(name => isValidRunLogName(name, task));
   matches.sort();
   matches.reverse();
-  return matches.map(name => resolve(dir, name));
+  return matches.map(name => join(dir, name));
 }
 
-// Path-traversal guard for the `/runs/<file>` route. A valid name is
-// `<kebab-slug>--<compact-utc>.log` and nothing else — no slashes, no `..`,
-// no leading dots.
-export function isValidRunLogName(name: string): boolean {
+// Most recent run log for a task, or null if none exist.
+export function latestRunLog(task: Task): string | null {
+  const all = allRunLogs(task);
+  return all.length ? all[0] : null;
+}
+
+// Pre-spawn: auto-fold file-form top-level tasks so the runs/ subfolder has
+// a home, mkdir runs/, and return the new log path. Children pass through —
+// their runs go in the parent's existing folder. Mutates disk (renames the
+// task file when folding) but does not mutate the passed-in Task struct;
+// caller should re-resolve via `findTask` if it needs a fresh view.
+export interface PrepareRunLogResult {
+  logFile: string;
+  // Task path after the fold (or unchanged if the task was already
+  // folder-form / child). Lets the caller update its in-memory Task if it
+  // wants to without an extra tree walk.
+  taskPath: string;
+}
+export function prepareRunLogPath(task: Task, when: Date = new Date()): PrepareRunLogResult {
+  let taskPath = task.path;
+  if (!task.parent && !task.dir) {
+    // File-form top-level — fold so `<task-folder>/runs/` exists.
+    taskPath = foldTask(task);
+  }
+  const dir = taskRunsDir(task);
+  mkdirSync(dir, { recursive: true });
+  return { logFile: join(dir, newRunLogName(task, when)), taskPath };
+}
+
+// ---- legacy (~/.tpm/runs/) ------------------------------------------------
+//
+// The flat global runs dir is being retired (this task). The helpers below
+// exist solely so `tpm migrate runs` can find the legacy files and the
+// serve layer can 302-redirect old `/runs/<file>` URLs for one release.
+
+export function legacyRunsDir(): string {
+  return resolve(CONFIG_DIR, "runs");
+}
+
+// Old encoding used in flat-dir filenames: `/` → `-`. Lossy (a top-level
+// slug containing a literal `-` can collide with a `parent/child` shape),
+// which is why the new layout drops it.
+export function encodeLegacySlug(slug: string): string {
+  return slug.replace(/[\/\\]/g, "-");
+}
+
+// Validator for the legacy filename shape (`<encoded-slug>--<utc>.log`).
+// Used by the migration walker and the old `/runs/<file>` redirect.
+export function isLegacyRunLogName(name: string): boolean {
   return /^[a-z0-9][a-z0-9-]*--\d{8}T\d{6}Z\.log$/i.test(name);
 }
 

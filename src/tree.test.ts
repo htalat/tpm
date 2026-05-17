@@ -527,6 +527,27 @@ test("archiveTask: folder-form parent carries report.md with the folder (task 09
   }
 });
 
+test("archiveTask: folder-form parent carries runs/ with the folder (task 095)", () => {
+  // Per-run captures live inside <task>/runs/, so archive moves them alongside
+  // task.md without any separate runs-archive plumbing.
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeFolderTask(dir, "003-run", "done");
+    const runsDir = join(dir, "tasks", "003-run", "runs");
+    mkdirSync(runsDir, { recursive: true });
+    writeFileSync(join(runsDir, "20260515T120000Z.log"), "transcript-body\n");
+    const [proj] = loadProjects(root);
+    archiveTask(proj.tasks[0]);
+    const archivedRun = join(dir, "tasks", "archive", "003-run", "runs", "20260515T120000Z.log");
+    assert.ok(existsSync(archivedRun));
+    assert.equal(readFileSync(archivedRun, "utf8"), "transcript-body\n");
+    assert.equal(existsSync(join(dir, "tasks", "003-run")), false);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 test("archiveTask: refuses parent with live children", () => {
   const root = mkTempDir();
   try {

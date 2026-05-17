@@ -20,10 +20,11 @@ import { analyzePr } from "./pr_signal.ts";
 import type { RawPrJson, PrDecision } from "./pr_signal.ts";
 import {
   allRunLogs,
+  encodeLegacySlug,
+  isLegacyRunLogName,
   isValidRunLogName,
   latestRunLog,
   parseRunLog,
-  runsDir,
 } from "./run_log.ts";
 import type { RunEvent } from "./run_log.ts";
 import {
@@ -43,24 +44,24 @@ import type { HarnessLogReader, HarnessLogSource, HarnessLogLine } from "./harne
 export type PrCacheReader = (url: string) => PrCacheEntry | null;
 
 // A run-log reader for the task page's "Current/Last run" panel. Returns the
-// most recent log for a slug, or null if none exist. Production reads
-// `~/.tpm/runs/`; tests inject a stub.
+// most recent log for a task, or null if none exist. Production reads from
+// the task folder (`<task>/runs/`, task 095); tests inject a stub.
 export interface RunLogSnapshot {
   name: string;
   text: string;
 }
-export type RunLogReader = (slug: string) => RunLogSnapshot | null;
+export type RunLogReader = (task: Task) => RunLogSnapshot | null;
 
-// A direct read by basename for the `/runs/<file>` raw route. Returns the raw
-// file contents, or null if the file is missing or the name is rejected by the
-// path-traversal guard.
-export type RunLogRawReader = (name: string) => string | null;
+// A direct read by basename for the `/t/<proj>/<slug>/runs/<basename>` raw
+// route. Returns the raw file contents, or null if the file is missing or
+// the name is rejected by the path-traversal guard.
+export type RunLogRawReader = (task: Task, name: string) => string | null;
 
-// Lists every run log for a slug, newest-first as bare basenames (no path —
-// the `/runs/<file>` raw route consumes basenames). Production reads
-// `~/.tpm/runs/`; tests inject in-memory stubs to keep the `/runs` index
-// pure and disk-free.
-export type RunLogListReader = (slug: string) => string[];
+// Lists every run log for a task, newest-first as bare basenames (no path —
+// the per-task raw route consumes basenames). Production reads the task
+// folder's `runs/` (filtered by `<child-slug>--` prefix for children);
+// tests inject in-memory stubs to keep the `/runs` index pure and disk-free.
+export type RunLogListReader = (task: Task) => string[];
 
 // A read-only view of a JSON config file (~/.tpm/config.json or
 // ~/.tpm/agents.json) for the `/config` page. The renderer wants both the raw
@@ -306,14 +307,17 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
   if (pathname === "/logs/poller") {
     return renderCategoryPage(projects, params, opts, "poller");
   }
-  const runsMatch = pathname.match(/^\/runs\/([^/]+)\/?$/);
-  if (runsMatch) {
-    const name = decodeURIComponent(runsMatch[1]);
-    // Path-traversal guard: only allow the canonical `<slug>--<utc>.log` shape.
-    if (!isValidRunLogName(name)) return notFound(`bad run log name: ${name}`);
-    const text = runLogRaw(name);
-    if (text === null) return notFound(`No run log: ${name}`);
-    return { status: 200, contentType: "text/plain; charset=utf-8", body: text };
+  const legacyRunsMatch = pathname.match(/^\/runs\/([^/]+)\/?$/);
+  if (legacyRunsMatch) {
+    // Pre-095 flat URL: `/runs/<encoded-slug>--<utc>.log`. Per-run logs moved
+    // into each task's folder (task 095); redirect old bookmarks to the new
+    // per-task viewer for one release window. We resolve the encoded prefix
+    // against the loaded project tree to find the owning task.
+    const name = decodeURIComponent(legacyRunsMatch[1]);
+    if (!isLegacyRunLogName(name)) return notFound(`bad run log name: ${name}`);
+    const redirect = resolveLegacyRunLog(projects, name);
+    if (!redirect) return notFound(`No run log: ${name}`);
+    return { status: 302, contentType: "text/plain; charset=utf-8", body: "", location: redirect };
   }
   const artifactsMatch = pathname.match(/^\/p\/([^/]+)\/artifacts\/?$/);
   if (artifactsMatch) {
@@ -359,6 +363,23 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     if (!match) return notFound(`No task: ${query}`);
     return ok("text/html; charset=utf-8", renderTaskReport(projects, match.project, match.task, opts));
   }
+  // Per-task raw run-log viewer: `/t/<proj>/<slug>/runs/<basename>`. The
+  // basename pattern depends on the task: top-level uses `<utc>.log`, child
+  // uses `<child-slug>--<utc>.log` (children share the parent's runs/ on
+  // disk). Matched before the index route so the bare-`/runs` URL still
+  // renders the list page.
+  const taskRunRawMatch = pathname.match(/^\/t\/(.+)\/runs\/([^/]+)\/?$/);
+  if (taskRunRawMatch) {
+    const query = decodeURIComponent(taskRunRawMatch[1]);
+    const name = decodeURIComponent(taskRunRawMatch[2]);
+    let match: { project: Project; task: Task } | null = null;
+    try { match = findTask(projects, query); } catch { match = null; }
+    if (!match) return notFound(`No task: ${query}`);
+    if (!isValidRunLogName(name, match.task)) return notFound(`bad run log name: ${name}`);
+    const text = runLogRaw(match.task, name);
+    if (text === null) return notFound(`No run log: ${name}`);
+    return { status: 200, contentType: "text/plain; charset=utf-8", body: text };
+  }
   const taskRunsMatch = pathname.match(/^\/t\/(.+)\/runs\/?$/);
   if (taskRunsMatch) {
     const query = decodeURIComponent(taskRunsMatch[1]);
@@ -368,8 +389,8 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const slugPath = match.task.parent
       ? `${match.project.slug}/${match.task.parent}/${match.task.slug}`
       : `${match.project.slug}/${match.task.slug}`;
-    const runs = runLogList(slugPath);
-    return ok("text/html; charset=utf-8", renderTaskRuns(projects, match.project, match.task, runs, runLog));
+    const runs = runLogList(match.task);
+    return ok("text/html; charset=utf-8", renderTaskRuns(projects, match.project, match.task, runs, runLog, slugPath));
   }
   const taskMatch = pathname.match(/^\/t\/(.+?)\/?$/);
   if (taskMatch) {
@@ -385,10 +406,12 @@ function redirect(status: number, location: string): RouteResult {
   return { status, contentType: "text/plain; charset=utf-8", body: "", location };
 }
 
-// Read the most recent run log for a slug from `~/.tpm/runs/`. Returns null
-// if the file doesn't exist or can't be read — the panel renders a placeholder.
-function defaultRunLogReader(slug: string): RunLogSnapshot | null {
-  const path = latestRunLog(slug);
+// Read the most recent run log for a task. Returns null if the file doesn't
+// exist or can't be read — the panel renders a placeholder. Per task 095 the
+// reader walks the task's own folder (`<task>/runs/`) instead of the
+// pre-095 global flat dir.
+function defaultRunLogReader(task: Task): RunLogSnapshot | null {
+  const path = latestRunLog(task);
   if (!path) return null;
   try {
     return { name: basename(path), text: readFileSync(path, "utf8") };
@@ -397,24 +420,53 @@ function defaultRunLogReader(slug: string): RunLogSnapshot | null {
   }
 }
 
-// List every run log basename for a slug, newest-first. Used by the
-// `/t/<proj>/<slug>/runs` index. Empty array when the runs dir is missing or
-// the slug has never been dispatched.
-function defaultRunLogListReader(slug: string): string[] {
-  return allRunLogs(slug).map(p => basename(p));
+// List every run log basename for a task, newest-first. Used by the
+// `/t/<proj>/<slug>/runs` index. Empty when the task folder's runs/ dir
+// is missing or the task has never been dispatched.
+function defaultRunLogListReader(task: Task): string[] {
+  return allRunLogs(task).map(p => basename(p));
 }
 
-// Read the raw bytes of a run log by basename. The route layer already ran the
-// `isValidRunLogName` guard, so the join below can't escape the runs dir.
-function defaultRunLogRawReader(name: string): string | null {
-  if (!isValidRunLogName(name)) return null;
-  const path = resolve(runsDir(), name);
-  if (!existsSync(path)) return null;
+// Read the raw bytes of a run log by basename, scoped to a specific task.
+// The route layer ran `isValidRunLogName(name, task)` already, so the join
+// below can't escape the task's runs/ dir.
+function defaultRunLogRawReader(task: Task, name: string): string | null {
+  if (!isValidRunLogName(name, task)) return null;
+  // Reuse `allRunLogs(task)` to get the dir and find the file (rather than
+  // re-deriving the dir here) — keeps the on-disk layout knowledge in
+  // run_log.ts.
+  const path = allRunLogs(task).find(p => basename(p) === name);
+  if (!path || !existsSync(path)) return null;
   try {
     return readFileSync(path, "utf8");
   } catch {
     return null;
   }
+}
+
+// Map a pre-095 flat-dir filename back to the per-task viewer URL. The
+// legacy filename is `<encoded-slug>--<utc>.log`; we walk the project tree
+// once and look up the task whose encoded qualified slug matches the
+// prefix. Returns null when no task matches (a legacy file for a deleted
+// task — caller surfaces 404). Pointed at by the back-compat `/runs/<file>`
+// redirect; goes away once the redirect is removed.
+function resolveLegacyRunLog(projects: Project[], legacyName: string): string | null {
+  const sep = legacyName.indexOf("--");
+  if (sep <= 0) return null;
+  const encoded = legacyName.slice(0, sep);
+  const tsAndExt = legacyName.slice(sep + 2);
+  for (const p of projects) {
+    for (const t of flatTasks(p.tasks)) {
+      const qs = t.parent ? `${p.slug}/${t.parent}/${t.slug}` : `${p.slug}/${t.slug}`;
+      if (encodeLegacySlug(qs) !== encoded) continue;
+      const slugSegs = qs.split("/").map(encodeURIComponent).join("/");
+      // For top-level tasks the new on-disk filename is just `<utc>.log`; for
+      // children it's `<child-slug>--<utc>.log` (parent's runs/ is shared).
+      const newBase = t.parent ? `${t.slug}--${tsAndExt}` : tsAndExt;
+      return `/t/${slugSegs}/runs/${encodeURIComponent(newBase)}`;
+    }
+  }
+  return null;
 }
 
 function defaultConfigSnapshot(): ConfigSnapshot {
@@ -1343,24 +1395,25 @@ function renderLogLine(line: HarnessLogLine): string {
 // Index for `/t/<proj>/<slug>/runs`. Lists every run log discovered for the
 // task (newest-first) and renders the latest one inline using the same parsed
 // transcript view that lived on the task detail page before task 075. Each
-// older run is a link to the raw `/runs/<file>` viewer.
+// older run is a link to the per-task raw viewer at
+// `/t/<proj>/<slug>/runs/<basename>` (task 095 moved this off the flat
+// `/runs/<file>` path).
 function renderTaskRuns(
   projects: Project[],
   project: Project,
   task: Task,
   runs: string[],
   runLog: RunLogReader,
+  slugPath: string,
 ): string {
   const title = strOr(task.data.title, task.slug);
   const taskUrl = taskHref(project, task);
   const status = rollupStatus(task);
-  const slugPath = task.parent
-    ? `${project.slug}/${task.parent}/${task.slug}`
-    : `${project.slug}/${task.slug}`;
+  const slugSegs = slugPath.split("/").map(encodeURIComponent).join("/");
   // The latest run renders inline (the most useful per-task page on a live
   // task is "what did the last run do"). Older runs are link-only — clicking
-  // opens the raw `/runs/<file>` viewer.
-  const latestPanel = renderRunPanel(slugPath, status, runLog);
+  // opens the per-task raw viewer.
+  const latestPanel = renderRunPanel(task, slugSegs, status, runLog);
   let listSection = "";
   if (runs.length === 0) {
     listSection = `<section class="task-runs-list">
@@ -1370,7 +1423,7 @@ function renderTaskRuns(
   } else {
     const items = runs.map(name => {
       const ts = runLogDisplayTimestamp(name);
-      return `<li><a href="/runs/${esc(name)}">${esc(name)}</a> <span class="run-list-ts">${esc(ts)}</span></li>`;
+      return `<li><a href="/t/${slugSegs}/runs/${encodeURIComponent(name)}">${esc(name)}</a> <span class="run-list-ts">${esc(ts)}</span></li>`;
     }).join("");
     listSection = `<section class="task-runs-list">
   <h2>All runs <span class="meta">(${runs.length})</span></h2>
@@ -1394,11 +1447,13 @@ ${listSection}
   return layout(`tpm · ${title} · runs`, body, { autoRefresh });
 }
 
-// `tpm-057--20260601T080000Z.log` → `2026-06-01 08:00 UTC`. Best-effort —
-// falls back to the bare basename if the suffix doesn't match (a hand-placed
-// file, etc.).
+// On-disk run-log filenames: top-level is `<utc>.log`, child is
+// `<child-slug>--<utc>.log`. Either way the UTC suffix is the same shape;
+// match against the trailing timestamp so both layouts render the same
+// human-readable hint. Best-effort — empty string when the suffix doesn't
+// match (a hand-placed file, etc.).
 function runLogDisplayTimestamp(name: string): string {
-  const m = name.match(/--(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})\d{2}Z\.log$/);
+  const m = name.match(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})\d{2}Z\.log$/);
   if (!m) return "";
   return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]} UTC`;
 }
@@ -1410,8 +1465,8 @@ function runLogDisplayTimestamp(name: string): string {
 // raw file is one click away via the "View raw log" link.
 const RUN_PANEL_EVENTS = 60;
 
-function renderRunPanel(slug: string, status: string, runLog: RunLogReader): string {
-  const snapshot = runLog(slug);
+function renderRunPanel(task: Task, slugSegs: string, status: string, runLog: RunLogReader): string {
+  const snapshot = runLog(task);
   const label = status === "in-progress" ? "Current run" : "Last run";
   if (!snapshot) {
     // No run on disk yet. For an in-progress task this is a transient state
@@ -1436,7 +1491,7 @@ function renderRunPanel(slug: string, status: string, runLog: RunLogReader): str
   const warning = skipped > 0
     ? `<p class="run-warning">${parsed} events parsed, ${skipped} skipped — file may have been truncated or partially written.</p>`
     : "";
-  const rawLink = `<p class="run-meta"><a href="/runs/${esc(snapshot.name)}">View raw log →</a></p>`;
+  const rawLink = `<p class="run-meta"><a href="/t/${slugSegs}/runs/${encodeURIComponent(snapshot.name)}">View raw log →</a></p>`;
   return `<section class="run-panel">
   <h2>${esc(label)} <span class="meta">${esc(snapshot.name)}</span></h2>
   ${warning}
