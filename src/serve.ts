@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjects, flatTasks, isParent, rollupStatus } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
@@ -90,6 +90,7 @@ export interface ServeOpts {
 // `buildCliArgs`. Kept narrow so a stray POST can't shell out to any tpm verb.
 const MUTATION_ACTIONS = new Set([
   "ready", "block", "reopen", "complete", "log", "pr", "status", "allow-orchestrator",
+  "lgtm", "request-changes",
 ]);
 
 const CLI_PATH = fileURLToPath(new URL("./cli.ts", import.meta.url));
@@ -341,6 +342,14 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
       taskLog,
     }));
   }
+  const taskReportMatch = pathname.match(/^\/t\/(.+)\/report\/?$/);
+  if (taskReportMatch) {
+    const query = decodeURIComponent(taskReportMatch[1]);
+    let match: { project: Project; task: Task } | null = null;
+    try { match = findTask(projects, query); } catch { match = null; }
+    if (!match) return notFound(`No task: ${query}`);
+    return ok("text/html; charset=utf-8", renderTaskReport(projects, match.project, match.task));
+  }
   const taskRunsMatch = pathname.match(/^\/t\/(.+)\/runs\/?$/);
   if (taskRunsMatch) {
     const query = decodeURIComponent(taskRunsMatch[1]);
@@ -502,6 +511,12 @@ function buildCliArgs(slug: string, action: string, body: URLSearchParams): stri
       if (allow === "true") return ["allow", slug];
       if (allow === "false") return ["disallow", slug];
       return null;
+    }
+    case "lgtm": return ["lgtm", slug];
+    case "request-changes": {
+      const comment = body.get("comment")?.trim();
+      if (!comment) return null;
+      return ["request-changes", slug, comment];
     }
     default: return null;
   }
@@ -698,12 +713,14 @@ function renderTask(
 
   const taskUrl = taskHref(project, task);
 
+  const reportRel = typeof task.data.report === "string" ? task.data.report.trim() : "";
   const logLink = renderTaskLogRailLink(taskUrl);
   const runsLink = renderTaskRunsRailLink(taskUrl);
+  const reportPanel = reportRel ? renderTaskReportRailPanel(taskUrl, reportRel) : "";
   const prPanel = renderPrPanel(prs, prCache);
   const actionsSection = renderActions(project, task, status, opts);
   const settingsSection = renderSettings(project, task, status, opts);
-  const railContent = `${logLink}${runsLink}${prPanel}${actionsSection}${settingsSection}`;
+  const railContent = `${logLink}${runsLink}${reportPanel}${prPanel}${actionsSection}${settingsSection}`;
   const hasRail = railContent.length > 0;
 
   const body = `
@@ -777,6 +794,58 @@ function renderTaskLogRailLink(taskUrl: string): string {
 // at /t/.../runs, not embedded on the task detail page.
 function renderTaskRunsRailLink(taskUrl: string): string {
   return `<section class="task-runs-link"><a href="${taskUrl}/runs">View runs →</a></section>`;
+}
+
+// "Report →" rail panel pointing at `/t/<proj>/<slug>/report`. Mirrors the
+// PR panel for investigation-shaped tasks: the deliverable lives off the
+// task body, and the rail surfaces a one-click jump.
+function renderTaskReportRailPanel(taskUrl: string, reportRel: string): string {
+  return `<section class="task-report"><h2>Report</h2><p><a href="${taskUrl}/report">View report →</a></p><p class="meta"><code>${esc(reportRel)}</code></p></section>`;
+}
+
+// `/t/<proj>/<slug>/report` — render the report markdown file as HTML. Falls
+// back to a missing-file message rather than 404'ing so the operator can
+// debug a misconfigured `report:` path.
+function renderTaskReport(projects: Project[], project: Project, task: Task): string {
+  const title = strOr(task.data.title, task.slug);
+  const taskUrl = taskHref(project, task);
+  const reportRel = typeof task.data.report === "string" ? task.data.report.trim() : "";
+
+  let main: string;
+  if (!reportRel) {
+    main = `<p class="config-empty">No <code>report:</code> attached. Run <code>tpm report ${esc(task.slug)}</code> to create one.</p>`;
+  } else {
+    const absPath = isAbsolute(reportRel) ? reportRel : join(project.dir, reportRel);
+    if (!existsSync(absPath)) {
+      main = `<p class="config-empty">Report file missing at <code>${esc(absPath)}</code>. Edit the <code>report:</code> field or re-create the file.</p>`;
+    } else {
+      let text = "";
+      try { text = readFileSync(absPath, "utf8"); } catch (e) {
+        main = `<p class="config-empty">Failed to read <code>${esc(absPath)}</code>: ${esc((e as Error).message)}</p>`;
+        return layout(`tpm · ${title} · report`, wrapReport(projects, project, task, main, reportRel, taskUrl));
+      }
+      // Drop HTML-comment placeholders (e.g. the template's `<!-- One paragraph… -->`)
+      // so the rendered view shows only what the agent has filled in. Markdown
+      // body text stays untouched.
+      const stripped = text.replace(/<!--[\s\S]*?-->/g, "");
+      main = `<div class="body">${renderMarkdown(stripped)}</div>`;
+    }
+  }
+  return layout(`tpm · ${title} · report`, wrapReport(projects, project, task, main, reportRel, taskUrl));
+}
+
+function wrapReport(projects: Project[], project: Project, task: Task, main: string, reportRel: string, taskUrl: string): string {
+  const title = strOr(task.data.title, task.slug);
+  const pathHint = reportRel ? ` <span class="meta"><code>${esc(reportRel)}</code></span>` : "";
+  return `
+${projectChips(projects, project.slug)}
+${breadcrumbFor(project, task, { suffix: "report" })}
+<header>
+  <h1>Report — ${esc(title)}</h1>
+  <p class="meta">Investigation deliverable.${pathHint}  ·  <a href="${taskUrl}">Back to task →</a></p>
+</header>
+${main}
+`;
 }
 
 // ---- /config page ---------------------------------------------------------
@@ -1316,11 +1385,26 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       forms.push(logForm(href));
       forms.push(blockForm(href));
       break;
-    case "needs-review":
+    case "needs-review": {
+      // Report-shaped review (investigation flow): the deliverable is the
+      // report file, so the reviewer's verbs are LGTM (close-out with auto-
+      // derived Outcome) and Request changes (kicks the task back to the
+      // agent with a comment appended to the report). Surface these for any
+      // task that either declares type=investigation or has a report
+      // attached; PR-shaped tasks keep the existing logForm/blockForm/
+      // reopen-for-agent shape.
+      const reportRel = typeof task.data.report === "string" ? task.data.report.trim() : "";
+      const type = strOr(task.data.type, "");
+      const isReportReview = reportRel.length > 0 || type === "investigation";
+      if (isReportReview) {
+        forms.push(lgtmForm(href));
+        forms.push(requestChangesForm(href));
+      }
       forms.push(logForm(href));
       forms.push(blockForm(href));
       forms.push(statusForm(href, "ready", "Reopen for agent (→ ready)"));
       break;
+    }
     case "blocked":
       forms.push(simpleForm(href, "reopen", "Reopen (→ open)"));
       break;
@@ -1399,6 +1483,21 @@ function prForm(href: string): string {
       <input type="url" name="url" required placeholder="https://github.com/...">
     </label>
     <button type="submit">Link PR</button>
+  </form>`;
+}
+
+function lgtmForm(href: string): string {
+  return `<form method="POST" action="${href}/lgtm" class="action-form">
+    <button type="submit">LGTM (close — derive Outcome from report)</button>
+  </form>`;
+}
+
+function requestChangesForm(href: string): string {
+  return `<form method="POST" action="${href}/request-changes" class="action-form">
+    <label>Request changes (appended to <code>## Reviewer feedback</code>)
+      <textarea name="comment" rows="3" required placeholder="what needs to change"></textarea>
+    </label>
+    <button type="submit">Request changes</button>
   </form>`;
 }
 

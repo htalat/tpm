@@ -606,6 +606,89 @@ test("routeMutation: CLI success surfaces stdout in flash", () => {
   assert.match(decodeURIComponent(r.location ?? ""), /alpha\/001-a -> ready/);
 });
 
+// ---- report flow (investigation deliverable) ------------------------------
+
+test("renderTask: rail surfaces a Report panel when report: is set", () => {
+  const t = task("001-a", "in-progress", { report: "reports/001-a.md", type: "investigation" });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /class="task-report"/);
+  assert.match(r.body, /href="\/t\/alpha\/001-a\/report"/);
+  assert.match(r.body, /<code>reports\/001-a\.md<\/code>/);
+});
+
+test("renderTask: no Report panel when report: is unset", () => {
+  const t = task("001-a", "in-progress", { type: "investigation" });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.doesNotMatch(r.body, /class="task-report"/);
+});
+
+test("renderTask: needs-review on an investigation task shows LGTM + Request-changes forms", () => {
+  const t = task("001-a", "needs-review", { type: "investigation", report: "reports/001-a.md" });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/request-changes"/);
+});
+
+test("renderTask: needs-review on a report-attached non-investigation task still shows LGTM + Request-changes", () => {
+  // Type isn't investigation but a report is attached — gate is OR.
+  const t = task("001-a", "needs-review", { type: "spike", report: "reports/001-a.md" });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/request-changes"/);
+});
+
+test("renderTask: needs-review on a PR-shaped task (no report, type=pr) does NOT show LGTM/request-changes", () => {
+  const t = task("001-a", "needs-review", { type: "pr", prs: ["https://github.com/x/y/pull/1"] });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
+  assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/request-changes"/);
+  // The existing log/block/reopen forms still render.
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/log"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/block"/);
+});
+
+test("route: /t/<slug>/report missing file renders a placeholder, not a 404", () => {
+  const t = task("001-a", "in-progress", { report: "reports/missing.md", type: "investigation" });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p]);
+  assert.equal(r.status, 200);
+  assert.match(r.body, /Report file missing/);
+});
+
+test("route: /t/<slug>/report with no report: attached renders a stub", () => {
+  const t = task("001-a", "in-progress", { type: "investigation" });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p]);
+  assert.equal(r.status, 200);
+  assert.match(r.body, /No <code>report:<\/code> attached/);
+});
+
+test("routeMutation: /t/<slug>/lgtm dispatches `tpm lgtm <slug>`", () => {
+  const { runner, calls } = captureRunner();
+  const r = routeMutation("/t/alpha/001-a/lgtm", new URLSearchParams(), runner);
+  assert.equal(r.status, 303);
+  assert.deepEqual(calls, [["lgtm", "alpha/001-a"]]);
+});
+
+test("routeMutation: /t/<slug>/request-changes requires comment", () => {
+  const { runner, calls } = captureRunner();
+  const r = routeMutation("/t/alpha/001-a/request-changes", new URLSearchParams(), runner);
+  assert.equal(r.status, 303);
+  assert.match(decodeURIComponent(r.location ?? ""), /bad request: missing required field for request-changes/);
+  assert.deepEqual(calls, []);
+});
+
+test("routeMutation: /t/<slug>/request-changes forwards comment to CLI", () => {
+  const { runner, calls } = captureRunner();
+  routeMutation("/t/alpha/001-a/request-changes", new URLSearchParams("comment=needs more depth"), runner);
+  assert.deepEqual(calls, [["request-changes", "alpha/001-a", "needs more depth"]]);
+});
+
 // ---- safety guards --------------------------------------------------------
 
 test("isLoopback: accepts 127.0.0.1, localhost, ::1", () => {

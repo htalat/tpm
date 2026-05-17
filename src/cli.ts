@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { readFileSync, existsSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findRoot } from "./root.ts";
 import { newProject, newTask } from "./new.ts";
@@ -149,10 +149,44 @@ try {
       break;
     }
     case "report": {
-      const root = findRoot();
-      const format = args.includes("--md") ? "md" : "html";
-      const path = report(root, { format });
-      console.log(`Wrote ${path}`);
+      // Two shapes share this verb:
+      //   `tpm report [--md]`               — rollup HTML/MD for the whole tree
+      //   `tpm report <slug> [<path>]`      — attach a report artifact to a task
+      //   `tpm report <slug> --export text` — print the report as plain text
+      // First positional disambiguates: starts with `-` (or absent) → rollup;
+      // bare token → slug-attach.
+      const first = args[1];
+      if (!first || first.startsWith("-")) {
+        const root = findRoot();
+        const format = args.includes("--md") ? "md" : "html";
+        const path = report(root, { format });
+        console.log(`Wrote ${path}`);
+        break;
+      }
+      const slug = first;
+      const exportFmt = parseFlag(args, "--export");
+      if (exportFmt !== undefined) {
+        if (exportFmt !== "text") usage("tpm report <slug> --export text  (only 'text' is supported)");
+        const task = resolveLiveTask(slug, "tpm report <slug> --export text");
+        const reportRel = typeof task.data.report === "string" ? task.data.report.trim() : "";
+        if (!reportRel) {
+          throw new Error(`${task.slug}: no report attached. Run \`tpm report ${slug}\` first.`);
+        }
+        const projectDir = projectDirForTaskPath(task.path, task);
+        const absPath = isAbsolute(reportRel) ? reportRel : join(projectDir, reportRel);
+        if (!existsSync(absPath)) throw new Error(`${task.slug}: report file missing at ${absPath}`);
+        const text = readFileSync(absPath, "utf8");
+        // Cheap markdown → text: drop HTML comments. Everything else stays
+        // as-is (headings, bullets) — markdown reads fine in a terminal.
+        process.stdout.write(text.replace(/<!--[\s\S]*?-->/g, ""));
+        break;
+      }
+      // args[2] is the optional explicit path (may itself start with `-` if a
+      // future flag lands here — guard that by skipping any leading-dash arg).
+      const pathArg = args[2] && !args[2].startsWith("-") ? args[2] : undefined;
+      const task = resolveLiveTask(slug, "tpm report <slug> [<path>] [--export text]");
+      const r = mutate.addReport(task, pathArg);
+      console.log(r.message);
       break;
     }
     case "init": {
@@ -254,6 +288,35 @@ try {
       });
       console.log(r.message);
       if (r.archivedAt) console.log(`Archived -> ${r.archivedAt}`);
+      break;
+    }
+    case "lgtm": {
+      // Reviewer LGTM on an investigation report: derive an Outcome from the
+      // report file (title + first paragraph) and run complete. The serve
+      // `LGTM` button shells out to this verb so the web layer never reaches
+      // into mutate directly.
+      if (!args[1]) usage("tpm lgtm <task>");
+      const task = resolveLiveTask(args[1], "tpm lgtm <task>");
+      const reportRel = typeof task.data.report === "string" ? task.data.report.trim() : "";
+      if (!reportRel) throw new Error(`${task.slug}: no report attached. Run \`tpm report ${args[1]}\` first.`);
+      const projectDir = projectDirForTaskPath(task.path, task);
+      const absPath = isAbsolute(reportRel) ? reportRel : join(projectDir, reportRel);
+      if (!existsSync(absPath)) throw new Error(`${task.slug}: report file missing at ${absPath}`);
+      const reportText = readFileSync(absPath, "utf8");
+      const outcome = mutate.deriveReportOutcome(reportText);
+      const r = mutate.complete(task, { outcome });
+      console.log(r.message);
+      if (r.archivedAt) console.log(`Archived -> ${r.archivedAt}`);
+      break;
+    }
+    case "request-changes": {
+      const comment = args[2];
+      if (!args[1] || !comment) usage('tpm request-changes <task> "<comment>"');
+      const r = mutate.requestReportChanges(
+        resolveLiveTask(args[1], 'tpm request-changes <task> "<comment>"'),
+        comment,
+      );
+      console.log(r.message);
       break;
     }
     case "lock": {
@@ -613,6 +676,15 @@ function parseFlag(args: string[], flag: string): string | undefined {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
+// Mirror of mutate.ts's `projectDirForTask` — kept inline so the export
+// path doesn't need to flow through mutate just for the CLI's `--export
+// text` branch.
+function projectDirForTaskPath(taskPath: string, task: Task): string {
+  if (task.dir) return dirname(dirname(task.dir));
+  if (task.parent) return dirname(dirname(dirname(taskPath)));
+  return dirname(dirname(taskPath));
+}
+
 function resolveLiveTask(query: string | undefined, usageMsg: string): Task {
   if (!query) usage(usageMsg);
   const root = findRoot();
@@ -734,6 +806,11 @@ Usage:
   tpm status <task> <new-status>             generic status setter (validated)
   tpm log <task> "<message>"                 append a single timestamped Log line
   tpm pr <task> <url>                        add URL to prs:, log opened PR
+  tpm report <task> [<path>]                 attach a report artifact (default: <project>/reports/<slug>.md);
+                                             auto-flips in-progress -> needs-review (investigation analogue of tpm pr)
+  tpm report <task> --export text            print the report as plain text (drops HTML comments)
+  tpm lgtm <task>                            reviewer approval on a report task: derive Outcome + complete
+  tpm request-changes <task> "<comment>"     reviewer pushback on a report: append to ## Reviewer feedback + flip to needs-feedback
   tpm allow <task>                           set allow_orchestrator: true (safe for autonomous runs)
   tpm disallow <task>                        set allow_orchestrator: false
   tpm archive <task | project/task>          move a done/dropped task to tasks/archive/
@@ -757,7 +834,7 @@ Usage:
   tpm poll [--dry-run]                       PR-signal poller: walk linked PRs, flip status, auto-close on merge
   tpm notify <start|finish|fail> <task>      best-effort osascript notification (cascade: task > project > global)
   tpm serve [--port 7777] [--host 127.0.0.1] start a localhost HTTP UI for the queues (read-only)
-  tpm report [--md]
+  tpm report [--md]                          generate a rollup of every project/task to reports/index.{html,md}
   tpm root                                   print the tree root
   tpm path <project | task | project/task>   print the local repo path
   tpm now                                    timestamp in the configured timezone

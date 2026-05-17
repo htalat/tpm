@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
 import { loadProjects } from "./tree.ts";
 import {
   start, ready, block, reopen, revert, logEntry, addPr, setStatus, complete,
-  setAllowOrchestrator, reparent,
+  setAllowOrchestrator, reparent, addReport, requestReportChanges,
   appendLog, setSection, sectionHasContent,
 } from "./mutate.ts";
 import { parse } from "./frontmatter.ts";
@@ -390,6 +390,292 @@ test("pr: duplicate URL on already-flipped task — no extra status flip, no ext
     // Exactly one status-flip log line — re-flipping would append another.
     const flipCount = (afterFirst.match(/status -> needs-review/g) ?? []).length;
     assert.equal(flipCount, 1);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+// ---- addReport ------------------------------------------------------------
+
+test("report: creates default file from template, sets `report:`, logs, flips status", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-finding.md", "in-progress", "investigation");
+    const t = loadTask(root, "alpha", "001-finding");
+    const r = addReport(t);
+    assert.match(r.message, /created reports\/001-finding\.md/);
+    assert.match(r.message, /-> needs-review/);
+    const text = readFileSync(t.path, "utf8");
+    const { data } = parse(text);
+    assert.equal(data.report, "reports/001-finding.md");
+    assert.match(text, /status: needs-review/);
+    assert.match(text, /opened report reports\/001-finding\.md$/m);
+    assert.match(text, /status -> needs-review \(report attached, awaiting review\)$/m);
+    const reportPath = join(dir, "reports", "001-finding.md");
+    assert.ok(existsSync(reportPath));
+    const reportText = readFileSync(reportPath, "utf8");
+    assert.match(reportText, /^# Task 001-finding$/m);
+    assert.match(reportText, /## Summary/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("report: terminus line surfaces on the in-progress flip path", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress", "investigation");
+    const t = loadTask(root, "alpha", "001-a");
+    const r = addReport(t);
+    assert.match(r.message, /Your turn is complete — exit/);
+    assert.match(r.message, /LGTMs or requests changes/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("report: idempotent re-attach with same path on already-flipped task — no extra log lines", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress", "investigation");
+    const t = loadTask(root, "alpha", "001-a");
+    addReport(t);
+    const afterFirst = readFileSync(t.path, "utf8");
+    const t2 = loadTask(root, "alpha", "001-a");
+    addReport(t2);
+    assert.equal(readFileSync(t.path, "utf8"), afterFirst);
+    const flipCount = (afterFirst.match(/status -> needs-review/g) ?? []).length;
+    assert.equal(flipCount, 1);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("report: re-attach on needs-feedback (post-feedback round) re-fires the flip", () => {
+  // After request-changes flips needs-review -> needs-feedback, the agent
+  // re-attaches via `tpm report <slug>` (no path). The path is already set
+  // so the field write is a no-op, but the status flip should still happen
+  // when status is in-progress. Simulate: agent ran `tpm start` (needs-
+  // feedback -> in-progress) before re-running `tpm report`.
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress", "investigation");
+    const t = loadTask(root, "alpha", "001-a");
+    addReport(t);
+    // Reviewer requests changes — re-load and flip.
+    const t2 = loadTask(root, "alpha", "001-a");
+    requestReportChanges(t2, "needs more context");
+    // Agent runs `tpm start` (needs-feedback -> in-progress) and re-attaches.
+    const t3 = loadTask(root, "alpha", "001-a");
+    start(t3);
+    const t4 = loadTask(root, "alpha", "001-a");
+    const r = addReport(t4);
+    assert.match(r.message, /-> needs-review/);
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: needs-review/);
+    const flipCount = (text.match(/status -> needs-review/g) ?? []).length;
+    assert.equal(flipCount, 2);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("report: non-in-progress status leaves status alone (e.g. ready)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "ready", "investigation");
+    const t = loadTask(root, "alpha", "001-a");
+    const r = addReport(t);
+    assert.doesNotMatch(r.message, /needs-review/);
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: ready/);
+    assert.doesNotMatch(text, /status -> needs-review/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("report: explicit path stored as relative-to-project-root", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress", "investigation");
+    const t = loadTask(root, "alpha", "001-a");
+    addReport(t, "reports/custom.md");
+    const text = readFileSync(t.path, "utf8");
+    const { data } = parse(text);
+    assert.equal(data.report, "reports/custom.md");
+    assert.ok(existsSync(join(dir, "reports", "custom.md")));
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("report: refuses to switch report: to a different path on the same task", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress", "investigation");
+    const t = loadTask(root, "alpha", "001-a");
+    addReport(t, "reports/first.md");
+    const t2 = loadTask(root, "alpha", "001-a");
+    assert.throws(() => addReport(t2, "reports/second.md"), /already set to "reports\/first\.md"/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("report: existing file is not overwritten", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress", "investigation");
+    const reportPath = join(dir, "reports", "001-a.md");
+    mkdirSync(dirname(reportPath), { recursive: true });
+    writeFileSync(reportPath, "# pre-existing\n\nbody.\n");
+    const t = loadTask(root, "alpha", "001-a");
+    addReport(t);
+    assert.equal(readFileSync(reportPath, "utf8"), "# pre-existing\n\nbody.\n");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("report: child task (folder-form parent) defaults to reports/<parent>/<child>.md", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    // Build a folder-form parent with one child.
+    const parentDir = join(dir, "tasks", "001-parent");
+    mkdirSync(parentDir, { recursive: true });
+    writeFileSync(join(parentDir, "task.md"), taskMd("001-parent", "ready", "investigation"));
+    const childPath = join(parentDir, "002-child.md");
+    writeFileSync(
+      childPath,
+      taskMd("002-child", "in-progress", "investigation").replace(
+        "project: alpha",
+        "project: alpha\nparent: 001-parent",
+      ),
+    );
+    const [proj] = loadProjects(root, { archived: true }).filter(p => p.slug === "alpha");
+    const parent = proj.tasks.find(t => t.slug === "001-parent")!;
+    const child = parent.children!.find(c => c.slug === "002-child")!;
+    addReport(child);
+    const text = readFileSync(child.path, "utf8");
+    const { data } = parse(text);
+    assert.equal(data.report, join("reports", "001-parent", "002-child.md"));
+    assert.ok(existsSync(join(dir, "reports", "001-parent", "002-child.md")));
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("report: refuses on archived task", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    const archivePath = join(dir, "tasks", "archive");
+    mkdirSync(archivePath, { recursive: true });
+    writeFileSync(join(archivePath, "001-a.md"), taskMd("001-a", "done", "investigation"));
+    const t = loadTask(root, "alpha", "001-a");
+    assert.throws(() => addReport(t), /Cannot mutate archived task/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+// ---- requestReportChanges -------------------------------------------------
+
+test("requestReportChanges: flips needs-review -> needs-feedback, appends ## Reviewer feedback, logs", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress", "investigation");
+    const t = loadTask(root, "alpha", "001-a");
+    addReport(t);
+    // Status is now needs-review.
+    const t2 = loadTask(root, "alpha", "001-a");
+    const r = requestReportChanges(t2, "missing context on commit X");
+    assert.match(r.message, /review requested.*-> needs-feedback/);
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: needs-feedback/);
+    assert.match(text, /: review requested — missing context on commit X$/m);
+    assert.match(text, /status -> needs-feedback \(review requested\)$/m);
+    const reportText = readFileSync(join(dir, "reports", "001-a.md"), "utf8");
+    assert.match(reportText, /## Reviewer feedback/);
+    assert.match(reportText, /missing context on commit X/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("requestReportChanges: multiple rounds accumulate under one ## Reviewer feedback heading", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress", "investigation");
+    const t = loadTask(root, "alpha", "001-a");
+    addReport(t);
+    requestReportChanges(loadTask(root, "alpha", "001-a"), "round 1 feedback");
+    // Agent re-attaches: needs-feedback -> in-progress (via start) -> needs-review.
+    start(loadTask(root, "alpha", "001-a"));
+    addReport(loadTask(root, "alpha", "001-a"));
+    // Second round of changes.
+    requestReportChanges(loadTask(root, "alpha", "001-a"), "round 2 feedback");
+    const reportText = readFileSync(join(dir, "reports", "001-a.md"), "utf8");
+    // Exactly one heading; both comments present in chronological order.
+    const headings = (reportText.match(/^## Reviewer feedback/gm) ?? []).length;
+    assert.equal(headings, 1);
+    const idx1 = reportText.indexOf("round 1 feedback");
+    const idx2 = reportText.indexOf("round 2 feedback");
+    assert.ok(idx1 > 0 && idx2 > idx1);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("requestReportChanges: refuses when no report attached", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "needs-review", "investigation");
+    const t = loadTask(root, "alpha", "001-a");
+    assert.throws(() => requestReportChanges(t, "..."), /no report attached/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("requestReportChanges: refuses when status is not needs-review", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress", "investigation");
+    const t = loadTask(root, "alpha", "001-a");
+    addReport(t);
+    // Manually flip to in-progress to simulate an out-of-band state.
+    start(loadTask(root, "alpha", "001-a"));
+    const t2 = loadTask(root, "alpha", "001-a");
+    assert.throws(() => requestReportChanges(t2, "..."), /requires status=needs-review/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("requestReportChanges: refuses on empty/whitespace comment", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress", "investigation");
+    const t = loadTask(root, "alpha", "001-a");
+    addReport(t);
+    const t2 = loadTask(root, "alpha", "001-a");
+    assert.throws(() => requestReportChanges(t2, "   "), /requires a comment/);
   } finally {
     rmTempDir(root);
   }

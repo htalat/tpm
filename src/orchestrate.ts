@@ -66,6 +66,12 @@ export type Disposition = "shipped" | "stalled" | "timeout" | "terminal" | "fail
 export interface DispositionSnapshot {
   status: string;
   prs: number;
+  // Whether the task's `report:` frontmatter field is set to a non-empty
+  // path. Investigation deliverables (task 080) ship as a report artifact,
+  // not a PR — the empty→set transition is the same "shipped" signal as a
+  // PR count increase. Older snapshots without this field treat it as
+  // false; callers should always pass it explicitly post-080.
+  report?: boolean;
 }
 
 export interface ClassifyDispositionInput {
@@ -100,17 +106,20 @@ export function classifyDisposition(input: ClassifyDispositionInput): Dispositio
   if (!after) return "shipped";
 
   const prsGrew = after.prs > input.before.prs;
+  const reportAppeared = (after.report ?? false) && !(input.before.report ?? false);
   const statusChanged = after.status !== input.before.status;
   // `tpm start` flips `ready -> in-progress` or `needs-feedback -> in-progress`
-  // on entry. Without further progress (no PR, no delivery-state advance),
-  // that's claim-not-progress — per task 064.
+  // on entry. Without further progress (no PR, no report, no delivery-state
+  // advance), that's claim-not-progress — per task 064.
   const entryFlip =
     after.status === "in-progress" &&
     (input.before.status === "ready" || input.before.status === "needs-feedback") &&
-    !prsGrew;
-  // Did the agent ship? PR opened, or status reached a delivery state.
+    !prsGrew &&
+    !reportAppeared;
+  // Did the agent ship? PR opened, report attached, or status reached a
+  // delivery state.
   const shippedFlip =
-    !entryFlip && (prsGrew || (statusChanged && DELIVERY_STATES.has(after.status)));
+    !entryFlip && (prsGrew || reportAppeared || (statusChanged && DELIVERY_STATES.has(after.status)));
 
   // Delivery wins over timeout: the 057 trace was `status=ready->needs-review
   // prs=0->1 exit=124` and got reported as `timeout`. Per task 068, that's the
@@ -149,7 +158,19 @@ export function formatDispositionLine(
 ): string {
   const afterStatus = after?.status ?? "?";
   const afterPrs = after?.prs ?? before.prs;
-  return `disposition ${slug} ${disposition} exit=${exitCode} status=${before.status}->${afterStatus} prs=${before.prs}->${afterPrs}`;
+  const beforeReport = before.report ?? false;
+  const afterReport = (after?.report ?? before.report) ?? false;
+  // Append a `report=<before>-><after>` field only when at least one side
+  // is true — keeps the line schema unchanged for PR-shaped tasks where no
+  // report has ever been attached.
+  const reportField = beforeReport || afterReport
+    ? ` report=${reportFlag(beforeReport)}->${reportFlag(afterReport)}`
+    : "";
+  return `disposition ${slug} ${disposition} exit=${exitCode} status=${before.status}->${afterStatus} prs=${before.prs}->${afterPrs}${reportField}`;
+}
+
+function reportFlag(set: boolean): string {
+  return set ? "set" : "empty";
 }
 
 export interface AutoRevertInput {
@@ -170,6 +191,7 @@ export interface AutoRevertInput {
 //   - the task still exists in the tree (wasn't archived)
 //   - status is `in-progress` after the run
 //   - prs count didn't grow (a PR opened would have flipped to needs-review)
+//   - report: didn't appear (a report attach would have flipped to needs-review)
 //   - `before.status` wasn't `needs-feedback` — a feedback round legitimately
 //     ends at `in-progress` with unchanged prs after addressing CI/threads.
 export function shouldAutoRevert(input: AutoRevertInput): boolean {
@@ -178,6 +200,7 @@ export function shouldAutoRevert(input: AutoRevertInput): boolean {
   if (!input.after) return false;
   if (input.after.status !== "in-progress") return false;
   if (input.after.prs !== input.before.prs) return false;
+  if ((input.after.report ?? false) && !(input.before.report ?? false)) return false;
   if (input.before.status === "needs-feedback") return false;
   return true;
 }
@@ -195,15 +218,19 @@ export function buildExecutionPrompt(briefing: string): string {
 
 You are executing this task. Rules:
 - Follow the Plan above.
-- After opening a PR, run \`tpm pr <slug> <url>\` (CLI auto-flips to needs-review). Stop.
+- If type=pr: after opening a PR, run \`tpm pr <slug> <url>\` (CLI auto-flips to needs-review). Stop.
+- If type=investigation: your deliverable is a **report**, not a PR. Write findings into \`<project>/reports/<slug>.md\` (run \`tpm report <slug>\` to create it from template + register it). When done, \`tpm report <slug>\` auto-flips to needs-review. Don't run \`tpm pr\`.
 - Can't proceed? \`tpm revert <slug> "<reason>"\` (back to ready) or \`tpm block <slug> "<reason>"\` (human queue). Never exit at in-progress.
 - Unanticipated decision? Ship the smaller / more local change, file follow-ups, don't halt.`;
 }
 
 function snapshotTask(task: Task): DispositionSnapshot {
+  const reportField = task.data.report;
+  const reportSet = typeof reportField === "string" && reportField.trim().length > 0;
   return {
     status: String(task.data.status ?? ""),
     prs: Array.isArray(task.data.prs) ? (task.data.prs as unknown[]).length : 0,
+    report: reportSet,
   };
 }
 
