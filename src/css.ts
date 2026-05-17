@@ -160,6 +160,21 @@ body { max-width: 1600px; }
 .pr-fetched, .pr-nodata { color: #8d96a0; font-size: .8em; margin: .55rem 0 0; }
 .pr-chip { font-size: .68em; padding: 1px 7px; }
 a.pr-chip:hover { text-decoration: none; opacity: .8; }
+.report-chip { font-size: .68em; padding: 1px 7px; }
+a.report-chip:hover { text-decoration: none; opacity: .8; }
+.artifact-filter { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .75rem; }
+.artifact-row { display: flex; gap: .75rem; align-items: center; padding: .35rem 0; border-bottom: 1px solid #eaeef2; }
+.artifact-row:hover { background: #f6f8fa; }
+.artifact-row .badge { min-width: 6.5em; text-align: center; }
+.artifact-row a.title { font-weight: 500; }
+.artifact-row .slug { color: #8d96a0; font-size: .85em; }
+.artifact-row.archived { opacity: .65; }
+.artifact-row.archived a.title { font-weight: 400; }
+.artifact-chips { margin-left: auto; display: inline-flex; gap: .35rem; flex-wrap: wrap; }
+@media (prefers-color-scheme: dark) {
+  .artifact-row { border-color: #21262d; }
+  .artifact-row:hover { background: #161b22; }
+}
 @media (prefers-color-scheme: dark) {
   .pr-panel { border-color: #30363d; }
   .pr-card { background: #161b22; border-color: #30363d; }

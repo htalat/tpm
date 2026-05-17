@@ -315,6 +315,15 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     if (text === null) return notFound(`No run log: ${name}`);
     return { status: 200, contentType: "text/plain; charset=utf-8", body: text };
   }
+  const artifactsMatch = pathname.match(/^\/p\/([^/]+)\/artifacts\/?$/);
+  if (artifactsMatch) {
+    const slug = decodeURIComponent(artifactsMatch[1]);
+    const project = projects.find(p => p.slug === slug);
+    if (!project) return notFound(`No project: ${slug}`);
+    const typeParam = params.get("type");
+    const filter: ArtifactFilter = typeParam === "pr" || typeParam === "report" ? typeParam : "all";
+    return ok("text/html; charset=utf-8", renderArtifacts(project, projects, filter, prCache));
+  }
   const projectMatch = pathname.match(/^\/p\/([^/]+)\/?$/);
   if (projectMatch) {
     const slug = decodeURIComponent(projectMatch[1]);
@@ -657,7 +666,7 @@ ${projectChips(allProjects, project.slug)}
 <header>
   <h1>${esc(projectName)} <span class="badge s-${cls(status)}">${esc(status)}</span></h1>
   <p class="meta"><code>${esc(project.slug)}</code>  ·  ${repoLink}  ·  ${tasks.length} task${tasks.length === 1 ? "" : "s"}${showArchived ? " (incl. archived)" : ""}</p>
-  <p class="archive-toggle"><a href="${toggleHref}">${showArchived ? "[x]" : "[ ]"} ${toggleLabel}</a></p>
+  <p class="archive-toggle"><a href="${toggleHref}">${showArchived ? "[x]" : "[ ]"} ${toggleLabel}</a>  ·  <a href="/p/${esc(project.slug)}/artifacts">Artifacts →</a></p>
 </header>
 <div class="layout no-rail">
   <aside class="sidebar">
@@ -676,6 +685,122 @@ ${projectChips(allProjects, project.slug)}
 </div>
 `;
   return layout(`tpm · ${projectName}`, body);
+}
+
+// ---- /p/<proj>/artifacts --------------------------------------------------
+
+// Filter param for the artifacts index. "all" lists every task with at least
+// one artifact; the narrower values show only PR-bearing or report-bearing
+// rows. A task with both still renders both chip types — the filter narrows
+// rows, not chips.
+type ArtifactFilter = "all" | "pr" | "report";
+
+function renderArtifacts(
+  project: Project,
+  allProjects: Project[],
+  filter: ArtifactFilter,
+  prCache: PrCacheReader,
+): string {
+  const projectName = strOr(project.data.name, project.slug);
+  const tasks = flatTasks(project.tasks).filter(t => !isParent(t));
+
+  interface ArtifactRow {
+    task: Task;
+    prs: string[];
+    report: string;
+    lastMs: number;
+  }
+  const rows: ArtifactRow[] = [];
+  for (const t of tasks) {
+    const prs = (Array.isArray(t.data.prs) ? t.data.prs : []).map(String).filter(u => u.length > 0);
+    const report = typeof t.data.report === "string" ? t.data.report.trim() : "";
+    const hasPr = prs.length > 0;
+    const hasReport = report.length > 0;
+    if (!hasPr && !hasReport) continue;
+    if (filter === "pr" && !hasPr) continue;
+    if (filter === "report" && !hasReport) continue;
+    rows.push({ task: t, prs, report, lastMs: lastActivityKey(t) });
+  }
+  rows.sort((a, b) => b.lastMs - a.lastMs);
+
+  const filterNav = renderArtifactFilter(project.slug, filter);
+  const main = rows.length === 0
+    ? `<p class="config-empty">No artifacts yet. PRs and reports show up here once tasks ship.</p>`
+    : rows.map(r => renderArtifactRow(project, r.task, r.report, prCache)).join("");
+
+  const body = `
+${projectChips(allProjects, project.slug)}
+<nav class="crumbs"><a href="/">tpm</a><a href="/p/${esc(project.slug)}">${esc(project.slug)}</a><a href="/p/${esc(project.slug)}/artifacts">artifacts</a></nav>
+<header>
+  <h1>Artifacts — ${esc(projectName)}</h1>
+  <p class="meta">PRs and reports per task. <a href="/p/${esc(project.slug)}">Back to project →</a></p>
+  ${filterNav}
+</header>
+${main}
+`;
+  return layout(`tpm · ${projectName} · artifacts`, body);
+}
+
+function renderArtifactFilter(projectSlug: string, active: ArtifactFilter): string {
+  const opts: Array<{ key: ArtifactFilter; label: string; query: string }> = [
+    { key: "all", label: "All", query: "" },
+    { key: "pr", label: "PRs", query: "?type=pr" },
+    { key: "report", label: "Reports", query: "?type=report" },
+  ];
+  const chips = opts.map(o => {
+    const href = `/p/${esc(projectSlug)}/artifacts${o.query}`;
+    if (o.key === active) {
+      return `<span class="chip active">${esc(o.label)}</span>`;
+    }
+    return `<a class="chip" href="${href}">${esc(o.label)}</a>`;
+  }).join("");
+  return `<nav class="artifact-filter">${chips}</nav>`;
+}
+
+function renderArtifactRow(
+  project: Project,
+  task: Task,
+  reportRel: string,
+  prCache: PrCacheReader,
+): string {
+  const slugPath = task.parent
+    ? `${project.slug}/${task.parent}/${task.slug}`
+    : `${project.slug}/${task.slug}`;
+  const href = `/t/${slugPath.split("/").map(esc).join("/")}`;
+  const title = strOr(task.data.title, task.slug);
+  const status = rollupStatus(task);
+  const classes = ["artifact-row"];
+  if (task.archived) classes.push("archived");
+  const archivedTag = task.archived ? `<span class="archived-tag">archived</span>` : "";
+  const prChips = prChipsFor(task, prCache);
+  const reportChip = reportRel
+    ? `<a class="report-chip badge s-needs-review" href="${href}/report">[report]</a>`
+    : "";
+  return `<div class="${classes.join(" ")}">
+    <span class="badge s-${cls(status)}${task.archived ? " s-archived" : ""}">${esc(status)}</span>
+    <a class="title" href="${href}">${esc(title)}</a>
+    <span class="slug">${esc(slugPath)}</span>
+    ${archivedTag}
+    <span class="artifact-chips">${prChips}${reportChip}</span>
+  </div>`;
+}
+
+// Sort key for the artifacts index: most recent activity first. Prefers the
+// latest task-body Log entry timestamp; falls back to Date.parse of `created`
+// (best-effort — wall-clock formats like "2026-05-16 22:36 PDT" parse in V8).
+// Tasks with neither return 0 and sink to the bottom.
+function lastActivityKey(task: Task): number {
+  const entries = parseTaskLogEntries(task.body);
+  let best = -Infinity;
+  for (const e of entries) {
+    if (!e.timestamp) continue;
+    const ms = Date.parse(e.timestamp);
+    if (Number.isFinite(ms) && ms > best) best = ms;
+  }
+  if (best > -Infinity) return best;
+  const created = String(task.data.created ?? "");
+  const ms = created ? Date.parse(created) : NaN;
+  return Number.isFinite(ms) ? ms : 0;
 }
 
 function renderTask(
