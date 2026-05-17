@@ -282,6 +282,100 @@ test("route: /t/<project>/<slug> resolves an archived task", () => {
   assert.match(r.body, /Task 099-old/);
 });
 
+// ---- /p/<proj>/artifacts --------------------------------------------------
+
+const noPrCache: PrCacheReader = () => null;
+
+test("renderProject: header links to the artifacts index", () => {
+  const p = project("alpha", [task("001-a", "ready")]);
+  const r = route("/p/alpha", new URLSearchParams(), [p]);
+  assert.match(r.body, /href="\/p\/alpha\/artifacts"/);
+});
+
+test("route: /p/<slug>/artifacts renders rows for PRs and reports together", () => {
+  const withPr = task("001-pr", "done", {
+    prs: ["https://github.com/x/y/pull/79"],
+    closed: "2026-04-01 12:00 PDT",
+  });
+  withPr.archived = true;
+  const withReport = task("002-rep", "done", { report: "reports/002-rep.md" });
+  const withBoth = task("003-both", "done", {
+    prs: ["https://github.com/x/y/pull/45"],
+    report: "reports/003-both.md",
+  });
+  const noArtifact = task("004-bare", "ready");
+  const p = project("alpha", [withPr, withReport, withBoth, noArtifact]);
+  const r = route("/p/alpha/artifacts", new URLSearchParams(), [p], { prCache: noPrCache });
+  assert.equal(r.status, 200);
+  assert.match(r.body, /Artifacts —/);
+  // Three artifact rows render; the bare task is excluded.
+  assert.match(r.body, /001-pr/);
+  assert.match(r.body, /002-rep/);
+  assert.match(r.body, /003-both/);
+  assert.doesNotMatch(r.body, /004-bare/);
+  // PR chips link to GitHub and the report chip links in-app.
+  assert.match(r.body, /href="https:\/\/github\.com\/x\/y\/pull\/79"/);
+  assert.match(r.body, /class="report-chip[^"]*"[^>]*href="\/t\/alpha\/002-rep\/report"/);
+  // The task with both gets both chip types.
+  assert.match(r.body, /href="https:\/\/github\.com\/x\/y\/pull\/45"/);
+  assert.match(r.body, /href="\/t\/alpha\/003-both\/report"/);
+});
+
+test("route: /p/<slug>/artifacts?type=pr narrows to PR-bearing rows", () => {
+  const withPr = task("001-pr", "done", { prs: ["https://github.com/x/y/pull/79"] });
+  const withReport = task("002-rep", "done", { report: "reports/002-rep.md" });
+  const p = project("alpha", [withPr, withReport]);
+  const r = route("/p/alpha/artifacts", new URLSearchParams("type=pr"), [p], { prCache: noPrCache });
+  assert.match(r.body, /001-pr/);
+  assert.doesNotMatch(r.body, /002-rep/);
+});
+
+test("route: /p/<slug>/artifacts?type=report narrows to report-bearing rows", () => {
+  const withPr = task("001-pr", "done", { prs: ["https://github.com/x/y/pull/79"] });
+  const withReport = task("002-rep", "done", { report: "reports/002-rep.md" });
+  const p = project("alpha", [withPr, withReport]);
+  const r = route("/p/alpha/artifacts", new URLSearchParams("type=report"), [p], { prCache: noPrCache });
+  assert.doesNotMatch(r.body, /001-pr/);
+  assert.match(r.body, /002-rep/);
+});
+
+test("route: /p/<slug>/artifacts renders an empty state when no task has artifacts", () => {
+  const p = project("alpha", [task("001-a", "ready"), task("002-b", "in-progress")]);
+  const r = route("/p/alpha/artifacts", new URLSearchParams(), [p], { prCache: noPrCache });
+  assert.equal(r.status, 200);
+  assert.match(r.body, /No artifacts yet/);
+});
+
+test("route: /p/<slug>/artifacts sorts rows by most recent task-Log activity first", () => {
+  const older = task("001-older", "done", { prs: ["https://github.com/x/y/pull/10"] });
+  older.body = "## Log\n- 2026-01-01 12:00 PDT: shipped\n";
+  const newer = task("002-newer", "done", { report: "reports/002-newer.md" });
+  newer.body = "## Log\n- 2026-04-01 12:00 PDT: shipped\n";
+  const p = project("alpha", [older, newer]);
+  const r = route("/p/alpha/artifacts", new URLSearchParams(), [p], { prCache: noPrCache });
+  const idxNewer = r.body.indexOf("002-newer");
+  const idxOlder = r.body.indexOf("001-older");
+  assert.ok(idxNewer >= 0 && idxOlder >= 0);
+  assert.ok(idxNewer < idxOlder, "newer Log activity should sort above older");
+});
+
+test("route: /p/<slug>/artifacts exposes active-filter chip styling", () => {
+  const t = task("001-pr", "done", { prs: ["https://github.com/x/y/pull/79"] });
+  const p = project("alpha", [t]);
+  const allR = route("/p/alpha/artifacts", new URLSearchParams(), [p], { prCache: noPrCache });
+  // The "All" chip is the active span, "PRs"/"Reports" remain links.
+  assert.match(allR.body, /<span class="chip active">All<\/span>/);
+  assert.match(allR.body, /href="\/p\/alpha\/artifacts\?type=pr"/);
+  const prR = route("/p/alpha/artifacts", new URLSearchParams("type=pr"), [p], { prCache: noPrCache });
+  assert.match(prR.body, /<span class="chip active">PRs<\/span>/);
+});
+
+test("route: /p/<slug>/artifacts on an unknown project returns 404", () => {
+  const p = project("alpha", [task("001-a", "ready")]);
+  const r = route("/p/missing/artifacts", new URLSearchParams(), [p]);
+  assert.equal(r.status, 404);
+});
+
 // ---- task action UI (form gating per status) ------------------------------
 
 function captureRunner(): { runner: CliRunner; calls: string[][] } {
