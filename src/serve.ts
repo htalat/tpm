@@ -357,7 +357,7 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     let match: { project: Project; task: Task } | null = null;
     try { match = findTask(projects, query); } catch { match = null; }
     if (!match) return notFound(`No task: ${query}`);
-    return ok("text/html; charset=utf-8", renderTaskReport(projects, match.project, match.task));
+    return ok("text/html; charset=utf-8", renderTaskReport(projects, match.project, match.task, opts));
   }
   const taskRunsMatch = pathname.match(/^\/t\/(.+)\/runs\/?$/);
   if (taskRunsMatch) {
@@ -931,10 +931,11 @@ function renderTaskReportRailPanel(taskUrl: string, reportRel: string): string {
 // `/t/<proj>/<slug>/report` — render the report markdown file as HTML. Falls
 // back to a missing-file message rather than 404'ing so the operator can
 // debug a misconfigured `report:` path.
-function renderTaskReport(projects: Project[], project: Project, task: Task): string {
+function renderTaskReport(projects: Project[], project: Project, task: Task, opts: RouteOpts = {}): string {
   const title = strOr(task.data.title, task.slug);
   const taskUrl = taskHref(project, task);
   const reportRel = typeof task.data.report === "string" ? task.data.report.trim() : "";
+  const actionsBar = renderReportActionsBar(project, task, reportRel, opts);
 
   let main: string;
   if (!reportRel) {
@@ -947,7 +948,7 @@ function renderTaskReport(projects: Project[], project: Project, task: Task): st
       let text = "";
       try { text = readFileSync(absPath, "utf8"); } catch (e) {
         main = `<p class="config-empty">Failed to read <code>${esc(absPath)}</code>: ${esc((e as Error).message)}</p>`;
-        return layout(`tpm · ${title} · report`, wrapReport(projects, project, task, main, reportRel, taskUrl));
+        return layout(`tpm · ${title} · report`, wrapReport(projects, project, task, main, reportRel, taskUrl, actionsBar));
       }
       // Drop HTML-comment placeholders (e.g. the template's `<!-- One paragraph… -->`)
       // so the rendered view shows only what the agent has filled in. Markdown
@@ -956,15 +957,33 @@ function renderTaskReport(projects: Project[], project: Project, task: Task): st
       main = `<div class="body">${renderMarkdown(stripped)}</div>`;
     }
   }
-  return layout(`tpm · ${title} · report`, wrapReport(projects, project, task, main, reportRel, taskUrl));
+  return layout(`tpm · ${title} · report`, wrapReport(projects, project, task, main, reportRel, taskUrl, actionsBar));
 }
 
-function wrapReport(projects: Project[], project: Project, task: Task, main: string, reportRel: string, taskUrl: string): string {
+// Sticky LGTM / Request-changes bar at the top of the report page. The bar is
+// where the reviewer's attention is when they decide — task 083 moved these
+// verbs off the task rail to remove the back-and-forth context switch. Gated
+// on needs-review + a report file: other statuses (in-progress, done, etc.)
+// shouldn't surface review verbs at all.
+function renderReportActionsBar(project: Project, task: Task, reportRel: string, opts: RouteOpts): string {
+  if (opts.mutationsEnabled === false) return "";
+  if (task.archived) return "";
+  if (!reportRel) return "";
+  if (rollupStatus(task) !== "needs-review") return "";
+  const href = taskHref(project, task);
+  return `<div class="report-actions-bar">
+  ${lgtmForm(href)}
+  ${requestChangesForm(href)}
+</div>`;
+}
+
+function wrapReport(projects: Project[], project: Project, task: Task, main: string, reportRel: string, taskUrl: string, actionsBar: string): string {
   const title = strOr(task.data.title, task.slug);
   const pathHint = reportRel ? ` <span class="meta"><code>${esc(reportRel)}</code></span>` : "";
   return `
 ${projectChips(projects, project.slug)}
 ${breadcrumbFor(project, task, { suffix: "report" })}
+${actionsBar}
 <header>
   <h1>Report — ${esc(title)}</h1>
   <p class="meta">Investigation deliverable.${pathHint}  ·  <a href="${taskUrl}">Back to task →</a></p>
@@ -1511,20 +1530,10 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       forms.push(blockForm(href));
       break;
     case "needs-review": {
-      // Report-shaped review (investigation flow): the deliverable is the
-      // report file, so the reviewer's verbs are LGTM (close-out with auto-
-      // derived Outcome) and Request changes (kicks the task back to the
-      // agent with a comment appended to the report). Surface these for any
-      // task that either declares type=investigation or has a report
-      // attached; PR-shaped tasks keep the existing logForm/blockForm/
-      // reopen-for-agent shape.
-      const reportRel = typeof task.data.report === "string" ? task.data.report.trim() : "";
-      const type = strOr(task.data.type, "");
-      const isReportReview = reportRel.length > 0 || type === "investigation";
-      if (isReportReview) {
-        forms.push(lgtmForm(href));
-        forms.push(requestChangesForm(href));
-      }
+      // Report-shaped reviews surface LGTM + Request-changes on the report
+      // page itself (see `renderReportActionsBar`) — the reviewer's attention
+      // is there, not on the task page. The rail keeps log/block/reopen as
+      // escape hatches for both report-shaped and PR-shaped reviews.
       forms.push(logForm(href));
       forms.push(blockForm(href));
       forms.push(statusForm(href, "ready", "Reopen for agent (→ ready)"));

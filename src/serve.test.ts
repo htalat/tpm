@@ -718,32 +718,70 @@ test("renderTask: no Report panel when report: is unset", () => {
   assert.doesNotMatch(r.body, /class="task-report"/);
 });
 
-test("renderTask: needs-review on an investigation task shows LGTM + Request-changes forms", () => {
+test("renderTask: needs-review task rail no longer renders LGTM/request-changes (moved to report page)", () => {
+  // Task 083 moved the report-shaped review verbs to the report page itself
+  // so the reviewer doesn't switch contexts to act. The rail keeps log/
+  // block/reopen for both report-shaped and PR-shaped reviews.
   const t = task("001-a", "needs-review", { type: "investigation", report: "reports/001-a.md" });
   const p = project("alpha", [t]);
   const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
-  assert.match(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
-  assert.match(r.body, /action="\/t\/alpha\/001-a\/request-changes"/);
+  assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
+  assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/request-changes"/);
+  // The remaining escape-hatch forms still render.
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/log"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/block"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/status"/);
 });
 
-test("renderTask: needs-review on a report-attached non-investigation task still shows LGTM + Request-changes", () => {
-  // Type isn't investigation but a report is attached — gate is OR.
-  const t = task("001-a", "needs-review", { type: "spike", report: "reports/001-a.md" });
-  const p = project("alpha", [t]);
-  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
-  assert.match(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
-  assert.match(r.body, /action="\/t\/alpha\/001-a\/request-changes"/);
-});
-
-test("renderTask: needs-review on a PR-shaped task (no report, type=pr) does NOT show LGTM/request-changes", () => {
+test("renderTask: needs-review PR-shaped task rail also lacks LGTM/request-changes", () => {
   const t = task("001-a", "needs-review", { type: "pr", prs: ["https://github.com/x/y/pull/1"] });
   const p = project("alpha", [t]);
   const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
   assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
   assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/request-changes"/);
-  // The existing log/block/reopen forms still render.
   assert.match(r.body, /action="\/t\/alpha\/001-a\/log"/);
   assert.match(r.body, /action="\/t\/alpha\/001-a\/block"/);
+});
+
+test("renderTaskReport: needs-review with report attached renders sticky LGTM + Request-changes bar", () => {
+  const t = task("001-a", "needs-review", { type: "investigation", report: "reports/001-a.md" });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /class="report-actions-bar"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/request-changes"/);
+});
+
+test("renderTaskReport: bar appears for report-attached non-investigation task at needs-review", () => {
+  // Same OR gate the rail had previously: report: presence is enough.
+  const t = task("001-a", "needs-review", { type: "spike", report: "reports/001-a.md" });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /class="report-actions-bar"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/request-changes"/);
+});
+
+test("renderTaskReport: no bar when status is not needs-review", () => {
+  const t = task("001-a", "in-progress", { type: "investigation", report: "reports/001-a.md" });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.doesNotMatch(r.body, /class="report-actions-bar"/);
+  assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
+});
+
+test("renderTaskReport: no bar when report: is unset (no deliverable to review)", () => {
+  const t = task("001-a", "needs-review", { type: "investigation" });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.doesNotMatch(r.body, /class="report-actions-bar"/);
+});
+
+test("renderTaskReport: no bar when mutations are disabled (non-loopback bind)", () => {
+  const t = task("001-a", "needs-review", { type: "investigation", report: "reports/001-a.md" });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: false });
+  assert.doesNotMatch(r.body, /class="report-actions-bar"/);
 });
 
 test("route: /t/<slug>/report missing file renders a placeholder, not a 404", () => {
