@@ -735,14 +735,30 @@ test("shouldAutoRevert: after=null (task archived mid-run) → false", () => {
   );
 });
 
-test("buildExecutionPrompt: prompt starts with the briefing and is not /tpm <slug>", () => {
+test("buildExecutionPrompt: prompt embeds the briefing inline and is not /tpm <slug>", () => {
   // Per task 077: orchestrator no longer spawns `claude -p "/tpm <slug>"`.
   // The agent gets the briefing inline and the four execution rules, so it
-  // skips skill discovery + `tpm context` round-trip entirely.
+  // skips skill discovery + `tpm context` round-trip entirely. Per task 085
+  // a non-interactive preamble precedes the briefing — assert inclusion, not
+  // strict startsWith.
   const briefing = "# Task briefing: do the thing\n\nslug: tpm/099-foo";
   const prompt = buildExecutionPrompt(briefing);
-  assert.ok(prompt.startsWith(briefing), "prompt should begin with the briefing");
+  assert.ok(prompt.includes(briefing), "prompt should include the briefing");
   assert.doesNotMatch(prompt, /^\/tpm /, "prompt should not be the legacy /tpm <slug> form");
+});
+
+test("buildExecutionPrompt: leads with the non-interactive 'never ask, always act' rule (task 085)", () => {
+  // Live failure 2026-05-17: in `-p` mode the agent hit a fork, articulated
+  // options, and asked the user which to take. There is no user. Placing this
+  // rule at the top of the prompt makes it the first thing the agent reads.
+  const prompt = buildExecutionPrompt("BRIEFING");
+  assert.match(prompt, /non-interactive mode \(`claude -p`\)/);
+  assert.match(prompt, /always act/);
+  assert.match(prompt, /take the smaller \/ safer path \(`tpm block`, `tpm revert`, log a Log line\) and exit/);
+  // The rule must precede the briefing — that's the placement contract.
+  const ruleIdx = prompt.indexOf("non-interactive mode");
+  const briefingIdx = prompt.indexOf("BRIEFING");
+  assert.ok(ruleIdx >= 0 && briefingIdx > ruleIdx, "rule should appear before the briefing");
 });
 
 test("buildExecutionPrompt: includes all execution rules verbatim", () => {
