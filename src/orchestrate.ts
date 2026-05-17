@@ -205,16 +205,24 @@ export function shouldAutoRevert(input: AutoRevertInput): boolean {
   return true;
 }
 
-// Compose the agent prompt: full task briefing followed by the four execution
-// rules that used to live in the tpm skill's "Start a task" section. Inlining
-// them here means the agent doesn't have to discover the skill, load ~3000
-// tokens of SKILL.md, or run `tpm context` itself before starting work — the
-// orchestrator path only needs the "execute a ready task" mode.
+// Compose the agent prompt: a non-interactive preamble, the full task briefing,
+// then the four execution rules that used to live in the tpm skill's "Start a
+// task" section. Inlining them here means the agent doesn't have to discover
+// the skill, load ~3000 tokens of SKILL.md, or run `tpm context` itself before
+// starting work — the orchestrator path only needs the "execute a ready task"
+// mode.
+//
+// The preamble (task 085) leads because a non-interactive run has no human on
+// the other end — every "which should I do?" question in the agent's output is
+// structurally a halt. Placing the rule above the briefing means it's the
+// first thing the agent reads, not the last.
 //
 // `<slug>` / `<url>` / `<reason>` are left as placeholders; the briefing names
 // the qualified slug, and SKILL.md uses the same placeholder convention.
 export function buildExecutionPrompt(briefing: string): string {
-  return `${briefing}
+  return `You're running in non-interactive mode. No one will see or respond to questions in your output. If you face a choice between asking and acting, always act — take the smaller / safer path (\`tpm block\`, \`tpm revert\`, log a Log line) and exit. The user reads the per-run log and the task state, not your final message.
+
+${briefing}
 
 You are executing this task. Rules:
 - Follow the Plan above.
