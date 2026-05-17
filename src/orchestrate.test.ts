@@ -807,7 +807,7 @@ test("buildFeedbackPrompt: embeds briefing + PR context + scoped feedback rules 
   assert.match(prompt, /You are addressing feedback on the PR\(s\) above\. Rules:/);
   // Pin the don't-refetch rule: agent should read the inline JSON instead of
   // re-running `gh pr view` — that's what the 089 patch is for.
-  assert.match(prompt, /don't re-fetch with `gh pr view` \/ `az repos pr show`/);
+  assert.match(prompt, /don't re-fetch with `gh pr view` \/ `gh api graphql` \/ `az repos pr show`/);
   assert.match(prompt, /addressed feedback — <one-line summary>/);
   assert.match(prompt, /tpm status <slug> in-progress/);
 });

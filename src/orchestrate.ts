@@ -258,7 +258,7 @@ ${prContext}
 ---
 
 You are addressing feedback on the PR(s) above. Rules:
-- The PR state (title, state, comments, reviews, reviewThreads, statusCheckRollup) is already in this prompt. Read the JSON above; don't re-fetch with \`gh pr view\` / \`az repos pr show\`.
+- The PR state (title, state, comments, reviews, statusCheckRollup, plus review threads with resolution state) is already in this prompt. Read the JSON above; don't re-fetch with \`gh pr view\` / \`gh api graphql\` / \`az repos pr show\`.
 - For concrete code-suggestion threads: apply the fix, commit, push. Resolve the thread if the fix matches the suggestion exactly.
 - For CI failures: fetch the failed run log (\`gh run view <id> --log-failed\` for github), fix, commit, push.
 - For rebase needs (BEHIND / DIRTY): rebase against the default branch; on a conflict you can't resolve cleanly, escalate (don't commit a resolution you can't verify with the workflow doc's tests).
