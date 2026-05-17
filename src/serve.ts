@@ -1536,7 +1536,7 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       // escape hatches for both report-shaped and PR-shaped reviews.
       forms.push(logForm(href));
       forms.push(blockForm(href));
-      forms.push(statusForm(href, "ready", "Reopen for agent (→ ready)"));
+      forms.push(statusForm(href, "needs-feedback", "Reopen for agent (→ needs-feedback)"));
       break;
     }
     case "blocked":

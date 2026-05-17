@@ -743,6 +743,20 @@ test("renderTask: needs-review PR-shaped task rail also lacks LGTM/request-chang
   assert.match(r.body, /action="\/t\/alpha\/001-a\/block"/);
 });
 
+test("renderTask: needs-review 'Reopen for agent' flips to needs-feedback (not ready)", () => {
+  // ready is the wrong target — execute-the-Plan mode doesn't know to read
+  // review comments. needs-feedback routes through /tpm feedback, which is
+  // built around addressing PR signals.
+  const t = task("001-a", "needs-review", { type: "pr", prs: ["https://github.com/x/y/pull/1"] });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(
+    r.body,
+    /<form[^>]*action="\/t\/alpha\/001-a\/status"[^>]*>\s*<input[^>]*name="status"[^>]*value="needs-feedback"/,
+  );
+  assert.doesNotMatch(r.body, /name="status"[^>]*value="ready"/);
+});
+
 test("renderTaskReport: needs-review with report attached renders sticky LGTM + Request-changes bar", () => {
   const t = task("001-a", "needs-review", { type: "investigation", report: "reports/001-a.md" });
   const p = project("alpha", [t]);
