@@ -11,7 +11,7 @@ import * as lock from "./lock.ts";
 import { readConfig, DEFAULT_TIME_BOUND_MINUTES } from "./config.ts";
 import { isoWithOffset } from "./time.ts";
 import { shouldNotify, fireNotification } from "./notify.ts";
-import { resolveRepo } from "./context.ts";
+import { context as buildBriefing, resolveRepo } from "./context.ts";
 import { resolveSameRepoStrategy, worktreePath, worktreeBranch } from "./strategy.ts";
 import { newRunLogPath } from "./run_log.ts";
 import type { Project, Task } from "./tree.ts";
@@ -182,6 +182,24 @@ export function shouldAutoRevert(input: AutoRevertInput): boolean {
   return true;
 }
 
+// Compose the agent prompt: full task briefing followed by the four execution
+// rules that used to live in the tpm skill's "Start a task" section. Inlining
+// them here means the agent doesn't have to discover the skill, load ~3000
+// tokens of SKILL.md, or run `tpm context` itself before starting work — the
+// orchestrator path only needs the "execute a ready task" mode.
+//
+// `<slug>` / `<url>` / `<reason>` are left as placeholders; the briefing names
+// the qualified slug, and SKILL.md uses the same placeholder convention.
+export function buildExecutionPrompt(briefing: string): string {
+  return `${briefing}
+
+You are executing this task. Rules:
+- Follow the Plan above.
+- After opening a PR, run \`tpm pr <slug> <url>\` (CLI auto-flips to needs-review). Stop.
+- Can't proceed? \`tpm revert <slug> "<reason>"\` (back to ready) or \`tpm block <slug> "<reason>"\` (human queue). Never exit at in-progress.
+- Unanticipated decision? Ship the smaller / more local change, file follow-ups, don't halt.`;
+}
+
 function snapshotTask(task: Task): DispositionSnapshot {
   return {
     status: String(task.data.status ?? ""),
@@ -243,7 +261,10 @@ export function noPickLogEntry(candidatesCount: number): { level: "INFO" | "WARN
 
 // Run one orchestrator turn:
 //   1. tpm next --autonomous (filters to allow_orchestrator: true)
-//   2. spawn `<claudeBin> -p "/tpm <slug>"` with a hard time bound
+//   2. spawn `<claudeBin> -p "<briefing + execution rules>"` with a hard time
+//      bound. The prompt is built inline (briefing from `context()`, rules from
+//      `buildExecutionPrompt`) so the agent skips skill discovery and starts
+//      executing the Plan immediately.
 //   3. on timeout, SIGTERM (then SIGKILL after grace), then `tpm revert <slug>`
 //   4. additionally, poll the task every ~5s; if it goes terminal externally
 //      (done/dropped/archived) SIGTERM the child early — disposition: terminal.
@@ -354,6 +375,12 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     fireNotification("tpm", `${agentId} starting ${pick.task.slug}`);
   }
 
+  // Build the prompt inline: briefing (same shape as `tpm context <slug>`)
+  // followed by the execution rules. The agent reads the Plan and starts
+  // working — no skill discovery, no `tpm context` round-trip first.
+  const briefing = buildBriefing(root, slug);
+  const prompt = buildExecutionPrompt(briefing);
+
   let result: OrchestrateResult;
   try {
     result = await runWithTimeout(
@@ -361,7 +388,7 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
       // --output-format stream-json --verbose emits NDJSON events as they
       // happen (tool calls, text deltas, results) — that's what makes the
       // per-run log a live transcript instead of just the final message.
-      ["-p", "--output-format", "stream-json", "--verbose", `/tpm ${slug}`],
+      ["-p", "--output-format", "stream-json", "--verbose", prompt],
       minutes,
       grace,
       () => {

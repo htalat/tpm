@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
+  buildExecutionPrompt,
   classifyDisposition,
   evaluateTerminalState,
   formatDispositionLine,
@@ -608,6 +609,28 @@ test("shouldAutoRevert: after=null (task archived mid-run) → false", () => {
     }),
     false,
   );
+});
+
+test("buildExecutionPrompt: prompt starts with the briefing and is not /tpm <slug>", () => {
+  // Per task 077: orchestrator no longer spawns `claude -p "/tpm <slug>"`.
+  // The agent gets the briefing inline and the four execution rules, so it
+  // skips skill discovery + `tpm context` round-trip entirely.
+  const briefing = "# Task briefing: do the thing\n\nslug: tpm/099-foo";
+  const prompt = buildExecutionPrompt(briefing);
+  assert.ok(prompt.startsWith(briefing), "prompt should begin with the briefing");
+  assert.doesNotMatch(prompt, /^\/tpm /, "prompt should not be the legacy /tpm <slug> form");
+});
+
+test("buildExecutionPrompt: includes all four execution rules verbatim", () => {
+  // These rules replace the SKILL.md "Start a task" section for orchestrator
+  // runs; any drift between this prompt and the skill's guidance needs to be
+  // intentional (cross-ref in 077). Pin each line so a typo trips the test.
+  const prompt = buildExecutionPrompt("BRIEFING");
+  assert.match(prompt, /You are executing this task\. Rules:/);
+  assert.match(prompt, /- Follow the Plan above\./);
+  assert.match(prompt, /- After opening a PR, run `tpm pr <slug> <url>` \(CLI auto-flips to needs-review\)\. Stop\./);
+  assert.match(prompt, /- Can't proceed\? `tpm revert <slug> "<reason>"` \(back to ready\) or `tpm block <slug> "<reason>"` \(human queue\)\. Never exit at in-progress\./);
+  assert.match(prompt, /- Unanticipated decision\? Ship the smaller \/ more local change, file follow-ups, don't halt\./);
 });
 
 // runWithTimeout integration: spawn a real (short-lived) child and verify the
