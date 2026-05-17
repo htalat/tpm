@@ -3,7 +3,7 @@ import { createWriteStream, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { hostname } from "node:os";
 import { findRoot } from "./root.ts";
-import { loadProjects } from "./tree.ts";
+import { loadProjects, taskHasReport } from "./tree.ts";
 import { selectCandidates } from "./queue.ts";
 import { findTask } from "./resolve.ts";
 import * as mutate from "./mutate.ts";
@@ -68,11 +68,12 @@ export type Disposition = "shipped" | "stalled" | "timeout" | "terminal" | "fail
 export interface DispositionSnapshot {
   status: string;
   prs: number;
-  // Whether the task's `report:` frontmatter field is set to a non-empty
-  // path. Investigation deliverables (task 080) ship as a report artifact,
-  // not a PR — the empty→set transition is the same "shipped" signal as a
-  // PR count increase. Older snapshots without this field treat it as
-  // false; callers should always pass it explicitly post-080.
+  // Whether the task has a `report.md` in its task folder (task 094 — was a
+  // `report:` frontmatter field before that). Investigation deliverables
+  // (task 080) ship as a report artifact, not a PR — the empty→set
+  // transition is the same "shipped" signal as a PR count increase. Older
+  // snapshots without this field treat it as false; callers should always
+  // pass it explicitly post-080.
   report?: boolean;
 }
 
@@ -193,7 +194,7 @@ export interface AutoRevertInput {
 //   - the task still exists in the tree (wasn't archived)
 //   - status is `in-progress` after the run
 //   - prs count didn't grow (a PR opened would have flipped to needs-review)
-//   - report: didn't appear (a report attach would have flipped to needs-review)
+//   - report.md didn't appear (a report attach would have flipped to needs-review)
 //   - `before.status` wasn't `needs-feedback` — a feedback round legitimately
 //     ends at `in-progress` with unchanged prs after addressing CI/threads.
 export function shouldAutoRevert(input: AutoRevertInput): boolean {
@@ -230,7 +231,7 @@ You are executing this task. Rules:
 - If \`prs:\` is non-empty and any linked PR is OPEN, fetch its comments and reviews via the host CLI (dispatch on \`Host:\` in the briefing) before any other discovery. Unaddressed comments are almost certainly why you're seeing this task — address them first.
 - Follow the Plan above.
 - If type=pr: after opening a PR, run \`tpm pr <slug> <url>\` (CLI auto-flips to needs-review). Stop.
-- If type=investigation: your deliverable is a **report**, not a PR. Write findings into \`<project>/reports/<slug>.md\` (run \`tpm report <slug>\` to create it from template + register it). When done, \`tpm report <slug>\` auto-flips to needs-review. Don't run \`tpm pr\`.
+- If type=investigation: your deliverable is a **report**, not a PR. Run \`tpm report <slug>\` to fold the task into a folder and scaffold \`<project>/tasks/<slug>/report.md\` from the template. Write findings into that file. When done, re-run \`tpm report <slug>\` — the CLI auto-flips to needs-review. Don't run \`tpm pr\`.
 - Can't proceed? \`tpm revert <slug> "<reason>"\` (back to ready) or \`tpm block <slug> "<reason>"\` (human queue). Never exit at in-progress.
 - Unanticipated decision? Ship the smaller / more local change, file follow-ups, don't halt.`;
 }
@@ -301,12 +302,10 @@ export async function fetchFeedbackContexts(urls: string[]): Promise<string> {
 }
 
 function snapshotTask(task: Task): DispositionSnapshot {
-  const reportField = task.data.report;
-  const reportSet = typeof reportField === "string" && reportField.trim().length > 0;
   return {
     status: String(task.data.status ?? ""),
     prs: Array.isArray(task.data.prs) ? (task.data.prs as unknown[]).length : 0,
-    report: reportSet,
+    report: taskHasReport(task),
   };
 }
 

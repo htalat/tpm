@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
-import { loadProjects, archiveTask, foldTask, flatTasks, isParent, rollupStatus } from "./tree.ts";
+import { loadProjects, archiveTask, foldTask, flatTasks, isParent, rollupStatus, taskHasReport, taskReportPath } from "./tree.ts";
 
 function projectMd(slug: string, name = slug): string {
   return `---
@@ -427,6 +427,58 @@ test("foldTask: file-form -> folder-form, idempotent on folded", () => {
   }
 });
 
+test("taskReportPath: file-form points at the to-be-folded folder, folder-form at the existing dir", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-flat.md");
+    writeFolderTask(dir, "002-folded");
+    const [proj] = loadProjects(root);
+    const flat = proj.tasks.find(t => t.slug === "001-flat")!;
+    const folded = proj.tasks.find(t => t.slug === "002-folded")!;
+    assert.equal(taskReportPath(flat), join(dir, "tasks", "001-flat", "report.md"));
+    assert.equal(taskReportPath(folded), join(dir, "tasks", "002-folded", "report.md"));
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("taskReportPath: refuses on child tasks (no per-task folder)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeFolderTask(dir, "001-parent");
+    writeChildTask(dir, "001-parent", "002-c.md");
+    const [proj] = loadProjects(root);
+    const child = proj.tasks[0].children![0];
+    assert.throws(() => taskReportPath(child), /child task .* has no own folder/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("taskHasReport: true only when <task-dir>/report.md exists; false for children and absent files", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeFolderTask(dir, "001-no-report");
+    writeFolderTask(dir, "002-has-report");
+    writeFileSync(join(dir, "tasks", "002-has-report", "report.md"), "# r\n");
+    writeFolderTask(dir, "003-parent");
+    writeChildTask(dir, "003-parent", "004-c.md");
+    const [proj] = loadProjects(root);
+    const noReport = proj.tasks.find(t => t.slug === "001-no-report")!;
+    const hasReport = proj.tasks.find(t => t.slug === "002-has-report")!;
+    const parent = proj.tasks.find(t => t.slug === "003-parent")!;
+    const child = parent.children![0];
+    assert.equal(taskHasReport(noReport), false);
+    assert.equal(taskHasReport(hasReport), true);
+    assert.equal(taskHasReport(child), false);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 test("foldTask: rejects child task", () => {
   const root = mkTempDir();
   try {
@@ -451,6 +503,25 @@ test("archiveTask: folder-form parent (no live children) -> moves whole folder",
     assert.equal(dest, join(dir, "tasks", "archive", "002-parent", "task.md"));
     assert.ok(existsSync(dest));
     assert.ok(!existsSync(join(dir, "tasks", "002-parent")));
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("archiveTask: folder-form parent carries report.md with the folder (task 094)", () => {
+  // Reports live inside the task folder, so archiving moves the report
+  // alongside task.md without any separate report-archive plumbing.
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeFolderTask(dir, "002-rep", "done");
+    writeFileSync(join(dir, "tasks", "002-rep", "report.md"), "# r\n\nbody.\n");
+    const [proj] = loadProjects(root);
+    archiveTask(proj.tasks[0]);
+    const archivedReport = join(dir, "tasks", "archive", "002-rep", "report.md");
+    assert.ok(existsSync(archivedReport));
+    assert.equal(readFileSync(archivedReport, "utf8"), "# r\n\nbody.\n");
+    assert.equal(existsSync(join(dir, "tasks", "002-rep")), false);
   } finally {
     rmTempDir(root);
   }

@@ -415,9 +415,9 @@ tpm revert <task> ["<reason>"]            # flip in-progress -> ready, log a tim
 tpm status <task> <new-status>            # generic status setter (validated)
 tpm log <task> "<message>"                # append a single timestamped Log line
 tpm pr <task> <url>                       # add URL to prs:, log opened PR
-tpm report <task> [<path>]                # attach a report artifact to an investigation task
-                                          # (default: <project>/reports/<slug>.md); auto-flips
-                                          # in-progress -> needs-review (investigation analogue of tpm pr)
+tpm report <task>                         # attach a report artifact to an investigation task
+                                          # at <project>/tasks/<slug>/report.md (auto-folds file-form tasks);
+                                          # auto-flips in-progress -> needs-review (investigation analogue of tpm pr)
 tpm report <task> --export text           # print the report as plain text (drops HTML comments)
 tpm lgtm <task>                           # reviewer LGTM on a report task: derive Outcome + complete
 tpm request-changes <task> "<comment>"    # reviewer pushback: append to ## Reviewer feedback + flip to needs-feedback
