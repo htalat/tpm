@@ -768,7 +768,7 @@ test("buildExecutionPrompt: includes all execution rules verbatim", () => {
   // intentional (cross-ref in 077). Pin each line so a typo trips the test.
   const prompt = buildExecutionPrompt("BRIEFING");
   assert.match(prompt, /You are executing this task\. Rules:/);
-  assert.match(prompt, /- If `prs:` is non-empty and any linked PR is OPEN, run `gh pr view <url> --json comments,reviews,reviewThreads` before any other discovery\. Unaddressed comments are almost certainly why you're seeing this task — address them first\./);
+  assert.match(prompt, /- If `prs:` is non-empty and any linked PR is OPEN, fetch its comments and reviews via the host CLI \(dispatch on `Host:` in the briefing\) before any other discovery\. Unaddressed comments are almost certainly why you're seeing this task — address them first\./);
   assert.match(prompt, /- Follow the Plan above\./);
   assert.match(prompt, /- If type=pr: after opening a PR, run `tpm pr <slug> <url>` \(CLI auto-flips to needs-review\)\. Stop\./);
   assert.match(prompt, /- If type=investigation: your deliverable is a \*\*report\*\*, not a PR\. Write findings into `<project>\/reports\/<slug>\.md` \(run `tpm report <slug>` to create it from template \+ register it\)\. When done, `tpm report <slug>` auto-flips to needs-review\. Don't run `tpm pr`\./);
@@ -778,12 +778,13 @@ test("buildExecutionPrompt: includes all execution rules verbatim", () => {
 
 test("buildExecutionPrompt: PR-comments-first rule appears before the Plan-execution rule (task 088)", () => {
   // Live failure 2026-05-17 on task 085: agent picked up `ready` with open PR,
-  // saw the commit was shipped, never ran `gh pr view --comments`, flipped to
+  // saw the commit was shipped, never fetched the PR's comments, flipped to
   // needs-review without addressing the user's feedback. The rule must
   // precede "Follow the Plan above." so the agent reads the PR's comment
-  // state before any other discovery.
+  // state before any other discovery. Phrased host-agnostically (dispatch on
+  // `Host:` in the briefing) — the agent picks the right CLI for github vs ado.
   const prompt = buildExecutionPrompt("BRIEFING");
-  const commentsRuleIdx = prompt.indexOf("gh pr view <url> --json comments,reviews,reviewThreads");
+  const commentsRuleIdx = prompt.indexOf("fetch its comments and reviews via the host CLI");
   const followPlanIdx = prompt.indexOf("Follow the Plan above");
   assert.ok(commentsRuleIdx >= 0, "PR-comments-first rule should be present");
   assert.ok(followPlanIdx > commentsRuleIdx, "PR-comments-first rule should precede 'Follow the Plan above'");

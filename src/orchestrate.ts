@@ -225,7 +225,7 @@ export function buildExecutionPrompt(briefing: string): string {
 ${briefing}
 
 You are executing this task. Rules:
-- If \`prs:\` is non-empty and any linked PR is OPEN, run \`gh pr view <url> --json comments,reviews,reviewThreads\` before any other discovery. Unaddressed comments are almost certainly why you're seeing this task — address them first.
+- If \`prs:\` is non-empty and any linked PR is OPEN, fetch its comments and reviews via the host CLI (dispatch on \`Host:\` in the briefing) before any other discovery. Unaddressed comments are almost certainly why you're seeing this task — address them first.
 - Follow the Plan above.
 - If type=pr: after opening a PR, run \`tpm pr <slug> <url>\` (CLI auto-flips to needs-review). Stop.
 - If type=investigation: your deliverable is a **report**, not a PR. Write findings into \`<project>/reports/<slug>.md\` (run \`tpm report <slug>\` to create it from template + register it). When done, \`tpm report <slug>\` auto-flips to needs-review. Don't run \`tpm pr\`.
