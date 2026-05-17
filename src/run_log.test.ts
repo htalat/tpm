@@ -11,6 +11,7 @@ import {
   newRunLogPath,
   parseLine,
   parseEvents,
+  parseRunLog,
 } from "./run_log.ts";
 
 test("compactUtc: ISO timestamp collapses to YYYYMMDDTHHMMSSZ", () => {
@@ -254,4 +255,124 @@ test("parseEvents: tolerates blank lines and trailing newline", () => {
   const buf = `\n${JSON.stringify({ type: "system", subtype: "init" })}\n\n`;
   const events = parseEvents(buf);
   assert.equal(events.length, 1);
+});
+
+// ---- concatenated / NDJSON edge cases -------------------------------------
+//
+// The capture path under `~/.tpm/runs/` doesn't always land each stream-json
+// event on its own line. Observed shapes from claude's tee:
+//   - Two objects on one line:  `{...}{...}`
+//   - The whole transcript on one line, no newlines at all.
+// The parser walks brace depth so each top-level `{...}` becomes its own event.
+
+test("parseLine: two concatenated objects on one line yield two events", () => {
+  const a = JSON.stringify({ type: "system", subtype: "init", model: "x" });
+  const b = JSON.stringify({ type: "result", subtype: "success", result: "ok" });
+  const events = parseLine(a + b);
+  assert.equal(events.length, 2);
+  assert.equal(events[0].kind, "system");
+  assert.equal(events[1].kind, "result");
+});
+
+test("parseLine: N concatenated objects on one line all parse", () => {
+  const objs = [
+    { type: "system", subtype: "init" },
+    { type: "assistant", message: { content: [{ type: "text", text: "a" }] } },
+    { type: "assistant", message: { content: [{ type: "text", text: "b" }] } },
+    { type: "result", subtype: "success", result: "ok" },
+  ].map(o => JSON.stringify(o)).join("");
+  const events = parseLine(objs);
+  // system + 2 text + result = 4
+  assert.equal(events.length, 4);
+  assert.equal(events[0].kind, "system");
+  assert.equal(events[3].kind, "result");
+});
+
+test("parseLine: string containing literal '}{' inside a value is not split", () => {
+  // A JSON value with `}{` inside its string must round-trip as a single object.
+  const obj = { type: "assistant", message: { content: [{ type: "text", text: "weird }{ braces" }] } };
+  const events = parseLine(JSON.stringify(obj));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, "text");
+  if (events[0].kind === "text") assert.equal(events[0].text, "weird }{ braces");
+});
+
+test("parseLine: string containing escaped quotes does not desync the walker", () => {
+  // `"\"close\""` inside a text value used to be a trap for the string-state machine.
+  const obj = { type: "assistant", message: { content: [{ type: "text", text: 'has \\"escaped\\" quotes' }] } };
+  // Hand-crafted to ensure the `\"` ends up in the wire form.
+  const wire = JSON.stringify(obj);
+  const events = parseLine(wire + wire);
+  assert.equal(events.length, 2);
+  assert.equal(events[0].kind, "text");
+  assert.equal(events[1].kind, "text");
+});
+
+test("parseEvents: mixed NDJSON lines (some single, some concatenated) all parse", () => {
+  const single = JSON.stringify({ type: "system", subtype: "init" });
+  const a = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "one" }] } });
+  const b = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "two" }] } });
+  const buf = `${single}\n${a}${b}\n${JSON.stringify({ type: "result", subtype: "success", result: "ok" })}`;
+  const events = parseEvents(buf);
+  assert.equal(events.length, 4);
+  assert.equal(events[0].kind, "system");
+  assert.equal(events[1].kind, "text");
+  assert.equal(events[2].kind, "text");
+  assert.equal(events[3].kind, "result");
+});
+
+test("parseEvents: whole transcript on one line (no newlines) still splits", () => {
+  // The shape that triggered task 074: claude's tee landed every event back-to-back.
+  const objs = [
+    { type: "system", subtype: "init" },
+    { type: "assistant", message: { content: [{ type: "text", text: "hi" }] } },
+    { type: "user", message: { content: [{ type: "tool_result", content: "ok" }] } },
+    { type: "result", subtype: "success", result: "done" },
+  ].map(o => JSON.stringify(o)).join("");
+  const events = parseEvents(objs);
+  assert.equal(events.length, 4);
+});
+
+test("parseRunLog: empty input yields zero events and zero counts", () => {
+  const r = parseRunLog("");
+  assert.deepEqual(r.events, []);
+  assert.equal(r.parsed, 0);
+  assert.equal(r.skipped, 0);
+});
+
+test("parseRunLog: clean NDJSON reports parsed count and no skipped", () => {
+  const buf = [
+    JSON.stringify({ type: "system", subtype: "init" }),
+    JSON.stringify({ type: "result", subtype: "success", result: "ok" }),
+  ].join("\n");
+  const r = parseRunLog(buf);
+  assert.equal(r.parsed, 2);
+  assert.equal(r.skipped, 0);
+  assert.equal(r.events.length, 2);
+});
+
+test("parseRunLog: malformed object on a line is counted as skipped; others still render", () => {
+  // The middle slice has a stray colon inside that breaks JSON.parse, but the
+  // outer braces match so the walker still emits it as a candidate.
+  const good = JSON.stringify({ type: "system", subtype: "init" });
+  const bad = '{"type":"assistant","message":{:::}}';
+  const tail = JSON.stringify({ type: "result", subtype: "success", result: "ok" });
+  const r = parseRunLog(good + bad + tail);
+  assert.equal(r.parsed, 2);
+  assert.equal(r.skipped, 1);
+  // events: system + result (the bad one is skipped, not rendered as raw)
+  assert.equal(r.events.length, 2);
+  assert.equal(r.events[0].kind, "system");
+  assert.equal(r.events[1].kind, "result");
+});
+
+test("parseRunLog: unclosed object at end of line is counted as skipped (truncated tail)", () => {
+  const good = JSON.stringify({ type: "system", subtype: "init" });
+  // Mid-write truncation: walker sees `{` but never the closing `}`.
+  const truncated = '{"type":"result","subtype":"succ';
+  const r = parseRunLog(good + truncated);
+  assert.equal(r.parsed, 1);
+  assert.equal(r.skipped, 1);
+  assert.equal(r.events.length, 1);
+  assert.equal(r.events[0].kind, "system");
 });

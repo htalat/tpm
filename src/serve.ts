@@ -21,7 +21,7 @@ import type { RawPrJson, PrDecision } from "./pr_signal.ts";
 import {
   isValidRunLogName,
   latestRunLog,
-  parseEvents,
+  parseRunLog,
   runsDir,
 } from "./run_log.ts";
 import type { RunEvent } from "./run_log.ts";
@@ -1100,7 +1100,7 @@ function renderRunPanel(slug: string, status: string, runLog: RunLogReader): str
   <p class="run-empty">${esc(note)}</p>
 </section>`;
   }
-  const events = parseEvents(snapshot.text);
+  const { events, parsed, skipped } = parseRunLog(snapshot.text);
   const tail = events.slice(-RUN_PANEL_EVENTS);
   const rendered = tail.length === 0
     ? `<p class="run-empty">Log file is empty — the agent hasn't written anything yet.</p>`
@@ -1108,9 +1108,13 @@ function renderRunPanel(slug: string, status: string, runLog: RunLogReader): str
   const truncated = events.length > tail.length
     ? `<p class="run-meta">Showing the last ${tail.length} of ${events.length} events.</p>`
     : "";
+  const warning = skipped > 0
+    ? `<p class="run-warning">${parsed} events parsed, ${skipped} skipped — file may have been truncated or partially written.</p>`
+    : "";
   const rawLink = `<p class="run-meta"><a href="/runs/${esc(snapshot.name)}">View raw log →</a></p>`;
   return `<section class="run-panel">
   <h2>${esc(label)} <span class="meta">${esc(snapshot.name)}</span></h2>
+  ${warning}
   ${rendered}
   ${truncated}
   ${rawLink}
