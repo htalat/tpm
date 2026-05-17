@@ -19,6 +19,7 @@ import type { PrCacheEntry } from "./pr_cache.ts";
 import { analyzePr } from "./pr_signal.ts";
 import type { RawPrJson, PrDecision } from "./pr_signal.ts";
 import {
+  allRunLogs,
   isValidRunLogName,
   latestRunLog,
   parseEvents,
@@ -54,6 +55,12 @@ export type RunLogReader = (slug: string) => RunLogSnapshot | null;
 // file contents, or null if the file is missing or the name is rejected by the
 // path-traversal guard.
 export type RunLogRawReader = (name: string) => string | null;
+
+// Lists every run log for a slug, newest-first as bare basenames (no path —
+// the `/runs/<file>` raw route consumes basenames). Production reads
+// `~/.tpm/runs/`; tests inject in-memory stubs to keep the `/runs` index
+// pure and disk-free.
+export type RunLogListReader = (slug: string) => string[];
 
 // A read-only view of a JSON config file (~/.tpm/config.json or
 // ~/.tpm/agents.json) for the `/config` page. The renderer wants both the raw
@@ -228,6 +235,9 @@ export interface RouteOpts {
   // `route` pure and disk-free.
   runLog?: RunLogReader;
   runLogRaw?: RunLogRawReader;
+  // Lists every run log basename for a slug, newest-first. Used by the
+  // `/t/<proj>/<slug>/runs` index. Defaults read `~/.tpm/runs/`; tests stub.
+  runLogList?: RunLogListReader;
   // Config-file snapshots for the `/config` page. Default readers hit disk;
   // tests inject in-memory stubs.
   configSnapshot?: ConfigSnapshotReader;
@@ -249,6 +259,7 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
   const prCache: PrCacheReader = opts.prCache ?? ((url) => readPrCache(url));
   const runLog: RunLogReader = opts.runLog ?? defaultRunLogReader;
   const runLogRaw: RunLogRawReader = opts.runLogRaw ?? defaultRunLogRawReader;
+  const runLogList: RunLogListReader = opts.runLogList ?? defaultRunLogListReader;
   if (pathname === "/" || pathname === "") {
     return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project"), prCache));
   }
@@ -330,12 +341,25 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
       taskLog,
     }));
   }
+  const taskRunsMatch = pathname.match(/^\/t\/(.+)\/runs\/?$/);
+  if (taskRunsMatch) {
+    const query = decodeURIComponent(taskRunsMatch[1]);
+    let match: { project: Project; task: Task } | null = null;
+    try { match = findTask(projects, query); } catch { match = null; }
+    if (!match) return notFound(`No task: ${query}`);
+    const slugPath = match.task.parent
+      ? `${match.project.slug}/${match.task.parent}/${match.task.slug}`
+      : `${match.project.slug}/${match.task.slug}`;
+    const runs = runLogList(slugPath);
+    return ok("text/html; charset=utf-8", renderTaskRuns(projects, match.project, match.task, runs, runLog));
+  }
   const taskMatch = pathname.match(/^\/t\/(.+?)\/?$/);
   if (taskMatch) {
     const query = decodeURIComponent(taskMatch[1]);
     const match = findTask(projects, query);
     if (!match) return notFound(`No task: ${query}`);
-    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, projects, opts, prCache, runLog));
+    const harnessLog = opts.harnessLog ?? defaultHarnessLogReader;
+    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, projects, opts, prCache, harnessLog));
   }
   return notFound(pathname);
 }
@@ -354,6 +378,13 @@ function defaultRunLogReader(slug: string): RunLogSnapshot | null {
   } catch {
     return null;
   }
+}
+
+// List every run log basename for a slug, newest-first. Used by the
+// `/t/<proj>/<slug>/runs` index. Empty array when the runs dir is missing or
+// the slug has never been dispatched.
+function defaultRunLogListReader(slug: string): string[] {
+  return allRunLogs(slug).map(p => basename(p));
 }
 
 // Read the raw bytes of a run log by basename. The route layer already ran the
@@ -639,7 +670,7 @@ function renderTask(
   allProjects: Project[],
   opts: RouteOpts = {},
   prCache: PrCacheReader = (url) => readPrCache(url),
-  runLog: RunLogReader = defaultRunLogReader,
+  harnessLog: HarnessLogReader = defaultHarnessLogReader,
 ): string {
   const repo = resolveRepo(project, task);
   const status = rollupStatus(task);
@@ -663,36 +694,32 @@ function renderTask(
     ? ""
     : `<dt>Autonomous</dt><dd>${esc(allowField)}</dd>`;
 
-  const crumbsTrail = task.parent
-    ? `<a href="/p/${esc(project.slug)}">${esc(project.slug)}</a><a href="/t/${esc(project.slug)}/${esc(task.parent)}">${esc(task.parent)}</a><a href="/t/${esc(project.slug)}/${esc(task.parent)}/${esc(task.slug)}">${esc(task.slug)}</a>`
-    : `<a href="/p/${esc(project.slug)}">${esc(project.slug)}</a><a href="/t/${esc(project.slug)}/${esc(task.slug)}">${esc(task.slug)}</a>`;
-
   const flashBanner = opts.flash
     ? `<div class="flash">${esc(opts.flash)} <a class="flash-dismiss" href="${esc(taskHref(project, task))}">dismiss</a></div>`
     : "";
 
+  const slugPath = task.parent
+    ? `${project.slug}/${task.parent}/${task.slug}`
+    : `${project.slug}/${task.slug}`;
+  const taskUrl = taskHref(project, task);
+
+  const recentLogPanel = renderRecentLogPanel(task, slugPath, taskUrl, harnessLog);
+  const runsPanel = renderTaskRunsRailLink(taskUrl);
   const prPanel = renderPrPanel(prs, prCache);
   const actionsSection = renderActions(project, task, status, opts);
   const settingsSection = renderSettings(project, task, status, opts);
-  const railLogHref = task.parent
-    ? `/t/${esc(project.slug)}/${esc(task.parent)}/${esc(task.slug)}/log`
-    : `/t/${esc(project.slug)}/${esc(task.slug)}/log`;
-  const logLinkSection = `<section class="task-log-link"><a href="${railLogHref}">View log →</a></section>`;
-  const railContent = `${logLinkSection}${prPanel}${actionsSection}${settingsSection}`;
+  const railContent = `${recentLogPanel}${runsPanel}${prPanel}${actionsSection}${settingsSection}`;
   const hasRail = railContent.length > 0;
 
-  const slug = task.parent
-    ? `${project.slug}/${task.parent}/${task.slug}`
-    : `${project.slug}/${task.slug}`;
-  const runPanel = renderRunPanel(slug, status, runLog);
-  // Auto-refresh the page while the agent is running so the run panel stays
-  // current. Costs page flicker; SSE would be smoother but task 057's v0 ships
-  // poll-refresh. 10s matches the lower bound in the task body's suggestion.
+  // Auto-refresh the page while the agent is running so the "Recent log"
+  // panel stays current. The per-run panel moved out to /t/.../runs (task
+  // 075), but the rail's body-log slice still benefits from a poll-refresh
+  // here. 10s matches the original cadence from task 057.
   const autoRefresh = status === "in-progress" ? 10 : undefined;
 
   const body = `
 ${projectChips(allProjects, project.slug)}
-<nav class="crumbs"><a href="/">tpm</a>${crumbsTrail}</nav>
+${breadcrumbFor(project, task)}
 ${flashBanner}
 <header>
   <h1>${esc(title)} <span class="badge s-${cls(status)}">${esc(status)}</span></h1>
@@ -715,12 +742,107 @@ ${flashBanner}
   </aside>
   <main>
     <div class="body">${renderMarkdown(task.body)}</div>
-    ${runPanel}
   </main>
   ${hasRail ? `<div class="task-rail">${railContent}</div>` : ""}
 </div>
 `;
   return layout(`tpm · ${title}`, body, { autoRefresh });
+}
+
+// ---- breadcrumbs ----------------------------------------------------------
+
+// Single source of truth for the breadcrumb on every task-scoped page (task
+// detail, /log subpage, /runs subpage). Starts at the `home` link and walks
+// down to the task; `suffix` (e.g. `"log"`, `"runs"`) appends a sub-resource
+// crumb after the task.
+//
+// The project segment is deliberately omitted: the page-wide chip nav above
+// the breadcrumb already provides one-click project navigation, and including
+// the project here doubled-up visually on single-project trees where the home
+// label and the project slug were both `tpm` (the originating bug for task
+// 075). Operators with multiple projects still navigate via the chip row.
+function breadcrumbFor(project: Project, task: Task, opts: { suffix?: string } = {}): string {
+  const taskUrl = taskHref(project, task);
+  const parts: string[] = [`<a href="/">tpm</a>`];
+  if (task.parent) {
+    parts.push(`<a href="/t/${esc(project.slug)}/${esc(task.parent)}">${esc(task.parent)}</a>`);
+  }
+  parts.push(`<a href="${taskUrl}">${esc(task.slug)}</a>`);
+  if (opts.suffix) {
+    parts.push(`<a href="${taskUrl}/${esc(opts.suffix)}">${esc(opts.suffix)}</a>`);
+  }
+  return `<nav class="crumbs">${parts.join("")}</nav>`;
+}
+
+// ---- rail panels: recent log + runs link ----------------------------------
+
+// How many entries the "Recent log" rail panel renders. Big enough to give
+// "what's happening right now" context on a long-history task; small enough
+// not to dominate the rail. The "View full log →" link covers depth.
+const RECENT_LOG_PANEL_LINES = 8;
+
+// Compact tail of the merged task log (envelope + body Log) for the task
+// detail rail. Mirrors the data layer from `renderTaskLog` but renders a
+// minimal one-line-per-entry layout suitable for a sticky rail.
+function renderRecentLogPanel(
+  task: Task,
+  slugPath: string,
+  taskUrl: string,
+  harnessLog: HarnessLogReader,
+): string {
+  const envelope = harnessLog({ lines: RECENT_LOG_PANEL_LINES, filter: slugPath })
+    .flatMap(s => s.lines);
+  const taskLog = parseTaskLogEntries(task.body);
+  const merged = [...envelope, ...taskLog]
+    .filter(l => l.timestamp)
+    .sort((a, b) => Date.parse(a.timestamp!) - Date.parse(b.timestamp!))
+    .slice(-RECENT_LOG_PANEL_LINES);
+  const fullLogLink = `<p class="recent-log-more"><a href="${taskUrl}/log">View full log →</a></p>`;
+  if (merged.length === 0) {
+    return `<section class="task-recent-log">
+  <h2>Recent log</h2>
+  <p class="recent-log-empty">No log entries yet.</p>
+  ${fullLogLink}
+</section>`;
+  }
+  // Render newest-first in the rail — operators scanning a sticky panel want
+  // the latest event at the top, opposite the chronological /log page.
+  const items = merged.slice().reverse().map(renderRecentLogLine).join("");
+  return `<section class="task-recent-log">
+  <h2>Recent log</h2>
+  <ol class="recent-log-lines">${items}</ol>
+  ${fullLogLink}
+</section>`;
+}
+
+function renderRecentLogLine(line: HarnessLogLine): string {
+  const ts = line.timestamp ? compactTs(line.timestamp) : "";
+  const source = line.source === "task-log"
+    ? `<span class="recent-log-source recent-log-source-task-log">task-log</span>`
+    : line.script
+      ? `<span class="recent-log-source">${esc(line.script)}</span>`
+      : "";
+  const msg = line.message ?? line.raw;
+  return `<li class="recent-log-line">
+    <span class="recent-log-ts">${esc(ts)}</span>
+    ${source}
+    <span class="recent-log-msg">${esc(msg)}</span>
+  </li>`;
+}
+
+// `2026-05-16T15:30:42-07:00` → `05-16 15:30`. The rail is space-constrained,
+// the full ISO is on the /log page. Falls through unmodified for anything
+// that doesn't match the ISO-with-offset shape.
+function compactTs(iso: string): string {
+  const m = iso.match(/^\d{4}-(\d{2}-\d{2})T(\d{2}:\d{2})/);
+  return m ? `${m[1]} ${m[2]}` : iso;
+}
+
+// Lightweight "View runs →" rail link pointing at the per-task runs index.
+// Replaces the inline "Last run" panel from task 057 — per-run logs are now
+// a sub-resource at /t/.../runs, not embedded on the task detail page.
+function renderTaskRunsRailLink(taskUrl: string): string {
+  return `<section class="task-runs-link"><a href="${taskUrl}/runs">View runs →</a></section>`;
 }
 
 // ---- /config page ---------------------------------------------------------
@@ -990,18 +1112,13 @@ function renderTaskLog(
     panels = sources.map(s => renderLogPanel(s, opts)).join("");
   }
   const title = strOr(task.data.title, task.slug);
-  const taskHref = task.parent
-    ? `/t/${esc(project.slug)}/${esc(task.parent)}/${esc(task.slug)}`
-    : `/t/${esc(project.slug)}/${esc(task.slug)}`;
-  const crumbsTrail = task.parent
-    ? `<a href="/p/${esc(project.slug)}">${esc(project.slug)}</a><a href="/t/${esc(project.slug)}/${esc(task.parent)}">${esc(task.parent)}</a><a href="${taskHref}">${esc(task.slug)}</a><a href="${taskHref}/log">log</a>`
-    : `<a href="/p/${esc(project.slug)}">${esc(project.slug)}</a><a href="${taskHref}">${esc(task.slug)}</a><a href="${taskHref}/log">log</a>`;
+  const taskUrl = taskHref(project, task);
   const body = `
 ${projectChips(projects, project.slug)}
-<nav class="crumbs"><a href="/">tpm</a>${crumbsTrail}</nav>
+${breadcrumbFor(project, task, { suffix: "log" })}
 <header>
   <h1>Log — ${esc(title)}</h1>
-  <p class="meta">Merged envelope + task-body Log entries for <code>${esc(opts.taskFilter ?? "")}</code>. <a href="${taskHref}">Back to task →</a>  ·  Auto-refreshes every 5s.</p>
+  <p class="meta">Merged envelope + task-body Log entries for <code>${esc(opts.taskFilter ?? "")}</code>. <a href="${taskUrl}">Back to task →</a>  ·  Auto-refreshes every 5s.</p>
 </header>
 ${panels}
 `;
@@ -1076,6 +1193,71 @@ function renderLogLine(line: HarnessLogLine): string {
     <span class="log-script">${esc(line.script ?? "")}</span>
     <span class="log-msg">${esc(line.message ?? "")}</span>
   </li>`;
+}
+
+// ---- per-task /runs subpage -----------------------------------------------
+
+// Index for `/t/<proj>/<slug>/runs`. Lists every run log discovered for the
+// task (newest-first) and renders the latest one inline using the same parsed
+// transcript view that lived on the task detail page before task 075. Each
+// older run is a link to the raw `/runs/<file>` viewer.
+function renderTaskRuns(
+  projects: Project[],
+  project: Project,
+  task: Task,
+  runs: string[],
+  runLog: RunLogReader,
+): string {
+  const title = strOr(task.data.title, task.slug);
+  const taskUrl = taskHref(project, task);
+  const status = rollupStatus(task);
+  const slugPath = task.parent
+    ? `${project.slug}/${task.parent}/${task.slug}`
+    : `${project.slug}/${task.slug}`;
+  // The latest run renders inline (the most useful per-task page on a live
+  // task is "what did the last run do"). Older runs are link-only — clicking
+  // opens the raw `/runs/<file>` viewer.
+  const latestPanel = renderRunPanel(slugPath, status, runLog);
+  let listSection = "";
+  if (runs.length === 0) {
+    listSection = `<section class="task-runs-list">
+  <h2>All runs</h2>
+  <p class="run-empty">No run logs on disk yet — this task hasn't been dispatched by <code>tpm orchestrate</code>.</p>
+</section>`;
+  } else {
+    const items = runs.map(name => {
+      const ts = runLogDisplayTimestamp(name);
+      return `<li><a href="/runs/${esc(name)}">${esc(name)}</a> <span class="run-list-ts">${esc(ts)}</span></li>`;
+    }).join("");
+    listSection = `<section class="task-runs-list">
+  <h2>All runs <span class="meta">(${runs.length})</span></h2>
+  <ol class="run-list">${items}</ol>
+</section>`;
+  }
+  // Auto-refresh while in-progress so an operator camped on `/runs` sees the
+  // live run stream update without manual reload. Cadence matches the task
+  // detail page's old refresh from task 057.
+  const autoRefresh = status === "in-progress" ? 10 : undefined;
+  const body = `
+${projectChips(projects, project.slug)}
+${breadcrumbFor(project, task, { suffix: "runs" })}
+<header>
+  <h1>Runs — ${esc(title)}</h1>
+  <p class="meta">Per-run transcripts captured by <code>tpm orchestrate</code>. <a href="${taskUrl}">Back to task →</a></p>
+</header>
+${latestPanel}
+${listSection}
+`;
+  return layout(`tpm · ${title} · runs`, body, { autoRefresh });
+}
+
+// `tpm-057--20260601T080000Z.log` → `2026-06-01 08:00 UTC`. Best-effort —
+// falls back to the bare basename if the suffix doesn't match (a hand-placed
+// file, etc.).
+function runLogDisplayTimestamp(name: string): string {
+  const m = name.match(/--(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})\d{2}Z\.log$/);
+  if (!m) return "";
+  return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]} UTC`;
 }
 
 // ---- run panel ------------------------------------------------------------

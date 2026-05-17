@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
+  allRunLogs,
   compactUtc,
   encodeSlug,
   isValidRunLogName,
@@ -67,6 +68,35 @@ test("latestRunLog: returns null when no matches for slug", () => {
   try {
     writeFileSync(resolve(dir, "other-001--20260601T090000Z.log"), "unrelated");
     assert.equal(latestRunLog("tpm/057", dir), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("allRunLogs: returns all matches for a slug newest-first; excludes other slugs", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+  try {
+    writeFileSync(resolve(dir, "tpm-057--20260101T000000Z.log"), "old");
+    writeFileSync(resolve(dir, "tpm-057--20260515T120000Z.log"), "mid");
+    writeFileSync(resolve(dir, "tpm-057--20260601T080000Z.log"), "new");
+    writeFileSync(resolve(dir, "other-001--20260601T090000Z.log"), "unrelated");
+    const all = allRunLogs("tpm/057", dir);
+    assert.equal(all.length, 3);
+    // Newest first.
+    assert.match(all[0], /20260601T080000Z\.log$/);
+    assert.match(all[1], /20260515T120000Z\.log$/);
+    assert.match(all[2], /20260101T000000Z\.log$/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("allRunLogs: returns [] when no matches / missing dir", () => {
+  assert.deepEqual(allRunLogs("tpm/057", "/nonexistent/path/xyz"), []);
+  const dir = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+  try {
+    writeFileSync(resolve(dir, "other-001--20260601T090000Z.log"), "unrelated");
+    assert.deepEqual(allRunLogs("tpm/057", dir), []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
