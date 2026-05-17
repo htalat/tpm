@@ -358,8 +358,7 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const query = decodeURIComponent(taskMatch[1]);
     const match = findTask(projects, query);
     if (!match) return notFound(`No task: ${query}`);
-    const harnessLog = opts.harnessLog ?? defaultHarnessLogReader;
-    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, projects, opts, prCache, harnessLog));
+    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, projects, opts, prCache));
   }
   return notFound(pathname);
 }
@@ -670,7 +669,6 @@ function renderTask(
   allProjects: Project[],
   opts: RouteOpts = {},
   prCache: PrCacheReader = (url) => readPrCache(url),
-  harnessLog: HarnessLogReader = defaultHarnessLogReader,
 ): string {
   const repo = resolveRepo(project, task);
   const status = rollupStatus(task);
@@ -698,24 +696,15 @@ function renderTask(
     ? `<div class="flash">${esc(opts.flash)} <a class="flash-dismiss" href="${esc(taskHref(project, task))}">dismiss</a></div>`
     : "";
 
-  const slugPath = task.parent
-    ? `${project.slug}/${task.parent}/${task.slug}`
-    : `${project.slug}/${task.slug}`;
   const taskUrl = taskHref(project, task);
 
-  const recentLogPanel = renderRecentLogPanel(task, slugPath, taskUrl, harnessLog);
-  const runsPanel = renderTaskRunsRailLink(taskUrl);
+  const logLink = renderTaskLogRailLink(taskUrl);
+  const runsLink = renderTaskRunsRailLink(taskUrl);
   const prPanel = renderPrPanel(prs, prCache);
   const actionsSection = renderActions(project, task, status, opts);
   const settingsSection = renderSettings(project, task, status, opts);
-  const railContent = `${recentLogPanel}${runsPanel}${prPanel}${actionsSection}${settingsSection}`;
+  const railContent = `${logLink}${runsLink}${prPanel}${actionsSection}${settingsSection}`;
   const hasRail = railContent.length > 0;
-
-  // Auto-refresh the page while the agent is running so the "Recent log"
-  // panel stays current. The per-run panel moved out to /t/.../runs (task
-  // 075), but the rail's body-log slice still benefits from a poll-refresh
-  // here. 10s matches the original cadence from task 057.
-  const autoRefresh = status === "in-progress" ? 10 : undefined;
 
   const body = `
 ${projectChips(allProjects, project.slug)}
@@ -746,7 +735,7 @@ ${flashBanner}
   ${hasRail ? `<div class="task-rail">${railContent}</div>` : ""}
 </div>
 `;
-  return layout(`tpm · ${title}`, body, { autoRefresh });
+  return layout(`tpm · ${title}`, body);
 }
 
 // ---- breadcrumbs ----------------------------------------------------------
@@ -774,73 +763,18 @@ function breadcrumbFor(project: Project, task: Task, opts: { suffix?: string } =
   return `<nav class="crumbs">${parts.join("")}</nav>`;
 }
 
-// ---- rail panels: recent log + runs link ----------------------------------
+// ---- rail links: view log + view runs -------------------------------------
 
-// How many entries the "Recent log" rail panel renders. Big enough to give
-// "what's happening right now" context on a long-history task; small enough
-// not to dominate the rail. The "View full log →" link covers depth.
-const RECENT_LOG_PANEL_LINES = 8;
-
-// Compact tail of the merged task log (envelope + body Log) for the task
-// detail rail. Mirrors the data layer from `renderTaskLog` but renders a
-// minimal one-line-per-entry layout suitable for a sticky rail.
-function renderRecentLogPanel(
-  task: Task,
-  slugPath: string,
-  taskUrl: string,
-  harnessLog: HarnessLogReader,
-): string {
-  const envelope = harnessLog({ lines: RECENT_LOG_PANEL_LINES, filter: slugPath })
-    .flatMap(s => s.lines);
-  const taskLog = parseTaskLogEntries(task.body);
-  const merged = [...envelope, ...taskLog]
-    .filter(l => l.timestamp)
-    .sort((a, b) => Date.parse(a.timestamp!) - Date.parse(b.timestamp!))
-    .slice(-RECENT_LOG_PANEL_LINES);
-  const fullLogLink = `<p class="recent-log-more"><a href="${taskUrl}/log">View full log →</a></p>`;
-  if (merged.length === 0) {
-    return `<section class="task-recent-log">
-  <h2>Recent log</h2>
-  <p class="recent-log-empty">No log entries yet.</p>
-  ${fullLogLink}
-</section>`;
-  }
-  // Render newest-first in the rail — operators scanning a sticky panel want
-  // the latest event at the top, opposite the chronological /log page.
-  const items = merged.slice().reverse().map(renderRecentLogLine).join("");
-  return `<section class="task-recent-log">
-  <h2>Recent log</h2>
-  <ol class="recent-log-lines">${items}</ol>
-  ${fullLogLink}
-</section>`;
+// "View log →" rail link pointing at the merged-log subroute (envelope +
+// body Log, chronological). The task detail page stays lean — depth lives
+// at /log, not inline on the detail page.
+function renderTaskLogRailLink(taskUrl: string): string {
+  return `<section class="task-log-link"><a href="${taskUrl}/log">View log →</a></section>`;
 }
 
-function renderRecentLogLine(line: HarnessLogLine): string {
-  const ts = line.timestamp ? compactTs(line.timestamp) : "";
-  const source = line.source === "task-log"
-    ? `<span class="recent-log-source recent-log-source-task-log">task-log</span>`
-    : line.script
-      ? `<span class="recent-log-source">${esc(line.script)}</span>`
-      : "";
-  const msg = line.message ?? line.raw;
-  return `<li class="recent-log-line">
-    <span class="recent-log-ts">${esc(ts)}</span>
-    ${source}
-    <span class="recent-log-msg">${esc(msg)}</span>
-  </li>`;
-}
-
-// `2026-05-16T15:30:42-07:00` → `05-16 15:30`. The rail is space-constrained,
-// the full ISO is on the /log page. Falls through unmodified for anything
-// that doesn't match the ISO-with-offset shape.
-function compactTs(iso: string): string {
-  const m = iso.match(/^\d{4}-(\d{2}-\d{2})T(\d{2}:\d{2})/);
-  return m ? `${m[1]} ${m[2]}` : iso;
-}
-
-// Lightweight "View runs →" rail link pointing at the per-task runs index.
-// Replaces the inline "Last run" panel from task 057 — per-run logs are now
-// a sub-resource at /t/.../runs, not embedded on the task detail page.
+// "View runs →" rail link pointing at the per-task runs index. Replaces the
+// inline "Last run" panel from task 057 — per-run logs are a sub-resource
+// at /t/.../runs, not embedded on the task detail page.
 function renderTaskRunsRailLink(taskUrl: string): string {
   return `<section class="task-runs-link"><a href="${taskUrl}/runs">View runs →</a></section>`;
 }
