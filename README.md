@@ -9,6 +9,7 @@ Markdown-based task & project manager. CLI-driven, agent-friendly. Zero deps —
 This repo (the CLI install):
 ```
 bin/tpm                            entry (bash shim → src/cli.ts)
+bin/tpm.cmd                        entry (Windows shim → src/cli.ts)
 src/                               TypeScript implementation
 .tpm/templates/                    distributed default templates
 AGENTS.md                          agent-neutral guide for using tpm (safe to drop into other repos)
@@ -116,6 +117,26 @@ If you already have the repo and just want the CLI:
 ln -s "$PWD/bin/tpm" ~/.local/bin/tpm
 tpm init
 ```
+
+### Windows
+
+Same idea, different shim. `bin/tpm.cmd` is the Windows entry — drop a copy
+(or a [`mklink`](https://learn.microsoft.com/windows-server/administration/windows-commands/mklink)
+junction) under a directory on `%PATH%`, then `tpm` works the same as on
+macOS/Linux. Requires Node 22.18+ for native TypeScript.
+
+```cmd
+:: From a cmd.exe inside the repo
+mkdir "%USERPROFILE%\.local\bin" 2>nul
+copy /Y "%CD%\bin\tpm.cmd" "%USERPROFILE%\.local\bin\tpm.cmd"
+:: Ensure %USERPROFILE%\.local\bin is on PATH (one-time, via System Properties
+:: → Environment Variables, or `setx PATH "%PATH%;%USERPROFILE%\.local\bin"`).
+tpm init
+```
+
+PowerShell users can use `Copy-Item` or `New-Item -ItemType SymbolicLink`
+instead — the `.cmd` is just a thin `node src/cli.ts %*` wrapper, so any
+mechanism that puts it on `PATH` works.
 
 ## Setting up the harness
 
