@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { DEFAULT_NOTIFICATIONS } from "./config.ts";
 import type { NotificationsConfig } from "./config.ts";
+import { firePowerShellNotification } from "./notify/powershell.ts";
 import type { Project, Task } from "./tree.ts";
 
 export type NotifyEvent = "start" | "finish" | "fail";
@@ -48,30 +49,39 @@ export function shouldNotify(event: NotifyEvent, input: ResolveNotifyInput): boo
 export interface FireNotifyOpts {
   // For tests: replace the side-effecting OS call.
   osascript?: (title: string, message: string) => void;
+  powershell?: (title: string, message: string) => void;
 }
 
-// Fire a system notification. Best-effort — silently skips on non-darwin and
-// swallows osascript errors so a missing binary or permission denial never
-// blocks the orchestrator.
+// Fire a system notification. Best-effort — silently skips on unsupported
+// platforms and swallows adapter errors so a missing binary or permission
+// denial never blocks the orchestrator.
 export function fireNotification(title: string, message: string, opts: FireNotifyOpts = {}): void {
   if (opts.osascript) {
     try { opts.osascript(title, message); } catch { /* best-effort */ }
     return;
   }
-  if (process.platform !== "darwin") {
-    // No portable system-notification channel in v0. Log to stderr so cron
-    // logs still capture the event signal.
-    console.error(`tpm notify: skipping (platform=${process.platform}, osascript only on darwin) — ${title}: ${message}`);
+  if (opts.powershell) {
+    try { opts.powershell(title, message); } catch { /* best-effort */ }
     return;
   }
-  // `display notification` accepts double-quoted strings; escape `"` and `\`
-  // in the message + title so a slug or reason with quotes can't break out.
-  const script = `display notification "${escapeOsa(message)}" with title "${escapeOsa(title)}"`;
-  try {
-    spawnSync("osascript", ["-e", script], { stdio: "ignore" });
-  } catch {
-    // best-effort
+  if (process.platform === "darwin") {
+    // `display notification` accepts double-quoted strings; escape `"` and `\`
+    // in the message + title so a slug or reason with quotes can't break out.
+    const script = `display notification "${escapeOsa(message)}" with title "${escapeOsa(title)}"`;
+    try {
+      spawnSync("osascript", ["-e", script], { stdio: "ignore" });
+    } catch {
+      // best-effort
+    }
+    return;
   }
+  if (process.platform === "win32") {
+    firePowerShellNotification(title, message);
+    return;
+  }
+  // No portable system-notification channel for this platform yet. Log to
+  // stderr so cron logs still capture the event signal.
+  console.error(`tpm notify: skipping (platform=${process.platform}, no adapter) — ${title}: ${message}`);
 }
 
 function escapeOsa(s: string): string {

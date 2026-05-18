@@ -104,3 +104,14 @@ test("fireNotification: invokes injected osascript and survives a thrown error",
     fireNotification("tpm", "001-t: fail", { osascript: () => { throw new Error("boom"); } }),
   );
 });
+
+test("fireNotification: invokes injected powershell and survives a thrown error", () => {
+  const calls: Array<[string, string]> = [];
+  fireNotification("tpm", "001-t: finish", { powershell: (t, m) => calls.push([t, m]) });
+  assert.deepEqual(calls, [["tpm", "001-t: finish"]]);
+
+  // Failure inside powershell shouldn't propagate (best-effort contract).
+  assert.doesNotThrow(() =>
+    fireNotification("tpm", "001-t: fail", { powershell: () => { throw new Error("boom"); } }),
+  );
+});
