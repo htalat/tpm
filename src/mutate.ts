@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, unlinkSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse, stringify } from "./frontmatter.ts";
 import { now } from "./time.ts";
@@ -164,7 +164,8 @@ export function addReport(task: Task): MutateResult {
   }
   const { data, body } = readParsed(task);
 
-  // Fold file-form tasks so the folder exists to receive `report.md`.
+  // Legacy safety net: pre-folder-form-default tasks are file-form; fold so the
+  // folder exists to receive `report.md`. No-op for new tasks (born folder-form).
   let folded = false;
   if (!task.dir) {
     const newPath = foldTask(task);
@@ -387,8 +388,19 @@ export function reparent(task: Task, newParent: Task | null): ReparentResult {
   if (isParent(task)) {
     throw new Error(`Cannot reparent ${task.slug}: it has children. Move or close them first.`);
   }
-  if (task.dir) {
-    throw new Error(`Cannot reparent folder-form task ${task.slug}: would orphan supporting files. Move manually.`);
+  // Folder-form source is always a top-level task (children are flat files).
+  // Reparenting it to a child unfolds the folder: task.md becomes a flat sibling
+  // inside the new parent. Refuse when the folder holds anything beyond task.md
+  // (children, runs/, report.md) — unfolding would orphan those. Allow when
+  // task.md is the sole occupant (the common case for a fresh folder-form task).
+  const sourceDir = task.dir;
+  if (sourceDir && newParent) {
+    const extras = readdirSync(sourceDir).filter(e => e !== "task.md" && !e.startsWith("."));
+    if (extras.length > 0) {
+      throw new Error(
+        `Cannot reparent folder-form task ${task.slug} to a child: it has supporting files (${extras.join(", ")}). Move manually.`,
+      );
+    }
   }
   if (newParent) {
     if (newParent.archived) {
@@ -402,9 +414,13 @@ export function reparent(task: Task, newParent: Task | null): ReparentResult {
     }
   }
 
-  // tasksDir is <project>/tasks. For a top-level file it's dirname(task.path);
-  // for a child it's the parent of the parent dir.
-  const tasksDir = task.parent ? dirname(dirname(task.path)) : dirname(task.path);
+  // tasksDir is <project>/tasks. Child: parent of the parent dir. Folder-form
+  // top-level: parent of the task's own folder. File-form top-level: dirname(path).
+  const tasksDir = task.parent
+    ? dirname(dirname(task.path))
+    : sourceDir
+      ? dirname(sourceDir)
+      : dirname(task.path);
 
   let destContainer: string;
   let destArchive: string;
@@ -461,11 +477,18 @@ export function reparent(task: Task, newParent: Task | null): ReparentResult {
 
   mkdirSync(destContainer, { recursive: true });
   writeFileSync(newPath, stringify(newData, newBody));
-  unlinkSync(oldPath);
+  if (sourceDir) {
+    // Unfolded a folder-form source: task.md was the sole occupant, so drop the
+    // now-stale source folder wholesale (oldPath lived inside it).
+    rmSync(sourceDir, { recursive: true, force: true });
+  } else {
+    unlinkSync(oldPath);
+  }
 
   task.path = newPath;
   task.slug = newSlug;
   task.parent = parentSlugForFm ?? undefined;
+  task.dir = undefined;
   task.data = newData;
   task.body = newBody;
 

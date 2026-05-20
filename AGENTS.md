@@ -17,8 +17,8 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
 - **Project frontmatter**: `name, slug, status, created, repo: {remote, local}, host, tags`. `host` is `github` (default) or `ado` — see the dispatch bullet under Conventions.
 - **Task frontmatter**: `title, slug, project, status, type, created, closed, prs, tags` (inherits `repo` from project; can override by adding own `repo:` block). Optional `parent: <parent-slug>` marks the task as a child within a folder-form parent. Investigation deliverables live at `<project>/tasks/<slug>/report.md` (presence of the file is the report — no frontmatter field) — written by `tpm report <slug>`, which auto-folds file-form tasks so the folder exists. Optional `agent: <name>` (e.g. `claude`, `copilot`) picks which CLI `tpm orchestrate` invokes for this task; same field works on project frontmatter for a per-project default, and `agent` in `~/.tpm/config.json` is the global default (fallback: `claude`).
 - **Task shapes**:
-  - **File form** (default): `tasks/NNN-slug.md`. Single file.
-  - **Folder form**: `tasks/NNN-slug/task.md` plus optional `NNN-<sub>.md` siblings (each with `parent: NNN-slug` in frontmatter) and any other files (scratch notes, screenshots, design docs). The directory name is the parent's slug.
+  - **Folder form** (default for top-level tasks): `tasks/NNN-slug/task.md`, plus optional `NNN-<sub>.md` child siblings (each with `parent: NNN-slug` in frontmatter) and any other files (`runs/`, `report.md`, scratch notes, screenshots, design docs). The directory name is the task's slug.
+  - **File form** (legacy): `tasks/NNN-slug.md`. A single file, no folder. Pre-folder-form top-level tasks still load this way and auto-fold when they gain a child, run, or report. Child tasks are always flat `.md` files inside their parent's folder.
 - A task with any children is a **container**: not actionable, never returned by `tpm next`, can't be discussed/started directly.
 - **Statuses**: `open | ready | in-progress | needs-feedback | needs-close | needs-review | blocked | done | dropped`
   - `open` = author's queue (not yet shaped for an agent).

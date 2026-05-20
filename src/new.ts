@@ -60,6 +60,9 @@ export function newTask(root: string, projectSlug: string, taskSlug: string, opt
   if (opts.parent) {
     const parent = resolveParent(root, projectSlug, opts.parent);
     parentSlug = parent.slug;
+    // Legacy safety net: pre-folder-form-default parents are file-form and need
+    // lifting before they can hold children. New top-level tasks are already
+    // folder-form, so this is a no-op for them.
     if (!parent.dir) foldTask(parent);
     containerDir = join(tasksDir, parentSlug);
     archiveContainer = join(tasksDir, "archive", parentSlug);
@@ -75,9 +78,22 @@ export function newTask(root: string, projectSlug: string, taskSlug: string, opt
     if (m) max = Math.max(max, Number(m[1]));
   }
   const next = String(max + 1).padStart(3, "0");
-  const filename = `${next}-${taskSlug}.md`;
-  const path = join(containerDir, filename);
-  if (existsSync(path)) throw new Error(`Task file exists: ${filename}`);
+
+  let path: string;
+  if (parentSlug) {
+    // Child task: a flat `.md` sibling inside the parent's folder.
+    const filename = `${next}-${taskSlug}.md`;
+    path = join(containerDir, filename);
+    if (existsSync(path)) throw new Error(`Task file exists: ${filename}`);
+  } else {
+    // Top-level task: folder-form by default (`<tasksDir>/NNN-<slug>/task.md`),
+    // so runs/, report.md, and children land in place without a later fold.
+    const folderName = `${next}-${taskSlug}`;
+    const folderPath = join(containerDir, folderName);
+    if (existsSync(folderPath)) throw new Error(`Task folder exists: ${folderName}`);
+    mkdirSync(folderPath, { recursive: true });
+    path = join(folderPath, "task.md");
+  }
 
   const tmpl = loadTemplate(root, "task");
   const rendered = render(tmpl, {
