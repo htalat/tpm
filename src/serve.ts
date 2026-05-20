@@ -1550,16 +1550,22 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
   const href = taskHref(project, task);
   const forms: string[] = [];
 
-  // Status -> set of action keys.
+  // Status -> set of action keys. Every non-terminal status offers `Complete`
+  // (terminal/parent already returned above): closing is a first-class UI
+  // action so investigations / spikes / chores without a linked PR can be
+  // closed without dropping to `tpm complete` in the shell. The Outcome
+  // textarea is optional — close-now-edit-later stays possible.
   switch (status) {
     case "open":
       forms.push(simpleForm(href, "ready", "Promote to ready"));
       forms.push(blockForm(href));
+      forms.push(completeForm(href));
       forms.push(dropForm(href));
       break;
     case "ready":
       forms.push(blockForm(href));
       forms.push(simpleForm(href, "reopen", "Move back to open"));
+      forms.push(completeForm(href));
       forms.push(dropForm(href));
       break;
     case "in-progress":
@@ -1584,18 +1590,24 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       // Report-shaped reviews surface LGTM + Request-changes on the report
       // page itself (see `renderReportActionsBar`) — the reviewer's attention
       // is there, not on the task page. The rail keeps log/block/reopen as
-      // escape hatches for both report-shaped and PR-shaped reviews.
+      // escape hatches for both report-shaped and PR-shaped reviews, plus a
+      // direct Complete for closing a review out without going through LGTM
+      // (e.g. a PR-shaped review the poller hasn't swept yet).
       forms.push(logForm(href));
+      forms.push(completeForm(href));
       forms.push(blockForm(href));
       forms.push(statusForm(href, "needs-feedback", "Reopen for agent (→ needs-feedback)"));
       break;
     }
     case "blocked":
       forms.push(simpleForm(href, "reopen", "Reopen (→ open)"));
+      forms.push(completeForm(href));
       break;
     default:
-      // Unknown status: render a fallback log so the user can at least annotate.
+      // Unknown status (corrupt / future schema): fall back to log + close so
+      // the user can at least annotate or retire the task from the UI.
       forms.push(logForm(href));
+      forms.push(completeForm(href));
   }
 
   return `<section class="task-actions"><h2>Actions</h2>${forms.join("")}</section>`;
