@@ -25,8 +25,8 @@ A tpm tree (data — lives wherever `tpm init` was run, e.g. `~/Documents/projec
 <root>/.tpm/locks/<project>--<slug>.lock        per-task orchestrator locks (gitignore if syncing)
 <root>/reports/index.html                       generated rollup
 <root>/<slug>/project.md                        goals, context, notes, project log
-<root>/<slug>/tasks/NNN-*.md                    file-form task (one file)
-<root>/<slug>/tasks/NNN-*/task.md               folder-form task (a parent)
+<root>/<slug>/tasks/NNN-*/task.md               folder-form task (default; task.md + supporting files)
+<root>/<slug>/tasks/NNN-*.md                    file-form task (legacy; one file, no folder)
 <root>/<slug>/tasks/NNN-*/NNN-*.md              subtasks (`parent:` in frontmatter)
 <root>/<slug>/tasks/NNN-*/...                   any other supporting files
 <root>/<slug>/tasks/archive/NNN-*.md            archived file-form task
@@ -550,7 +550,7 @@ notifications:        # optional: per-project override for orchestrator notifica
 same_repo_strategy: serialize  # serialize | worktree — how parallel agents share repo.local. Default serialize.
 ```
 
-**`<root>/<slug>/tasks/NNN-<slug>.md`**
+**`<root>/<slug>/tasks/NNN-<slug>/task.md`** (top-level task; legacy file-form tasks live at `tasks/NNN-<slug>.md`)
 ```yaml
 title: Refactor auth middleware
 slug: refactor-auth
@@ -578,8 +578,8 @@ Edit the markdown freely — frontmatter is the source of truth for `tpm ls` and
 
 A task is one of two shapes:
 
-- **File form** (default): `tasks/NNN-slug.md`. One file. Most tasks live here.
-- **Folder form**: `tasks/NNN-slug/task.md`. Use this when a task needs more than one file — subtasks, scratch notes, screenshots, supporting design docs.
+- **Folder form** (default): `tasks/NNN-slug/task.md`. New top-level tasks are created in this shape, so subtasks, scratch notes, screenshots, `runs/`, and `report.md` have a home without a later conversion.
+- **File form** (legacy): `tasks/NNN-slug.md`. A single file with no folder. Pre-folder-form top-level tasks still load this way and auto-fold when they gain a child, run, or report. Child tasks are always flat `.md` files inside their parent's folder.
 
 Subtasks are first-class tasks with their own status, PRs, and log. They live alongside `task.md` inside the parent's folder, with `parent: <parent-slug>` in their frontmatter:
 
@@ -608,7 +608,7 @@ tpm reparent <task> --top                        # promote a child back to top-l
 tpm ls --flat                                    # flatten the tree (skip indentation)
 ```
 
-Only one level of nesting is supported — both `--parent` and `reparent` reject an attempt to nest under a child task. `reparent` also refuses to move a task that is itself a parent (would create grandchildren) or a folder-form task (would orphan supporting files — flatten manually first).
+Only one level of nesting is supported — both `--parent` and `reparent` reject an attempt to nest under a child task. `reparent` also refuses to move a task that is itself a parent (would create grandchildren). A folder-form task (now the default) moves fine when `task.md` is its only file; if it holds supporting files (`runs/`, `report.md`, children) the move is refused to avoid orphaning them — flatten manually first.
 
 ### Slug resolution
 

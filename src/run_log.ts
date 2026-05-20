@@ -115,7 +115,8 @@ export interface PrepareRunLogResult {
 export function prepareRunLogPath(task: Task, when: Date = new Date()): PrepareRunLogResult {
   let taskPath = task.path;
   if (!task.parent && !task.dir) {
-    // File-form top-level — fold so `<task-folder>/runs/` exists.
+    // Legacy safety net: pre-folder-form-default top-level tasks are file-form;
+    // fold so `<task-folder>/runs/` exists. No-op for new tasks (born folder-form).
     taskPath = foldTask(task);
   }
   const dir = taskRunsDir(task);

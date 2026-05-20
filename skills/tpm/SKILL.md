@@ -18,8 +18,8 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
 - **Project frontmatter**: `name, slug, status, created, repo: {remote, local}, host, tags`. `host` is `github` (default) or `ado` — see the dispatch bullet under Conventions.
 - **Task frontmatter**: `title, slug, project, status, type, created, closed, prs, tags` (inherits `repo` from project; can override by adding own `repo:` block). Optional `parent: <parent-slug>` marks the task as a child within a folder-form parent. Investigation deliverables live at `<project>/tasks/<slug>/report.md` (presence of the file is the report — no frontmatter field) — written by `tpm report <slug>`, which auto-folds file-form tasks so the folder exists.
 - **Task shapes** — a task is either:
-  - **File form** (default): `tasks/NNN-slug.md`. Single file.
-  - **Folder form**: `tasks/NNN-slug/task.md` plus optional `NNN-<sub>.md` siblings (each with `parent: NNN-slug` in frontmatter) and any other files (scratch notes, screenshots, design docs). The directory name is the parent's slug.
+  - **Folder form** (default for top-level tasks): `tasks/NNN-slug/task.md`, plus optional `NNN-<sub>.md` child siblings (each with `parent: NNN-slug` in frontmatter) and any other files (`runs/`, `report.md`, scratch notes, screenshots, design docs). The directory name is the task's slug.
+  - **File form** (legacy): `tasks/NNN-slug.md`. A single file, no folder. Pre-folder-form top-level tasks still load this way and auto-fold when they gain a child, run, or report. Child tasks are always flat `.md` files inside their parent's folder.
 - A task with any children is a **container**: not actionable, never returned by `tpm next`, can't be discussed/started directly.
 - **Statuses**: `open | ready | in-progress | needs-feedback | needs-close | needs-review | blocked | done | dropped`
   - `open` = user's queue (not yet shaped for an agent).
@@ -193,7 +193,7 @@ Use when a task ends up in the wrong place — needs to become a child of an exi
 - `tpm reparent <task> <new-parent>` moves a task under a new parent. Folds the new parent automatically if it's still file-form. Renumbers within the destination container.
 - `tpm reparent <task> --top` promotes a child back to top-level (drops `parent:` from frontmatter).
 
-Refuses to move a task that has children (would create grandchildren), a folder-form task (would orphan supporting files — flatten manually first), or any move that would land the task under a child task. Also refuses no-op moves. Cross-project moves aren't supported — `<new-parent>` resolves within the source task's project.
+Refuses to move a task that has children (would create grandchildren) or any move that would land the task under a child task. A folder-form task (now the default) moves fine when `task.md` is its only file; if it holds supporting files (`runs/`, `report.md`, children) the move is refused to avoid orphaning them — flatten manually first. Also refuses no-op moves. Cross-project moves aren't supported — `<new-parent>` resolves within the source task's project.
 
 ### Pass-through (`/tpm ls`, `/tpm report`, `/tpm root`, `/tpm path`, `/tpm context`, `/tpm init`)
 Just run the corresponding `tpm` subcommand and print the result.

@@ -111,7 +111,7 @@ test("newTask: numbers from 001 in an empty project", () => {
   try {
     setupProject(root, "alpha");
     const path = newTask(root, "alpha", "first");
-    assert.equal(path, join(root, "alpha", "tasks", "001-first.md"));
+    assert.equal(path, join(root, "alpha", "tasks", "001-first", "task.md"));
   } finally {
     rmTempDir(root);
   }
@@ -125,7 +125,7 @@ test("newTask: continues numbering after existing tasks", () => {
     writeFileSync(join(tasksDir, "001-one.md"), "x");
     writeFileSync(join(tasksDir, "002-two.md"), "x");
     const path = newTask(root, "alpha", "three");
-    assert.equal(path, join(tasksDir, "003-three.md"));
+    assert.equal(path, join(tasksDir, "003-three", "task.md"));
   } finally {
     rmTempDir(root);
   }
@@ -142,7 +142,7 @@ test("newTask: auto-numbers across tasks/ and tasks/archive/", () => {
     writeFileSync(join(tasksDir, "001-live.md"), "x");
     writeFileSync(join(archive, "005-old.md"), "x");
     const path = newTask(root, "alpha", "next");
-    assert.equal(path, join(tasksDir, "006-next.md"));
+    assert.equal(path, join(tasksDir, "006-next", "task.md"));
   } finally {
     rmTempDir(root);
   }
@@ -176,21 +176,44 @@ test("newTask: humanizes title when none given", () => {
   }
 });
 
-test("newTask --parent: folds parent and creates child with parent: in frontmatter", () => {
+test("newTask --parent: creates child inside folder-form parent with parent: in frontmatter", () => {
   const root = mkTempDir();
   try {
     setupProject(root, "alpha");
     const parentPath = newTask(root, "alpha", "big-thing");
-    const childPath = newTask(root, "alpha", "first-step", { parent: "big-thing" });
-    // Parent got folded.
     const folderPath = join(root, "alpha", "tasks", "001-big-thing");
-    assert.ok(existsSync(join(folderPath, "task.md")));
-    assert.ok(!existsSync(parentPath)); // old flat path is gone
+    // Top-level parent is folder-form by default (no fold needed on add-child).
+    assert.equal(parentPath, join(folderPath, "task.md"));
+    const childPath = newTask(root, "alpha", "first-step", { parent: "big-thing" });
     // Child sits inside the folder, numbered 001 (scoped).
     assert.equal(childPath, join(folderPath, "001-first-step.md"));
     const { data } = parse(readFileSync(childPath, "utf8"));
     assert.equal(data.parent, "001-big-thing");
     assert.equal(data.slug, "first-step");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("newTask --parent: auto-folds a legacy file-form parent on add-child", () => {
+  const root = mkTempDir();
+  try {
+    setupProject(root, "alpha");
+    const tasksDir = join(root, "alpha", "tasks");
+    // Seed a legacy file-form top-level task directly (pre-folder-form-default).
+    writeFileSync(
+      join(tasksDir, "001-big-thing.md"),
+      "---\ntitle: Big Thing\nslug: big-thing\nproject: alpha\nstatus: open\n---\n# Big Thing\n",
+    );
+    const childPath = newTask(root, "alpha", "first-step", { parent: "big-thing" });
+    const folderPath = join(tasksDir, "001-big-thing");
+    // Parent got folded: flat path gone, task.md now inside the folder.
+    assert.ok(existsSync(join(folderPath, "task.md")));
+    assert.ok(!existsSync(join(tasksDir, "001-big-thing.md")));
+    // Child sits inside the folded parent.
+    assert.equal(childPath, join(folderPath, "001-first-step.md"));
+    const { data } = parse(readFileSync(childPath, "utf8"));
+    assert.equal(data.parent, "001-big-thing");
   } finally {
     rmTempDir(root);
   }
@@ -228,12 +251,13 @@ test("newTask: top-level numbering counts folder-form siblings, not just .md fil
   const root = mkTempDir();
   try {
     setupProject(root, "alpha");
-    newTask(root, "alpha", "one");                  // 001-one.md
-    newTask(root, "alpha", "two");                  // 002-two.md
-    newTask(root, "alpha", "child", { parent: "two" }); // folds 002-two into a folder
+    newTask(root, "alpha", "one");                  // 001-one/ (folder-form)
+    newTask(root, "alpha", "two");                  // 002-two/ (folder-form)
+    newTask(root, "alpha", "child", { parent: "two" }); // child inside 002-two/
     const next = newTask(root, "alpha", "three");
-    // Without folder-aware numbering, this would pick 002 again and collide with 002-two/.
-    assert.equal(next, join(root, "alpha", "tasks", "003-three.md"));
+    // Numbering must count folder-form siblings; otherwise this would pick 002
+    // again and collide with 002-two/.
+    assert.equal(next, join(root, "alpha", "tasks", "003-three", "task.md"));
   } finally {
     rmTempDir(root);
   }

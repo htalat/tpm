@@ -1191,7 +1191,7 @@ test("reparent: refuses parent task (would create grandchildren)", () => {
   }
 });
 
-test("reparent: refuses folder-form task (even with no children — would orphan supporting files)", () => {
+test("reparent: folder-form top-level -> child unfolds when task.md is the sole occupant", () => {
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
@@ -1201,7 +1201,36 @@ test("reparent: refuses folder-form task (even with no children — would orphan
     writeTask(dir, "002-target.md");
     const foldy = loadTask(root, "alpha", "001-foldy");
     const target = loadTask(root, "alpha", "002-target");
-    assert.throws(() => reparent(foldy, target), /folder-form/);
+    const r = reparent(foldy, target);
+    // Unfolded: task.md became a flat child file inside target's (now folded) folder.
+    assert.equal(r.newSlug, "001-foldy");
+    assert.equal(r.newPath, join(dir, "tasks", "002-target", "001-foldy.md"));
+    assert.ok(existsSync(r.newPath));
+    // The source folder is gone wholesale.
+    assert.ok(!existsSync(folder));
+    const { data } = parse(readFileSync(r.newPath, "utf8"));
+    assert.equal(data.parent, "002-target");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("reparent: refuses folder-form top-level -> child when the folder has supporting files", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    const folder = join(dir, "tasks", "001-foldy");
+    mkdirSync(join(folder, "runs"), { recursive: true });
+    writeFileSync(join(folder, "task.md"), taskMd("001-foldy"));
+    writeFileSync(join(folder, "runs", "20260101T000000Z.log"), "log");
+    writeTask(dir, "002-target.md");
+    const foldy = loadTask(root, "alpha", "001-foldy");
+    const target = loadTask(root, "alpha", "002-target");
+    assert.throws(() => reparent(foldy, target), /supporting files/);
+    // Nothing moved: task.md and its runs/ are intact, target untouched.
+    assert.ok(existsSync(join(folder, "task.md")));
+    assert.ok(existsSync(join(folder, "runs", "20260101T000000Z.log")));
+    assert.ok(existsSync(join(dir, "tasks", "002-target.md")));
   } finally {
     rmTempDir(root);
   }
