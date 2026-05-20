@@ -193,7 +193,7 @@ Use when a task ends up in the wrong place — needs to become a child of an exi
 - `tpm reparent <task> <new-parent>` moves a task under a new parent. Folds the new parent automatically if it's still file-form. Renumbers within the destination container.
 - `tpm reparent <task> --top` promotes a child back to top-level (drops `parent:` from frontmatter).
 
-Refuses to move a task that has children (would create grandchildren), a folder-form task (would orphan supporting files — flatten manually first), or any move that would land the task under a child task. Also refuses no-op moves. Cross-project moves aren't supported — `<new-parent>` resolves within the source task's project.
+Refuses to move a task that has children (would create grandchildren) or any move that would land the task under a child task. A folder-form task (now the default) moves fine when `task.md` is its only file; if it holds supporting files (`runs/`, `report.md`, children) the move is refused to avoid orphaning them — flatten manually first. Also refuses no-op moves. Cross-project moves aren't supported — `<new-parent>` resolves within the source task's project.
 
 ### Pass-through (`/tpm ls`, `/tpm report`, `/tpm root`, `/tpm path`, `/tpm context`, `/tpm init`)
 Just run the corresponding `tpm` subcommand and print the result.

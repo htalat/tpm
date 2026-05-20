@@ -608,7 +608,7 @@ tpm reparent <task> --top                        # promote a child back to top-l
 tpm ls --flat                                    # flatten the tree (skip indentation)
 ```
 
-Only one level of nesting is supported — both `--parent` and `reparent` reject an attempt to nest under a child task. `reparent` also refuses to move a task that is itself a parent (would create grandchildren) or a folder-form task (would orphan supporting files — flatten manually first).
+Only one level of nesting is supported — both `--parent` and `reparent` reject an attempt to nest under a child task. `reparent` also refuses to move a task that is itself a parent (would create grandchildren). A folder-form task (now the default) moves fine when `task.md` is its only file; if it holds supporting files (`runs/`, `report.md`, children) the move is refused to avoid orphaning them — flatten manually first.
 
 ### Slug resolution
 
