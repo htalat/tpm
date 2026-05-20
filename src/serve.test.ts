@@ -449,15 +449,28 @@ test("renderTask: in-progress task shows Block + Complete + Log + Add PR forms",
   assert.match(r.body, /action="\/t\/alpha\/001-a\/allow-orchestrator"/);
 });
 
-test("renderTask: open task offers Promote + Block + Drop, not Complete", () => {
+test("renderTask: open task offers Promote + Block + Complete + Drop", () => {
   const t = task("001-a", "open");
   const p = project("alpha", [t]);
   const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
   assert.match(r.body, /action="\/t\/alpha\/001-a\/ready"/);
   assert.match(r.body, /action="\/t\/alpha\/001-a\/block"/);
   assert.match(r.body, /action="\/t\/alpha\/001-a\/status"/);
-  assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/complete"/);
+  // Close affordance even at open: chores/spikes can be closed without a PR.
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/complete"/);
   assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/pr"/);
+});
+
+test("renderTask: Complete (Close) form renders for every non-terminal status", () => {
+  // Closing is a first-class UI action: no status should force the user to the
+  // shell to run `tpm complete`. Terminal states (done/dropped) render no
+  // actions at all — covered by the done/dropped test below.
+  for (const status of ["open", "ready", "in-progress", "needs-feedback", "needs-close", "needs-review", "blocked"]) {
+    const t = task("001-a", status);
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+    assert.match(r.body, /action="\/t\/alpha\/001-a\/complete"/, `expected Complete form for status=${status}`);
+  }
 });
 
 test("renderTask: done/dropped tasks render no action or settings forms", () => {
