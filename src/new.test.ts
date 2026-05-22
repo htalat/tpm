@@ -106,6 +106,19 @@ test("newTask: rejects invalid task slugs", () => {
   }
 });
 
+test("newTask: rejects a slug with a leading numeric prefix and suggests the clean slug", () => {
+  const root = mkTempDir();
+  try {
+    setupProject(root, "alpha");
+    assert.throws(
+      () => newTask(root, "alpha", "006-windows-end-to-end-verify"),
+      /Slugs must not start with a numeric prefix; tpm assigns one automatically\. Try "windows-end-to-end-verify"\./,
+    );
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 test("newTask: numbers from 001 in an empty project", () => {
   const root = mkTempDir();
   try {

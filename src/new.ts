@@ -46,6 +46,7 @@ export interface NewTaskOpts {
 
 export function newTask(root: string, projectSlug: string, taskSlug: string, opts: NewTaskOpts = {}): string {
   validateSlug(taskSlug);
+  rejectNumericPrefix(taskSlug);
   const projectDir = join(root, projectSlug);
   if (!existsSync(join(projectDir, "project.md"))) {
     throw new Error(`Unknown project: ${projectSlug}`);
@@ -144,6 +145,19 @@ function render(tmpl: string, vars: Record<string, string>): string {
 function validateSlug(slug: string): void {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
     throw new Error(`Invalid slug "${slug}". Use lowercase letters, digits, and hyphens (no leading hyphen).`);
+  }
+}
+
+// Task files get an auto-incremented `NNN-` prefix. A user slug that already
+// looks prefixed (e.g. `006-windows-e2e`) would otherwise yield `006-006-...`,
+// so reject it and point at the clean slug rather than silently rewriting it.
+function rejectNumericPrefix(slug: string): void {
+  const prefix = slug.match(/^\d{3,}-/);
+  if (prefix) {
+    const suggestion = slug.slice(prefix[0].length);
+    throw new Error(
+      `Invalid slug "${slug}". Slugs must not start with a numeric prefix; tpm assigns one automatically. Try "${suggestion}".`,
+    );
   }
 }
 
