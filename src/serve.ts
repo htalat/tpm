@@ -1726,12 +1726,18 @@ function taskRow(project: Project, task: Task, status: string, prCache: PrCacheR
     ? strOr(task.data.closed, strOr(task.data.created, ""))
     : strOr(task.data.created, "");
   const classes = ["task-row"];
-  if (task.parent) classes.push("child");
   if (task.archived) classes.push("archived");
   const archivedTag = task.archived ? `<span class="archived-tag">archived</span>` : "";
+  // Child rows live in status-grouped queues where the parent isn't adjacent,
+  // so an indent has nothing to anchor to (task 098). Show the parent slug as a
+  // breadcrumb prefix instead — the hierarchy reads without visual adjacency,
+  // and the crumb links straight to the parent.
+  const titleCell = task.parent
+    ? `<span class="title-cell"><a class="parent-crumb" href="/t/${esc(project.slug)}/${esc(task.parent)}">${esc(task.parent)}</a><a class="title" href="${href}">${esc(title)}</a></span>`
+    : `<a class="title" href="${href}">${esc(title)}</a>`;
   return `<div class="${classes.join(" ")}">
     <span class="badge s-${cls(status)}${task.archived ? " s-archived" : ""}">${esc(status)}</span>
-    <a class="title" href="${href}">${esc(title)}</a>
+    ${titleCell}
     ${prChipsFor(task, prCache)}
     <span class="slug">${esc(slug)}</span>
     ${archivedTag}
