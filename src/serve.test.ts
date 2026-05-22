@@ -241,6 +241,21 @@ test("route: archived and parent tasks are excluded from index queue lists", () 
   assert.doesNotMatch(r.body, /001-old/);
 });
 
+test("taskRow: child in a status queue shows a parent crumb, not an orphan indent", () => {
+  // Parent is `ready` (hidden as a container); its child is `blocked`, so the
+  // child surfaces alone in the blocked section with no parent adjacent.
+  const child = task("003-child", "blocked", { parent: "002-parent" });
+  child.parent = "002-parent";
+  const parentReady = task("002-parent", "ready");
+  parentReady.children = [child];
+  const p = project("alpha", [parentReady]);
+  const r = route("/p/alpha", new URLSearchParams(), [p]);
+  // Parent context renders inline as a breadcrumb link to the parent task...
+  assert.match(r.body, /<a class="parent-crumb" href="\/t\/alpha\/002-parent">002-parent<\/a>/);
+  // ...and the old orphan-indent `child` class is gone from the row.
+  assert.doesNotMatch(r.body, /class="task-row[^"]*\bchild\b/);
+});
+
 test("route: / renders a project chips nav with all projects", () => {
   const a = project("alpha", [task("001", "ready")]);
   const b = project("beta",  [task("002", "open")]);
