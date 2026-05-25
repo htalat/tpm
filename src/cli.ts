@@ -929,7 +929,7 @@ Usage:
   tpm ls [--all] [--archived] [--flat] [--status open] [--project <slug>]
   tpm context <task | project/task | parent/child>
   tpm start <task>                           set status: in-progress, log started
-  tpm ready <task>                           set status: ready, log promoted
+  tpm ready <task>                           set status: ready (+ allow_orchestrator: true), log promoted; tpm disallow after for supervised-only
   tpm complete <task> [--outcome "..."] [--no-archive] [--archive]
                                              set status: done, stamp closed, log; archives by type
   tpm block <task> "<reason>"                set status: blocked, log the reason

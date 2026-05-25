@@ -269,7 +269,7 @@ web/migrate-orm                       laptop-htalat-7421  3m        1s
 
 Stale heartbeats (much larger than acquired-age) are visually obvious. `tpm lock release-stale` clears them; orchestrate runs that automatically on startup.
 
-The `--autonomous` gate is the safety boundary between "an agent can run this when I ask" and "an agent can run this while I'm asleep." `tpm next --autonomous --claim` skips ready tasks unless they have `allow_orchestrator: true`; opt in per task as you trust each. The `--claim` flag turns the pick into an atomic claim (`O_CREAT | O_EXCL` on `<root>/.tpm/locks/<project>--<slug>.lock`) so multiple cron entries running in parallel don't double-dispatch on the same task.
+The `--autonomous` gate is the safety boundary between "an agent can run this when I ask" and "an agent can run this while I'm asleep." `tpm next --autonomous --claim` skips ready tasks unless they have `allow_orchestrator: true`. Promoting a task (`tpm ready`, or the serve "Promote to ready" button) sets that flag by default — the common case is shaped-and-safe-to-run-unattended — so opt _out_ per task with `tpm disallow <task>` when you want to be at the keyboard for it (destructive migration, risky refactor). The `--claim` flag turns the pick into an atomic claim (`O_CREAT | O_EXCL` on `<root>/.tpm/locks/<project>--<slug>.lock`) so multiple cron entries running in parallel don't double-dispatch on the same task.
 
 `tpm orchestrate` (the dispatcher) layers four safety rails on top of a bare `claude -p` invocation:
 
@@ -300,7 +300,7 @@ cp ~/Developer/tpm/scripts/recurring/template.sh ~/.tpm/scripts/recurring/intake
 $EDITOR ~/.tpm/scripts/recurring/intake-prs.sh
 ```
 
-By default, tasks created by a recurring script are `ready` but **not** `allow_orchestrator: true`, so manual `tpm next` picks them up but the unattended drain doesn't. Opt a task in for autonomous runs with `tpm allow <task>` (or `tpm disallow <task>` to revoke), or set the flag in frontmatter directly inside the recurring script for a class of tasks you trust.
+By default, tasks created by the recurring-script template are `ready` but **not** `allow_orchestrator: true`: the template runs `tpm ready` (which now sets the flag) immediately followed by `tpm disallow`, so manual `tpm next` picks them up but the unattended drain doesn't. Opt a task in for autonomous runs with `tpm allow <task>`, or drop the `tpm disallow` line in the script for a class of tasks you trust.
 
 **Portability.** Recurring scripts must run on stock macOS — BSD `awk`, BSD `sed`, no `gawk` / `gnu-sed` / `grep -P`. tpm is zero-deps; a cron-fired script that requires `brew install gawk` violates that. In practice: stick to 2-arg `match()` + `substr` (not gawk's 3-arg capture-array form), `sed -E` (portable on both sides), and `grep -E` instead of `grep -P`.
 
@@ -426,7 +426,9 @@ echo "$task"                              # sandbox/hello-world
 # /tpm $task   from a Claude Code session, or:
 claude -p "/tpm $task"
 
-# 4. Promote to autonomous + run via orchestrate (set allow_orchestrator: true first).
+# 4. Run via orchestrate. `tpm ready` (step 2) already set allow_orchestrator: true,
+#    so the task is autonomous-eligible — run `tpm disallow sandbox/hello-world` first
+#    if you'd rather keep it manual-only.
 tpm orchestrate --claude "$(which claude)" --minutes 5
 
 # 5. Confirm closure.
@@ -450,7 +452,7 @@ tpm new task <project> <slug> [--title "Pretty Title"] [--parent <parent-slug>]
 tpm ls [--all] [--archived] [--flat] [--status open] [--project <slug>]
 tpm context <task | project/task | parent/child>
 tpm start <task>                          # set status: in-progress, log started
-tpm ready <task>                          # set status: ready, log promoted
+tpm ready <task>                          # set status: ready (+ allow_orchestrator: true), log promoted
 tpm complete <task> [--outcome "..."] [--no-archive] [--archive]
                                           # set status: done, stamp closed, log;
                                           # archives by type (pr/chore yes, investigation/spike no)
