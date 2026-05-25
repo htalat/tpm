@@ -13,6 +13,7 @@ import {
   formatDispositionLine,
   noPickLogEntry,
   parsePrUrls,
+  repoGuardAction,
   resolveTimeBound,
   runWithTimeout,
   shouldAutoRevert,
@@ -901,9 +902,45 @@ test("checkProjectRepo: repo.local set but path missing on disk → bail with 'n
   );
   assert.equal(result.ok, false);
   if (result.ok) return;
-  assert.match(result.reason, /tpm\/084-foo/);
   assert.match(result.reason, /\/path\/never\/cloned/);
   assert.match(result.reason, /not on disk/);
+  // The reason doubles as the block reason on the task body, so it names the
+  // copy-pasteable command to re-enter the autonomous queue after cloning.
+  assert.match(result.reason, /tpm ready tpm\/084-foo/);
+});
+
+test("repoGuardAction: usable repo → spawn with the repo cwd", () => {
+  assert.deepEqual(
+    repoGuardAction("ready", { ok: true, cwd: "/path/to/repo" }),
+    { action: "spawn", cwd: "/path/to/repo" },
+  );
+});
+
+test("repoGuardAction: missing repo on a ready task → block with a path-bearing reason", () => {
+  // First encounter: flip to blocked so the task lands in `tpm inbox` and stops
+  // re-failing every tick. The block reason carries the missing path.
+  const check = checkProjectRepo("tpm/002-foo", { remote: null, local: "/never/cloned" }, () => false);
+  const action = repoGuardAction("ready", check);
+  assert.equal(action.action, "block");
+  if (action.action !== "block") return;
+  assert.match(action.reason, /\/never\/cloned/);
+  assert.match(action.reason, /not on disk/);
+});
+
+test("repoGuardAction: unset repo.local on a ready task → block (project config needs fixing)", () => {
+  const check = checkProjectRepo("tpm/002-foo", { remote: null, local: null }, () => true);
+  const action = repoGuardAction("ready", check);
+  assert.equal(action.action, "block");
+  if (action.action !== "block") return;
+  assert.match(action.reason, /repo\.local is unset/);
+});
+
+test("repoGuardAction: missing repo on an already-blocked task → skip (idempotent, no re-block)", () => {
+  // A pre-claimed re-encounter (queue.ts already excludes blocked from normal
+  // selection) finds the task blocked from a prior tick. Don't re-block or
+  // re-log — the skip branch is the idempotency backstop.
+  const check = checkProjectRepo("tpm/002-foo", { remote: null, local: "/never/cloned" }, () => false);
+  assert.deepEqual(repoGuardAction("blocked", check), { action: "skip" });
 });
 
 // runWithTimeout integration: spawn a real (short-lived) child and verify the

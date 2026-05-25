@@ -324,8 +324,10 @@ export type RepoCheck =
 // Claude's permission sandbox locks to the spawn cwd. We must set cwd to the
 // project's local repo, or the agent inherits the orchestrator's install dir
 // and every file op in the project repo gets blocked (live failure on a
-// react-router-tutorial run, 2026-05-17). Bail when the local clone is
-// missing — operator can fix it before the next tick.
+// react-router-tutorial run, 2026-05-17). When the clone is missing (or
+// repo.local is unset) the task can't progress until a human acts, so the
+// `reason` is phrased as a task blocker — the caller flips the task to
+// `blocked` (see repoGuardAction) rather than re-skipping it on every tick.
 export function checkProjectRepo(
   slug: string,
   repo: Repo,
@@ -334,16 +336,40 @@ export function checkProjectRepo(
   if (!repo.local) {
     return {
       ok: false,
-      reason: `${slug}: project repo.local is unset; skipping spawn (set repo.local in the project frontmatter)`,
+      reason: `project repo.local is unset — set it in the project frontmatter, then \`tpm ready ${slug}\` to re-enter the queue`,
     };
   }
   if (!exists(repo.local)) {
     return {
       ok: false,
-      reason: `${slug}: project repo.local (${repo.local}) is not on disk; skipping spawn (clone the repo, then re-run)`,
+      reason: `project repo.local (${repo.local}) is not on disk — clone it, then \`tpm ready ${slug}\` to re-enter the queue`,
     };
   }
   return { ok: true, cwd: repo.local };
+}
+
+// Decide what the orchestrator does once checkProjectRepo has answered whether
+// the repo is usable. Pure so the spawn / block / skip branches are unit-
+// testable without standing up a real tree (mirrors classifyDisposition /
+// shouldAutoRevert). Mapping:
+//   - repo usable                  → spawn (cwd is the clone)
+//   - repo missing, task !blocked  → block: flip to `blocked` so it surfaces in
+//                                    `tpm inbox` and drops off the ready /
+//                                    needs-feedback queue instead of re-failing
+//                                    (and re-logging) on every tick
+//   - repo missing, task blocked   → skip: already blocked on a prior tick;
+//                                    don't double-block or double-log
+// Once blocked, queue.ts excludes the task from selection, so the skip branch
+// only fires on a pre-claimed re-encounter — it's the idempotency backstop.
+export type RepoGuardAction =
+  | { action: "spawn"; cwd: string }
+  | { action: "block"; reason: string }
+  | { action: "skip" };
+
+export function repoGuardAction(currentStatus: string, check: RepoCheck): RepoGuardAction {
+  if (check.ok) return { action: "spawn", cwd: check.cwd };
+  if (currentStatus === "blocked") return { action: "skip" };
+  return { action: "block", reason: check.reason };
 }
 
 export interface OrchestrateOpts {
@@ -499,12 +525,24 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     : agentCli.bin;
 
   // Resolve and verify the project's local clone before spawning. Sandbox
-  // requires a usable cwd; missing clone → bail so the orchestrator can
-  // try again next tick (operator clones in between).
+  // requires a usable cwd. A missing clone (or unset repo.local) is human-
+  // action-required, not a transient skip: leaving the task at `ready` makes
+  // every later tick re-check, re-fail, and re-log the same thing. Flip it to
+  // `blocked` so it surfaces in `tpm inbox` and drops off the queue (operator
+  // clones, then `tpm ready <task>` to re-enter). repoGuardAction keeps a task
+  // already blocked on a prior tick from being re-blocked / re-logged.
   const repo = resolveRepo(pick.project, pick.task);
   const repoCheck = checkProjectRepo(slug, repo, existsSync);
-  if (!repoCheck.ok) {
-    logLine("WARN", repoCheck.reason);
+  const guard = repoGuardAction(String(pick.task.data.status ?? ""), repoCheck);
+  if (guard.action !== "spawn") {
+    if (guard.action === "block") {
+      try {
+        mutate.block(pick.task, guard.reason);
+        logLine("WARN", `${slug}: blocked — ${guard.reason}`);
+      } catch (e) {
+        logLine("ERROR", `block ${slug} failed: ${(e as Error).message}`);
+      }
+    }
     try { lock.releaseTask(root, slug, agentId); } catch (e) {
       logLine("ERROR", `lock release failed for ${slug}: ${(e as Error).message}`);
     }
@@ -579,7 +617,7 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
       // knows the right flag combination to emit NDJSON events as they
       // happen (tool calls, text deltas, results) — that's what makes the
       // per-run log a live transcript instead of just the final message.
-      agentCli.buildArgs(prompt, repoCheck.cwd),
+      agentCli.buildArgs(prompt, guard.cwd),
       minutes,
       grace,
       () => {
@@ -603,7 +641,7 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
       },
       undefined,
       logFile,
-      repoCheck.cwd,
+      guard.cwd,
       logHeader,
     );
   } finally {

@@ -348,6 +348,26 @@ test("block: in-progress -> blocked, logs reason", () => {
   }
 });
 
+test("block: idempotent — already blocked is a no-op (no re-block, no extra log line)", () => {
+  // The orchestrator's repo-presence guard relies on this: a task blocked for a
+  // missing repo.local on a prior tick must not be re-blocked / re-logged if
+  // the guard runs again (pre-claimed re-encounter).
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    block(t, "missing repo.local");
+    const after = readFileSync(t.path, "utf8");
+    const reloaded = loadTask(root, "alpha", "001-a");
+    const r = block(reloaded, "missing repo.local");
+    assert.match(r.message, /already blocked/);
+    assert.equal(readFileSync(reloaded.path, "utf8"), after);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 // ---- reopen ---------------------------------------------------------------
 
 test("reopen: done -> open, clears closed stamp, logs reopened", () => {
