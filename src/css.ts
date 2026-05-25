@@ -63,9 +63,11 @@ a.repo:hover { background: #eaeef2; text-decoration: none; }
 // Layout/markdown styles only `tpm serve` uses (the static report doesn't
 // render bodies and doesn't need the sidebar layout).
 export const SERVE_CSS = `
+header.site-header { margin: 0 0 1rem; padding: .4rem .75rem; border: 0; background: #f6f8fa; border-radius: 6px; }
+header.site-header a.home { font-weight: 700; font-size: 1.05rem; letter-spacing: -.02em; color: #1f2328; }
+header.site-header a.home:hover { color: #0969da; text-decoration: none; }
 nav.crumbs { font-size: .9em; color: #57606a; margin-bottom: 1rem; }
 nav.crumbs a + a::before { content: " \\203A "; color: #8d96a0; padding: 0 .25rem; }
-nav.crumbs .crumb-home { font-size: 1.1em; }
 nav.project-chips { display: flex; gap: .4rem; flex-wrap: wrap; margin-bottom: 1rem; padding-bottom: .75rem; border-bottom: 1px solid #eaeef2; }
 .chip { display: inline-block; padding: .2rem .65rem; border-radius: 999px; background: #f6f8fa; color: #0969da; font-size: .85em; border: 1px solid #d0d7de; }
 .chip:hover { background: #eaeef2; text-decoration: none; }
@@ -113,6 +115,8 @@ body { max-width: 1600px; }
 .body pre code { background: none; padding: 0; }
 .body ul, .body ol { padding-left: 1.4rem; }
 @media (prefers-color-scheme: dark) {
+  header.site-header { background: #161b22; }
+  header.site-header a.home { color: #e6edf3; }
   nav.project-chips { border-color: #21262d; }
   .chip { background: #161b22; border-color: #30363d; color: #79c0ff; }
   .chip:hover { background: #21262d; }

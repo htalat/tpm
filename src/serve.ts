@@ -715,7 +715,7 @@ function renderProject(project: Project, allProjects: Project[], showArchived: b
 
   const body = `
 ${projectChips(allProjects, project.slug)}
-<nav class="crumbs">${HOME_CRUMB}<a href="/p/${esc(project.slug)}">${esc(project.slug)}</a></nav>
+<nav class="crumbs"><a href="/p/${esc(project.slug)}">${esc(project.slug)}</a></nav>
 <header>
   <h1>${esc(projectName)} <span class="badge s-${cls(status)}">${esc(status)}</span></h1>
   <p class="meta"><code>${esc(project.slug)}</code>  ·  ${repoLink}  ·  ${tasks.length} task${tasks.length === 1 ? "" : "s"}${showArchived ? " (incl. archived)" : ""}</p>
@@ -782,7 +782,7 @@ function renderArtifacts(
 
   const body = `
 ${projectChips(allProjects, project.slug)}
-<nav class="crumbs">${HOME_CRUMB}<a href="/p/${esc(project.slug)}">${esc(project.slug)}</a><a href="/p/${esc(project.slug)}/artifacts">artifacts</a></nav>
+<nav class="crumbs"><a href="/p/${esc(project.slug)}">${esc(project.slug)}</a><a href="/p/${esc(project.slug)}/artifacts">artifacts</a></nav>
 <header>
   <h1>Artifacts — ${esc(projectName)}</h1>
   <p class="meta">PRs and reports per task. <a href="/p/${esc(project.slug)}">Back to project →</a></p>
@@ -935,24 +935,15 @@ ${flashBanner}
 
 // ---- breadcrumbs ----------------------------------------------------------
 
-// The home crumb that opens every breadcrumb (task pages, /log, /runs,
-// /report, and the project/config/logs crumbs below). It's a house glyph,
-// not the tracker name: a `tpm` text label collided with a `tpm` project
-// slug on single-project trees — two identical links that read as a doubled
-// project segment (the originating bug for task 075). A glyph can never
-// collide with a slug, so the project segment can render in full beside it.
-const HOME_CRUMB = `<a href="/" class="crumb-home" title="Home" aria-label="Home">⌂</a>`;
-
 // Single source of truth for the breadcrumb on every task-scoped page (task
-// detail, /log, /runs, /report). Walks home → project → [parent] → task,
-// mirroring the URL hierarchy; `suffix` (e.g. `"log"`, `"runs"`) appends a
-// sub-resource crumb after the task. The project segment is explicit (task
-// 103) — leaving it to the chip nav alone misled readers on multi-project
-// trees, where `⌂ → <task>` looked like the task lived in the home project.
+// detail, /log, /runs, /report). Walks project → [parent] → task, mirroring
+// the URL hierarchy; `suffix` (e.g. `"log"`, `"runs"`) appends a sub-resource
+// crumb after the task. Home lives in the persistent masthead (task 105), so
+// the breadcrumb opens on the project segment rather than repeating a home
+// link on every page.
 function breadcrumbFor(project: Project, task: Task, opts: { suffix?: string } = {}): string {
   const taskUrl = taskHref(project, task);
-  const parts: string[] = [HOME_CRUMB];
-  parts.push(`<a href="/p/${esc(project.slug)}">${esc(project.slug)}</a>`);
+  const parts: string[] = [`<a href="/p/${esc(project.slug)}">${esc(project.slug)}</a>`];
   if (task.parent) {
     parts.push(`<a href="/t/${esc(project.slug)}/${esc(task.parent)}">${esc(task.parent)}</a>`);
   }
@@ -1056,7 +1047,7 @@ ${main}
 function renderConfig(projects: Project[], cfg: ConfigSnapshot, agents: ConfigSnapshot): string {
   const body = `
 ${projectChips(projects, null, "config")}
-<nav class="crumbs">${HOME_CRUMB}<a href="/config">config</a></nav>
+<nav class="crumbs"><a href="/config">config</a></nav>
 <header>
   <h1>Configuration</h1>
   <p class="meta">Harness config + agent registry. Read-only — edit the files to change them.</p>
@@ -1212,7 +1203,7 @@ function renderLogsLanding(projects: Project[], sources: HarnessLogSource[]): st
     .join("");
   const body = `
 ${projectChips(projects, null, "logs")}
-<nav class="crumbs">${HOME_CRUMB}<a href="/logs">logs</a></nav>
+<nav class="crumbs"><a href="/logs">logs</a></nav>
 <header>
   <h1>Harness logs</h1>
   <p class="meta">Envelope logs from <code>~/.tpm/</code>, split by source. Pick a stream below. Auto-refreshes every 5s.</p>
@@ -1283,7 +1274,7 @@ function renderLogsCategory(
     : sources.map(s => renderLogPanel(s, opts)).join("");
   const body = `
 ${projectChips(projects, null, "logs")}
-<nav class="crumbs">${HOME_CRUMB}<a href="/logs">logs</a><a href="${route}">${esc(label.toLowerCase())}</a></nav>
+<nav class="crumbs"><a href="/logs">logs</a><a href="${route}">${esc(label.toLowerCase())}</a></nav>
 <header>
   <h1>${esc(label)} logs</h1>
   <p class="meta">Tail of the ${esc(label.toLowerCase())} envelope logs from <code>~/.tpm/</code>. Auto-refreshes every 5s.</p>
@@ -2000,7 +1991,9 @@ function layout(title: string, body: string, opts: { autoRefresh?: number } = {}
 ${refresh}
 <style>${BASE_CSS}${SERVE_CSS}</style>
 </head>
-<body>${body}</body>
+<body>
+<header class="site-header"><a class="home" href="/">tpm</a></header>
+${body}</body>
 </html>`;
 }
 
