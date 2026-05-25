@@ -1942,10 +1942,12 @@ function relativeAge(ms: number): string {
   return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
-// Inline list of project links shown above the page header. The current
-// project (if any) is rendered as a non-link "active" chip. Always trailed by
-// site-wide "logs" + "config" chips so the operator pages are one click from
-// every view.
+// Inline list of project links shown above the page header. Split into two
+// clusters: project chips on the left (the current project, if any, renders as
+// a non-link "active" chip), and the tracker-wide "logs" + "config" views
+// pinned to the right. The right cluster is a different category — operator
+// views, not projects — so it reads as its own group rather than two more
+// project chips inline.
 function projectChips(projects: Project[], activeSlug: string | null, activeView?: "config" | "logs"): string {
   const chips = projects.map(p => {
     if (p.slug === activeSlug) {
@@ -1959,7 +1961,10 @@ function projectChips(projects: Project[], activeSlug: string | null, activeView
   const configChip = activeView === "config"
     ? `<span class="chip chip-config active">config</span>`
     : `<a class="chip chip-config" href="/config">config</a>`;
-  return `<nav class="project-chips">${chips.join("")}${logsChip}${configChip}</nav>`;
+  return `<nav class="project-chips">`
+    + `<div class="chip-group chip-group-projects">${chips.join("")}</div>`
+    + `<div class="chip-group chip-group-views">${logsChip}${configChip}</div>`
+    + `</nav>`;
 }
 
 function extractProjectBody(body: string): string {

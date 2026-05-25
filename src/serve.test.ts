@@ -265,6 +265,16 @@ test("route: / renders a project chips nav with all projects", () => {
   assert.match(r.body, /href="\/p\/beta"/);
 });
 
+test("route: project chips split projects (left) from the logs/config views (right)", () => {
+  const a = project("alpha", [task("001", "ready")]);
+  const r = route("/", new URLSearchParams(), [a]).body;
+  // Project chips live in their own left cluster...
+  assert.match(r, /<div class="chip-group chip-group-projects"><a class="chip" href="\/p\/alpha">alpha<\/a><\/div>/);
+  // ...and the tracker-wide views are a distinct right cluster, not inline
+  // project chips.
+  assert.match(r, /<div class="chip-group chip-group-views"><a class="chip chip-logs" href="\/logs">logs<\/a><a class="chip chip-config" href="\/config">config<\/a><\/div>/);
+});
+
 test("route: /p/<slug> hides archived tasks by default", () => {
   const live = task("001-live", "ready");
   const old = task("099-old", "done", { closed: "2026-01-01 12:00 PDT" });
