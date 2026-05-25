@@ -520,7 +520,19 @@ function transition(task: Task, target: Status, logVerb: string, opts: Transitio
     // Reopening an in-place task: clear the closed stamp.
     data.closed = null;
   }
-  const newBody = appendLog(body, `${now()}: ${logVerb}`);
+  let newBody = appendLog(body, `${now()}: ${logVerb}`);
+  // Landing at `ready` means "shaped and queued" — default it autonomous-
+  // eligible so the common promote-and-walk-away case is one action (the
+  // orchestrator gate in queue.ts flips on with the same call). Every path
+  // that lands here funnels through transition, so `ready`, `revert`, and
+  // `setStatus ready` all inherit it. Supervised-only stays expressible via
+  // `tpm disallow` afterward. Parents aren't claimable (mirror
+  // setAllowOrchestrator's refusal); log only on a real change so re-promotes
+  // and already-eligible tasks stay quiet.
+  if (target === "ready" && !isParent(task) && data.allow_orchestrator !== true) {
+    data.allow_orchestrator = true;
+    newBody = appendLog(newBody, `${now()}: allow_orchestrator: true (set on ready)`);
+  }
   writeFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
   return { message: `${task.slug} -> ${target}` };

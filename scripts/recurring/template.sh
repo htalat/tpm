@@ -86,10 +86,13 @@ while IFS=$'\t' read -r unique_id title; do
   #     { print }
   #   ' "$path" > "$tmp" && mv "$tmp" "$path"
 
-  # Promote to ready so `tpm next` picks it up. Don't set `allow_orchestrator: true`
-  # by default — that opts the task into autonomous (cron-driven) drains, which
-  # is a privilege the human should grant per task.
+  # Promote to ready so `tpm next` picks it up, then opt back out of the
+  # autonomous (cron-driven) drain. `tpm ready` now defaults
+  # `allow_orchestrator: true`, but unattended runs are a privilege the human
+  # should grant per task — so disallow by default. Drop the `tpm disallow`
+  # line for a class of recurring task you trust to run unattended.
   tpm ready "$PROJECT/$slug" >/dev/null
+  tpm disallow "$PROJECT/$slug" >/dev/null
 
   created=$((created + 1))
 done < <(

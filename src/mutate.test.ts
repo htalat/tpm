@@ -190,6 +190,135 @@ test("ready: idempotent", () => {
   }
 });
 
+// ---- ready implies allow_orchestrator -------------------------------------
+
+test("ready: sets allow_orchestrator: true on a task missing the field, logs set-on-ready", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "open");
+    const t = loadTask(root, "alpha", "001-a");
+    ready(t);
+    const text = readFileSync(t.path, "utf8");
+    const { data } = parse(text);
+    assert.equal(data.status, "ready");
+    assert.equal(data.allow_orchestrator, true);
+    assert.match(text, /: promoted to ready$/m);
+    assert.match(text, /allow_orchestrator: true \(set on ready\)$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("ready: flips an explicit allow_orchestrator: false to true and logs the change", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    const path = writeTask(dir, "001-a.md", "open");
+    writeFileSync(path, readFileSync(path, "utf8").replace(/tags: \[\]\n/, "tags: []\nallow_orchestrator: false\n"));
+    const t = loadTask(root, "alpha", "001-a");
+    ready(t);
+    const text = readFileSync(t.path, "utf8");
+    const { data } = parse(text);
+    assert.equal(data.status, "ready");
+    assert.equal(data.allow_orchestrator, true);
+    assert.match(text, /allow_orchestrator: true \(set on ready\)$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("ready: already allow_orchestrator: true is a no-op on the flag (no extra log line)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    const path = writeTask(dir, "001-a.md", "open");
+    writeFileSync(path, readFileSync(path, "utf8").replace(/tags: \[\]\n/, "tags: []\nallow_orchestrator: true\n"));
+    const t = loadTask(root, "alpha", "001-a");
+    ready(t);
+    const text = readFileSync(t.path, "utf8");
+    const { data } = parse(text);
+    assert.equal(data.status, "ready");
+    assert.equal(data.allow_orchestrator, true);
+    // Status flipped, but the flag didn't change → no set-on-ready line.
+    assert.match(text, /: promoted to ready$/m);
+    assert.doesNotMatch(text, /allow_orchestrator: true \(set on ready\)/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("ready: parent container does NOT get allow_orchestrator (parents aren't claimable)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    const parentDir = join(dir, "tasks", "001-parent");
+    mkdirSync(parentDir, { recursive: true });
+    writeFileSync(join(parentDir, "task.md"), taskMd("001-parent", "open"));
+    writeFileSync(join(parentDir, "002-child.md"),
+      taskMd("002-child", "open").replace("project: alpha", "project: alpha\nparent: 001-parent"));
+    const [proj] = loadProjects(root, { archived: true });
+    const parent = proj.tasks.find(t => t.slug === "001-parent")!;
+    assert.ok(parent.children?.length);
+    ready(parent);
+    const { data } = parse(readFileSync(parent.path, "utf8"));
+    assert.equal(data.status, "ready");
+    assert.equal("allow_orchestrator" in data, false);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("revert: landing at ready sets allow_orchestrator: true", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    revert(t, "timed out");
+    const text = readFileSync(t.path, "utf8");
+    const { data } = parse(text);
+    assert.equal(data.status, "ready");
+    assert.equal(data.allow_orchestrator, true);
+    assert.match(text, /allow_orchestrator: true \(set on ready\)$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("status: generic setter to ready sets allow_orchestrator: true", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "open");
+    const t = loadTask(root, "alpha", "001-a");
+    setStatus(t, "ready");
+    const text = readFileSync(t.path, "utf8");
+    const { data } = parse(text);
+    assert.equal(data.status, "ready");
+    assert.equal(data.allow_orchestrator, true);
+    assert.match(text, /allow_orchestrator: true \(set on ready\)$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("start: landing at in-progress does NOT touch allow_orchestrator (only ready paths do)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "open");
+    const t = loadTask(root, "alpha", "001-a");
+    start(t);
+    const text = readFileSync(t.path, "utf8");
+    const { data } = parse(text);
+    assert.equal("allow_orchestrator" in data, false);
+    assert.doesNotMatch(text, /set on ready/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 // ---- block ----------------------------------------------------------------
 
 test("block: requires a reason", () => {
