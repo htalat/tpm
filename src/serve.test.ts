@@ -2091,53 +2091,106 @@ test("renderTask: child task rail link points to parent-qualified /log path", ()
   assert.match(r.body, /href="\/t\/alpha\/002-parent\/003-child\/log"/);
 });
 
-// ---- breadcrumb dedupe (task 075) -----------------------------------------
+// ---- breadcrumb shape (task 075 dedupe + task 103 project segment) --------
 
-test("renderTask: breadcrumb walks home → task; project segment is left to the chip nav", () => {
-  // Task 075 dedupe: dropping the project segment from the breadcrumb fixes
-  // the `tpm > tpm > <task>` doubling that single-project trees hit. The
-  // project chip row above the breadcrumb still provides project navigation.
+// Mirror of HOME_CRUMB in serve.ts: a glyph home link, not the `tpm` text
+// label that collided with a `tpm` project slug (task 075). The tests lock the
+// exact markup, so changing the home affordance is a deliberate edit here.
+const HOME_CRUMB = '<a href="/" class="crumb-home" title="Home" aria-label="Home">⌂</a>';
+const crumbs = (...inner: string[]) => `<nav class="crumbs">${HOME_CRUMB}${inner.join("")}</nav>`;
+
+test("renderTask: breadcrumb walks home → project → task (project segment explicit)", () => {
+  // Task 103: the project segment renders between home and task so a reader on
+  // a multi-project tree can see where the task lives. The `⌂ → <task>` shape
+  // used to read as "this task lives in the home project".
+  const t = task("002-foo", "in-progress");
+  const p = project("react-router-tutorial", [t]);
+  const r = route("/t/react-router-tutorial/002-foo", new URLSearchParams(), [p]);
+  assert.ok(r.body.includes(crumbs(
+    '<a href="/p/react-router-tutorial">react-router-tutorial</a>',
+    '<a href="/t/react-router-tutorial/002-foo">002-foo</a>',
+  )), "expected home → project → task crumb");
+});
+
+test("renderTask: single-project tpm tree renders one tpm crumb, not a doubled label", () => {
+  // The originating bug for task 075: home label `tpm` + project slug `tpm`
+  // read as two identical links. The glyph home crumb means the only `tpm`
+  // text in the breadcrumb is the project segment.
   const t = task("075-foo", "in-progress");
   const p = project("tpm", [t]);
   const r = route("/t/tpm/075-foo", new URLSearchParams(), [p]);
-  assert.match(r.body, /<nav class="crumbs"><a href="\/">tpm<\/a><a href="\/t\/tpm\/075-foo">075-foo<\/a><\/nav>/);
+  assert.ok(r.body.includes(crumbs(
+    '<a href="/p/tpm">tpm</a>',
+    '<a href="/t/tpm/075-foo">075-foo</a>',
+  )));
+  // No `tpm` text home link survives to double the project segment.
+  assert.doesNotMatch(r.body, /<nav class="crumbs"><a href="\/">tpm<\/a>/);
 });
 
-test("renderTask: folder-form child breadcrumb walks home → parent → child", () => {
+test("renderTask: folder-form child breadcrumb walks home → project → parent → child", () => {
   const child = task("003-child", "in-progress", { parent: "002-parent" });
   child.parent = "002-parent";
   const parent = task("002-parent", "in-progress");
   parent.children = [child];
   const p = project("tpm", [parent]);
   const r = route("/t/tpm/002-parent/003-child", new URLSearchParams(), [p]);
-  assert.match(
-    r.body,
-    /<nav class="crumbs"><a href="\/">tpm<\/a><a href="\/t\/tpm\/002-parent">002-parent<\/a><a href="\/t\/tpm\/002-parent\/003-child">003-child<\/a><\/nav>/,
-  );
+  assert.ok(r.body.includes(crumbs(
+    '<a href="/p/tpm">tpm</a>',
+    '<a href="/t/tpm/002-parent">002-parent</a>',
+    '<a href="/t/tpm/002-parent/003-child">003-child</a>',
+  )));
 });
 
-test("renderTaskLog: /log breadcrumb walks home → task → log (no doubled project)", () => {
+test("renderTaskLog: /log breadcrumb walks home → project → task → log", () => {
   // Single source of truth — `breadcrumbFor(task, {suffix: 'log'})` builds the
   // crumb on /log the same way the task page does, plus a `log` suffix.
   const t = task("075-foo", "ready");
   t.body = "## Log\n- 2026-05-16 09:00 PDT: started\n";
   const p = project("tpm", [t]);
   const r = route("/t/tpm/075-foo/log", new URLSearchParams(), [p], { harnessLog: () => [] });
-  assert.match(
-    r.body,
-    /<nav class="crumbs"><a href="\/">tpm<\/a><a href="\/t\/tpm\/075-foo">075-foo<\/a><a href="\/t\/tpm\/075-foo\/log">log<\/a><\/nav>/,
-  );
+  assert.ok(r.body.includes(crumbs(
+    '<a href="/p/tpm">tpm</a>',
+    '<a href="/t/tpm/075-foo">075-foo</a>',
+    '<a href="/t/tpm/075-foo/log">log</a>',
+  )));
 });
 
-test("renderTaskRuns: /runs breadcrumb walks home → task → runs (no doubled project)", () => {
+test("renderTaskRuns: /runs breadcrumb walks home → project → task → runs", () => {
   const t = task("075-foo", "ready");
   const p = project("tpm", [t]);
   const r = route("/t/tpm/075-foo/runs", new URLSearchParams(), [p], {
     runLog: () => null, runLogList: runLogListOf(),
   });
-  assert.match(
-    r.body,
-    /<nav class="crumbs"><a href="\/">tpm<\/a><a href="\/t\/tpm\/075-foo">075-foo<\/a><a href="\/t\/tpm\/075-foo\/runs">runs<\/a><\/nav>/,
-  );
+  assert.ok(r.body.includes(crumbs(
+    '<a href="/p/tpm">tpm</a>',
+    '<a href="/t/tpm/075-foo">075-foo</a>',
+    '<a href="/t/tpm/075-foo/runs">runs</a>',
+  )));
+});
+
+test("renderTaskReport: /report breadcrumb walks home → project → task → report", () => {
+  const root = mkTempDir();
+  try {
+    const t = folderTask(root, "075-foo", "needs-review", { hasReport: true, extra: { type: "investigation" } });
+    const p = project("tpm", [t]);
+    const r = route("/t/tpm/075-foo/report", new URLSearchParams(), [p]);
+    assert.ok(r.body.includes(crumbs(
+      '<a href="/p/tpm">tpm</a>',
+      '<a href="/t/tpm/075-foo">075-foo</a>',
+      '<a href="/t/tpm/075-foo/report">report</a>',
+    )));
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("renderProject: ad-hoc crumbs share the glyph home, not a tpm text label", () => {
+  // Task 103: the crumbs that bypass breadcrumbFor (project, artifacts, config,
+  // logs) use the same HOME_CRUMB, so none reintroduce the doubled `tpm` label
+  // on a single-project tpm tree.
+  const p = project("tpm", [task("001-a", "ready")]);
+  const r = route("/p/tpm", new URLSearchParams(), [p]);
+  assert.ok(r.body.includes(`${HOME_CRUMB}<a href="/p/tpm">tpm</a>`));
+  assert.doesNotMatch(r.body, /<nav class="crumbs"><a href="\/">tpm<\/a>/);
 });
 
