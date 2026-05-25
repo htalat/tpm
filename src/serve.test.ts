@@ -2091,31 +2091,52 @@ test("renderTask: child task rail link points to parent-qualified /log path", ()
   assert.match(r.body, /href="\/t\/alpha\/002-parent\/003-child\/log"/);
 });
 
-// ---- breadcrumb shape (task 075 dedupe + task 103 project segment) --------
+// ---- masthead home button + breadcrumb shape (task 105) -------------------
 
-// Mirror of HOME_CRUMB in serve.ts: a glyph home link, not the `tpm` text
-// label that collided with a `tpm` project slug (task 075). The tests lock the
-// exact markup, so changing the home affordance is a deliberate edit here.
-const HOME_CRUMB = '<a href="/" class="crumb-home" title="Home" aria-label="Home">⌂</a>';
-const crumbs = (...inner: string[]) => `<nav class="crumbs">${HOME_CRUMB}${inner.join("")}</nav>`;
+// Mirror of the persistent masthead in serve.ts: a `tpm` wordmark linking home,
+// emitted by `layout()` so it rides every page. The tests lock the exact markup,
+// so changing the home affordance is a deliberate edit here.
+const SITE_HOME = '<header class="site-header"><a class="home" href="/">tpm</a></header>';
+// Home now lives in the masthead, so breadcrumbs open on the project (or
+// sub-resource) segment — no leading home crumb (task 105 dropped it).
+const crumbs = (...inner: string[]) => `<nav class="crumbs">${inner.join("")}</nav>`;
 
-test("renderTask: breadcrumb walks home → project → task (project segment explicit)", () => {
-  // Task 103: the project segment renders between home and task so a reader on
-  // a multi-project tree can see where the task lives. The `⌂ → <task>` shape
-  // used to read as "this task lives in the home project".
+test("layout: every page carries a masthead home link to /", () => {
+  // The masthead is the single persistent home affordance — one insertion point
+  // in layout(), so index, task, config, and logs pages all get it.
+  const p = project("tpm", [task("001-a", "ready")]);
+  const cfg = snapshotOf("/h/.tpm/config.json", { root: "/Users/test/tpm" });
+  const index = route("/", new URLSearchParams(), [p]);
+  const taskPage = route("/t/tpm/001-a", new URLSearchParams(), [p]);
+  const config = route("/config", new URLSearchParams(), [p], {
+    configSnapshot: () => cfg,
+    agentsSnapshot: () => snapshotOf("/h/.tpm/agents.json", { agents: {} }),
+  });
+  const logs = route("/logs", new URLSearchParams(), [p], { harnessLog: () => [] });
+  for (const r of [index, taskPage, config, logs]) {
+    assert.ok(r.body.includes(SITE_HOME), "expected masthead home link on every page");
+  }
+});
+
+test("renderTask: breadcrumb walks project → task; home is no longer a crumb", () => {
+  // Task 105: the project segment opens the breadcrumb (the home link moved to
+  // the masthead). On a multi-project tree the project crumb still shows where
+  // the task lives.
   const t = task("002-foo", "in-progress");
   const p = project("react-router-tutorial", [t]);
   const r = route("/t/react-router-tutorial/002-foo", new URLSearchParams(), [p]);
   assert.ok(r.body.includes(crumbs(
     '<a href="/p/react-router-tutorial">react-router-tutorial</a>',
     '<a href="/t/react-router-tutorial/002-foo">002-foo</a>',
-  )), "expected home → project → task crumb");
+  )), "expected project → task crumb");
+  // No home crumb survives inside the breadcrumb nav.
+  assert.doesNotMatch(r.body, /<nav class="crumbs"><a href="\/"/);
 });
 
 test("renderTask: single-project tpm tree renders one tpm crumb, not a doubled label", () => {
-  // The originating bug for task 075: home label `tpm` + project slug `tpm`
-  // read as two identical links. The glyph home crumb means the only `tpm`
-  // text in the breadcrumb is the project segment.
+  // The originating bug for task 075: a home label `tpm` + project slug `tpm`
+  // read as two identical links. With home in the masthead (task 105), the only
+  // `tpm` text in the breadcrumb is the project segment.
   const t = task("075-foo", "in-progress");
   const p = project("tpm", [t]);
   const r = route("/t/tpm/075-foo", new URLSearchParams(), [p]);
@@ -2123,11 +2144,11 @@ test("renderTask: single-project tpm tree renders one tpm crumb, not a doubled l
     '<a href="/p/tpm">tpm</a>',
     '<a href="/t/tpm/075-foo">075-foo</a>',
   )));
-  // No `tpm` text home link survives to double the project segment.
+  // No `tpm` text home link survives in the breadcrumb to double the project segment.
   assert.doesNotMatch(r.body, /<nav class="crumbs"><a href="\/">tpm<\/a>/);
 });
 
-test("renderTask: folder-form child breadcrumb walks home → project → parent → child", () => {
+test("renderTask: folder-form child breadcrumb walks project → parent → child", () => {
   const child = task("003-child", "in-progress", { parent: "002-parent" });
   child.parent = "002-parent";
   const parent = task("002-parent", "in-progress");
@@ -2141,7 +2162,7 @@ test("renderTask: folder-form child breadcrumb walks home → project → parent
   )));
 });
 
-test("renderTaskLog: /log breadcrumb walks home → project → task → log", () => {
+test("renderTaskLog: /log breadcrumb walks project → task → log", () => {
   // Single source of truth — `breadcrumbFor(task, {suffix: 'log'})` builds the
   // crumb on /log the same way the task page does, plus a `log` suffix.
   const t = task("075-foo", "ready");
@@ -2155,7 +2176,7 @@ test("renderTaskLog: /log breadcrumb walks home → project → task → log", (
   )));
 });
 
-test("renderTaskRuns: /runs breadcrumb walks home → project → task → runs", () => {
+test("renderTaskRuns: /runs breadcrumb walks project → task → runs", () => {
   const t = task("075-foo", "ready");
   const p = project("tpm", [t]);
   const r = route("/t/tpm/075-foo/runs", new URLSearchParams(), [p], {
@@ -2168,7 +2189,7 @@ test("renderTaskRuns: /runs breadcrumb walks home → project → task → runs"
   )));
 });
 
-test("renderTaskReport: /report breadcrumb walks home → project → task → report", () => {
+test("renderTaskReport: /report breadcrumb walks project → task → report", () => {
   const root = mkTempDir();
   try {
     const t = folderTask(root, "075-foo", "needs-review", { hasReport: true, extra: { type: "investigation" } });
@@ -2184,13 +2205,12 @@ test("renderTaskReport: /report breadcrumb walks home → project → task → r
   }
 });
 
-test("renderProject: ad-hoc crumbs share the glyph home, not a tpm text label", () => {
-  // Task 103: the crumbs that bypass breadcrumbFor (project, artifacts, config,
-  // logs) use the same HOME_CRUMB, so none reintroduce the doubled `tpm` label
-  // on a single-project tpm tree.
+test("renderProject: ad-hoc crumb opens on the project segment, no home crumb", () => {
+  // The crumbs that bypass breadcrumbFor (project, artifacts, config, logs) also
+  // dropped their leading home link (task 105) — home is in the masthead.
   const p = project("tpm", [task("001-a", "ready")]);
   const r = route("/p/tpm", new URLSearchParams(), [p]);
-  assert.ok(r.body.includes(`${HOME_CRUMB}<a href="/p/tpm">tpm</a>`));
-  assert.doesNotMatch(r.body, /<nav class="crumbs"><a href="\/">tpm<\/a>/);
+  assert.ok(r.body.includes('<nav class="crumbs"><a href="/p/tpm">tpm</a></nav>'));
+  assert.doesNotMatch(r.body, /<nav class="crumbs"><a href="\/"/);
 });
 
