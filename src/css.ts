@@ -65,6 +65,7 @@ a.repo:hover { background: #eaeef2; text-decoration: none; }
 export const SERVE_CSS = `
 nav.crumbs { font-size: .9em; color: #57606a; margin-bottom: 1rem; }
 nav.crumbs a + a::before { content: " \\203A "; color: #8d96a0; padding: 0 .25rem; }
+nav.crumbs .crumb-home { font-size: 1.1em; }
 nav.project-chips { display: flex; gap: .4rem; flex-wrap: wrap; margin-bottom: 1rem; padding-bottom: .75rem; border-bottom: 1px solid #eaeef2; }
 .chip { display: inline-block; padding: .2rem .65rem; border-radius: 999px; background: #f6f8fa; color: #0969da; font-size: .85em; border: 1px solid #d0d7de; }
 .chip:hover { background: #eaeef2; text-decoration: none; }
