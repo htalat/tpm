@@ -91,7 +91,7 @@ export interface ServeOpts {
 // `buildCliArgs`. Kept narrow so a stray POST can't shell out to any tpm verb.
 const MUTATION_ACTIONS = new Set([
   "ready", "block", "reopen", "complete", "log", "pr", "status", "allow-orchestrator",
-  "lgtm", "request-changes",
+  "lgtm", "request-changes", "archive",
 ]);
 
 const CLI_PATH = fileURLToPath(new URL("./cli.ts", import.meta.url));
@@ -574,6 +574,7 @@ function buildCliArgs(slug: string, action: string, body: URLSearchParams): stri
       return null;
     }
     case "lgtm": return ["lgtm", slug];
+    case "archive": return ["archive", slug];
     case "request-changes": {
       const comment = body.get("comment")?.trim();
       if (!comment) return null;
@@ -895,8 +896,9 @@ function renderTask(
   const reportPanel = hasReport ? renderTaskReportRailPanel(taskUrl) : "";
   const prPanel = renderPrPanel(prs, prCache);
   const actionsSection = renderActions(project, task, status, opts);
+  const archiveSection = renderArchiveAction(project, task, status, opts);
   const settingsSection = renderSettings(project, task, status, opts);
-  const railContent = `${logLink}${runsLink}${reportPanel}${prPanel}${actionsSection}${settingsSection}`;
+  const railContent = `${logLink}${runsLink}${reportPanel}${prPanel}${actionsSection}${archiveSection}${settingsSection}`;
   const hasRail = railContent.length > 0;
 
   const body = `
@@ -1613,6 +1615,23 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
   return `<section class="task-actions"><h2>Actions</h2>${forms.join("")}</section>`;
 }
 
+// Archive button for terminal (done/dropped) tasks that aren't already
+// archived. Separate from renderActions because archiving isn't a status
+// transition — it retires an already-closed task off the canonical path (the
+// explicit "ok, I'm done with this investigation, archive it" step). type: pr
+// and type: chore already archive on `tpm complete`, so this button is the
+// affordance for investigations/spikes that intentionally finish at `done`.
+// renderActions returns "" for terminal status; this fills exactly that gap.
+// Parents with live children are refused server-side (archiveTask); the error
+// surfaces via the flash banner rather than being hidden here.
+function renderArchiveAction(project: Project, task: Task, status: string, opts: RouteOpts): string {
+  if (opts.mutationsEnabled === false) return ""; // the disabled notice from renderActions already covers it
+  if (task.archived) return ""; // already archived: nothing to do
+  if (status !== "done" && status !== "dropped") return ""; // only terminal tasks can be archived
+  const href = taskHref(project, task);
+  return `<section class="task-actions"><h2>Archive</h2>${archiveForm(href)}</section>`;
+}
+
 // Per-task config toggles. Lives outside renderActions because settings are
 // not transitions: they apply regardless of which queue the task is in, so
 // they shouldn't be gated by status the way action verbs are.
@@ -1718,6 +1737,12 @@ function allowForm(href: string, currentlyOn: boolean): string {
   return `<form method="POST" action="${href}/allow-orchestrator" class="action-form">
     <input type="hidden" name="allow" value="${next}">
     <button type="submit">${esc(label)}</button>
+  </form>`;
+}
+
+function archiveForm(href: string): string {
+  return `<form method="POST" action="${href}/archive" class="action-form">
+    <button type="submit">Archive (move to tasks/archive/)</button>
   </form>`;
 }
 

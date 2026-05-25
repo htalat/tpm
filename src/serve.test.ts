@@ -488,15 +488,40 @@ test("renderTask: Complete (Close) form renders for every non-terminal status", 
   }
 });
 
-test("renderTask: done/dropped tasks render no action or settings forms", () => {
+test("renderTask: done/dropped tasks render the Archive button but no transition or settings forms", () => {
+  // Terminal tasks are view-only for status transitions, but a non-archived
+  // done/dropped task can still be retired off the canonical path — the Archive
+  // button is the lone action it offers (task 101).
   for (const status of ["done", "dropped"]) {
     const t = task(`001-${status}`, status);
     const p = project("alpha", [t]);
     const r = route(`/t/alpha/001-${status}`, new URLSearchParams(), [p], { mutationsEnabled: true });
-    assert.doesNotMatch(r.body, /class="task-actions"/, `expected no action forms for status=${status}`);
+    assert.match(r.body, new RegExp(`action="/t/alpha/001-${status}/archive"`), `expected Archive form for status=${status}`);
+    for (const verb of ["complete", "block", "ready", "status", "log", "pr", "reopen"]) {
+      assert.doesNotMatch(r.body, new RegExp(`action="/t/alpha/001-${status}/${verb}"`), `expected no ${verb} form for status=${status}`);
+    }
     assert.doesNotMatch(r.body, /class="task-settings"/, `expected no settings forms for status=${status}`);
     assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-[^/]+\/allow-orchestrator"/, `expected no allow toggle for status=${status}`);
   }
+});
+
+test("renderTask: non-terminal tasks don't offer the Archive button", () => {
+  // Archive is only for retiring an already-closed task; live statuses must
+  // close first (the button shows up once status is done/dropped).
+  for (const status of ["open", "ready", "in-progress", "needs-feedback", "needs-close", "needs-review", "blocked"]) {
+    const t = task("001-a", status);
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+    assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/archive"/, `expected no Archive form for status=${status}`);
+  }
+});
+
+test("renderTask: mutationsEnabled=false hides the Archive button on a done task", () => {
+  // CLI-only mode surfaces the disabled-actions notice instead of any form.
+  const t = task("001-done", "done");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-done", new URLSearchParams(), [p], { mutationsEnabled: false });
+  assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-done\/archive"/);
 });
 
 test("renderTask: allow_orchestrator toggle renders for every promoted non-terminal status", () => {
@@ -523,13 +548,15 @@ test("renderTask: open task offers Promote to ready but no separate autonomous t
   assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/allow-orchestrator"/, "expected no allow toggle for open task");
 });
 
-test("renderTask: archived task renders no settings forms", () => {
+test("renderTask: archived task renders no settings or Archive forms", () => {
   const t = task("099-old", "done");
   t.archived = true;
   const p = project("alpha", [t]);
   const r = route("/t/alpha/099-old", new URLSearchParams(), [p], { mutationsEnabled: true });
   assert.doesNotMatch(r.body, /class="task-settings"/);
   assert.doesNotMatch(r.body, /action="\/t\/alpha\/099-old\/allow-orchestrator"/);
+  // Already archived: the Archive button is hidden (re-archiving is a no-op).
+  assert.doesNotMatch(r.body, /action="\/t\/alpha\/099-old\/archive"/);
 });
 
 test("renderTask: needs-close offers Complete prominently + Log + Block", () => {
@@ -626,14 +653,15 @@ test("renderTask: actionable task wraps View log / View runs / PR / Actions / Se
   assert.doesNotMatch(r.body, /class="layout no-rail"/);
 });
 
-test("renderTask: terminal task with PR history keeps the rail (PR panel only)", () => {
+test("renderTask: terminal task with PR history keeps the rail (PR panel + Archive)", () => {
   const t = task("001-done", "done", { prs: ["https://github.com/x/y/pull/1"] });
   const p = project("alpha", [t]);
   const prCache: PrCacheReader = () => null;
   const r = route("/t/alpha/001-done", new URLSearchParams(), [p], { mutationsEnabled: true, prCache });
   assert.match(r.body, /class="task-rail"/);
   assert.match(r.body, /class="pr-panel"/);
-  assert.doesNotMatch(r.body, /class="task-actions"/);
+  // Terminal but not archived: the Archive button is the one available action.
+  assert.match(r.body, /action="\/t\/alpha\/001-done\/archive"/);
   assert.doesNotMatch(r.body, /class="task-settings"/);
   assert.doesNotMatch(r.body, /class="layout no-rail"/);
 });
@@ -654,8 +682,9 @@ test("renderTask: terminal task with no PRs keeps the rail open for the View log
   assert.doesNotMatch(r.body, /class="layout no-rail"/);
   // No embedded Recent log panel — only standalone links.
   assert.doesNotMatch(r.body, /class="task-recent-log"/);
-  // No actions/settings/PRs on a terminal task with no linked PRs.
-  assert.doesNotMatch(r.body, /class="task-actions"/);
+  // No settings/PRs on a terminal task with no linked PRs; the Archive button
+  // is the lone action a non-archived terminal task offers.
+  assert.match(r.body, /action="\/t\/alpha\/001-done\/archive"/);
   assert.doesNotMatch(r.body, /class="task-settings"/);
   assert.doesNotMatch(r.body, /class="pr-panel"/);
 });
@@ -959,6 +988,26 @@ test("routeMutation: /t/<slug>/request-changes forwards comment to CLI", () => {
   const { runner, calls } = captureRunner();
   routeMutation("/t/alpha/001-a/request-changes", new URLSearchParams("comment=needs more depth"), runner);
   assert.deepEqual(calls, [["request-changes", "alpha/001-a", "needs more depth"]]);
+});
+
+test("routeMutation: /t/<slug>/archive dispatches `tpm archive <slug>` and redirects to the same URL", () => {
+  // The slug-based task URL stays resolvable after the move (serve loads
+  // archived tasks too), so the post-archive redirect lands on the now-archived
+  // task page rather than 404'ing (task 101).
+  const { runner, calls } = captureRunner();
+  const r = routeMutation("/t/alpha/001-a/archive", new URLSearchParams(), runner);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/t\/alpha\/001-a\?flash=/);
+  assert.deepEqual(calls, [["archive", "alpha/001-a"]]);
+});
+
+test("routeMutation: /t/<slug>/archive surfaces a server-side refusal in the flash", () => {
+  // archiveTask refuses a parent with live children; that error must reach the
+  // operator via the flash banner instead of being swallowed.
+  const runner: CliRunner = () => ({ ok: false, stdout: "", stderr: "Cannot archive parent 002-parent: it has live children. Archive or close them first." });
+  const r = routeMutation("/t/alpha/002-parent/archive", new URLSearchParams(), runner);
+  assert.equal(r.status, 303);
+  assert.match(decodeURIComponent(r.location ?? ""), /it has live children/);
 });
 
 // ---- safety guards --------------------------------------------------------
