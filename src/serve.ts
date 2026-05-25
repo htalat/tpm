@@ -1621,6 +1621,13 @@ function renderSettings(project: Project, task: Task, status: string, opts: Rout
   if (task.archived) return "";
   if (isParent(task)) return "";
   if (status === "done" || status === "dropped") return ""; // terminal: toggle has no effect
+  // `open` tasks aren't claimable regardless of the flag (the queue gate skips
+  // anything not ready/needs-feedback/stranded), and "Promote to ready" already
+  // sets allow_orchestrator: true — so a separate "Enable autonomous" toggle
+  // here is the exact two-clicks-for-one-intent friction this change removes.
+  // The toggle returns once the task is promoted, for the supervised-only
+  // override (disable after ready).
+  if (status === "open") return "";
 
   const href = taskHref(project, task);
   const allowOn = task.data.allow_orchestrator === true;

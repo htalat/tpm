@@ -499,16 +499,28 @@ test("renderTask: done/dropped tasks render no action or settings forms", () => 
   }
 });
 
-test("renderTask: allow_orchestrator toggle renders for every non-terminal status", () => {
-  // Settings live outside the action-verb switch — every non-terminal,
-  // non-parent, non-archived task should expose the toggle.
-  for (const status of ["open", "ready", "in-progress", "needs-feedback", "needs-close", "needs-review", "blocked"]) {
+test("renderTask: allow_orchestrator toggle renders for every promoted non-terminal status", () => {
+  // Settings live outside the action-verb switch — every promotable,
+  // non-parent, non-archived task should expose the toggle. `open` is the lone
+  // exception (covered below): its only promotion path already sets the flag.
+  for (const status of ["ready", "in-progress", "needs-feedback", "needs-close", "needs-review", "blocked"]) {
     const t = task("001-a", status);
     const p = project("alpha", [t]);
     const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
     assert.match(r.body, /class="task-settings"/, `expected settings section for status=${status}`);
     assert.match(r.body, /action="\/t\/alpha\/001-a\/allow-orchestrator"/, `expected allow toggle for status=${status}`);
   }
+});
+
+test("renderTask: open task offers Promote to ready but no separate autonomous toggle", () => {
+  // "Promote to ready" now sets allow_orchestrator: true in the same op, so the
+  // open-task promotion is one button — no redundant "Enable autonomous" toggle.
+  const t = task("001-a", "open");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/ready"/, "expected Promote to ready form");
+  assert.doesNotMatch(r.body, /class="task-settings"/, "expected no settings section for open task");
+  assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/allow-orchestrator"/, "expected no allow toggle for open task");
 });
 
 test("renderTask: archived task renders no settings forms", () => {
