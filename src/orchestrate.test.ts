@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
@@ -12,12 +12,14 @@ import {
   fetchFeedbackContexts,
   formatDispositionLine,
   noPickLogEntry,
+  ORCHESTRATOR_CLAIM_VERB,
   parsePrUrls,
   repoGuardAction,
   resolveTimeBound,
   runWithTimeout,
   shouldAutoRevert,
 } from "./orchestrate.ts";
+import * as mutate from "./mutate.ts";
 import type { Project, Task } from "./tree.ts";
 
 function task(extra: Record<string, unknown> = {}): Task {
@@ -1166,4 +1168,164 @@ test("runWithTimeout: ignores isTaskTerminal exceptions and keeps running", asyn
   assert.equal(result.terminationReason, undefined);
   assert.equal(result.exitCode, 0);
   assert.ok(attempts >= 1, "isTaskTerminal should have been called at least once");
+});
+
+// ---- eager claim + spawn-failure rollback (task 108) ----------------------
+//
+// runOrchestrate itself reads ~/.tpm/config.json (via findRoot) and is hard
+// to bootstrap inside a unit test. These tests exercise the orchestrator's
+// claim/rollback *contract* on real task files by calling the same mutate
+// verbs runOrchestrate calls — same on-disk effects, same idempotency rules.
+
+function writeClaimableTask(dir: string, slug: string, status: string): Task {
+  const path = resolve(dir, `${slug}.md`);
+  writeFileSync(
+    path,
+    `---
+title: ${slug}
+slug: ${slug}
+project: alpha
+status: ${status}
+type: pr
+created: 2026-01-01 00:00 PDT
+closed:
+prs: []
+tags: []
+---
+
+# ${slug}
+
+## Context
+ctx
+
+## Plan
+1. do thing
+
+## Log
+- 2026-01-01 00:00 PDT: created
+
+## Outcome
+<!-- Filled when closed -->
+`,
+  );
+  // Minimal in-memory Task shape — mutate.* re-reads `path` on every call.
+  return {
+    slug,
+    path,
+    archived: false,
+    data: { slug, status, prs: [] },
+    body: "",
+  };
+}
+
+test("ORCHESTRATOR_CLAIM_VERB: pins the exact verb the orchestrator writes (audit-trail contract)", () => {
+  // The verb is the one durable hook the audit trail relies on to tell
+  // orchestrator-claim from agent self-start. Pinning it here means a typo
+  // or drift trips the test instead of silently breaking the differentiation.
+  assert.equal(ORCHESTRATOR_CLAIM_VERB, "claimed by orchestrator (spawning agent)");
+});
+
+test("eager claim: ready -> in-progress writes the orchestrator verb before any spawn (a)", () => {
+  // Plan step 1: the orchestrator calls mutate.start with the claim verb
+  // *before* the agent process is spawned. Disk truth must match the claim
+  // by the time runWithTimeout starts the child — that's the whole point of
+  // task 108 (so `tpm serve` doesn't show `ready` during the agent's ~30s
+  // boot window).
+  const dir = mkdtempSync(resolve(tmpdir(), "tpm-orch-eager-"));
+  try {
+    const task = writeClaimableTask(dir, "001-a", "ready");
+    const r = mutate.start(task, ORCHESTRATOR_CLAIM_VERB);
+    assert.match(r.message, /-> in-progress/);
+    const text = readFileSync(task.path, "utf8");
+    assert.match(text, /status: in-progress/);
+    assert.match(text, /: claimed by orchestrator \(spawning agent\)$/m);
+    // The agent's self-claim verb must not leak through — that's how the
+    // audit trail distinguishes the two paths.
+    assert.doesNotMatch(text, /: started$/m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("eager claim: needs-feedback -> in-progress also gets the claim verb (feedback dispatch path)", () => {
+  // The orchestrator pre-claims the same way for feedback-mode dispatches.
+  // mutate.start refuses only done/dropped, so needs-feedback is accepted.
+  const dir = mkdtempSync(resolve(tmpdir(), "tpm-orch-eager-feedback-"));
+  try {
+    const task = writeClaimableTask(dir, "001-a", "needs-feedback");
+    mutate.start(task, ORCHESTRATOR_CLAIM_VERB);
+    const text = readFileSync(task.path, "utf8");
+    assert.match(text, /status: in-progress/);
+    assert.match(text, /: claimed by orchestrator \(spawning agent\)$/m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("eager claim: re-flipping an already-in-progress task is a no-op (c — double-claim race)", () => {
+  // Stranded-reclaim path: queue.ts admits tasks already at in-progress when
+  // their lock has been released (e.g. agent crashed mid-run). The eager
+  // flip must not append a duplicate Log line — the audit trail should
+  // reflect that no new claim happened.
+  const dir = mkdtempSync(resolve(tmpdir(), "tpm-orch-eager-idem-"));
+  try {
+    const task = writeClaimableTask(dir, "001-a", "in-progress");
+    const before = readFileSync(task.path, "utf8");
+    const r = mutate.start(task, ORCHESTRATOR_CLAIM_VERB);
+    assert.match(r.message, /already in-progress/);
+    assert.equal(readFileSync(task.path, "utf8"), before);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("spawn-failure rollback: reverts in-progress back to the pre-claim status with a claim-failed Log line (b)", () => {
+  // Plan step 3: when the agent binary can't be spawned (exit 127), the
+  // orchestrator rolls the eager flip back. The Log line must name the
+  // failure cause so the audit trail explains why an in-progress -> ready
+  // hop happened with no agent activity between.
+  const dir = mkdtempSync(resolve(tmpdir(), "tpm-orch-rollback-"));
+  try {
+    const task = writeClaimableTask(dir, "001-a", "ready");
+    // Eager flip first (mirrors runOrchestrate sequencing).
+    mutate.start(task, ORCHESTRATOR_CLAIM_VERB);
+    assert.match(readFileSync(task.path, "utf8"), /status: in-progress/);
+    // Spawn failed — roll back.
+    mutate.setStatus(
+      task,
+      "ready",
+      "claim failed: agent spawn failed (exit 127, bin=/nope/claude); reverted to ready",
+    );
+    const text = readFileSync(task.path, "utf8");
+    assert.match(text, /status: ready/);
+    assert.match(text, /: claimed by orchestrator \(spawning agent\)$/m);
+    assert.match(text, /: claim failed: agent spawn failed \(exit 127, bin=\/nope\/claude\); reverted to ready$/m);
+    // Both Log entries should be present and ordered (claim before rollback).
+    const claimIdx = text.indexOf("claimed by orchestrator");
+    const rollbackIdx = text.indexOf("claim failed:");
+    assert.ok(claimIdx >= 0 && rollbackIdx > claimIdx, "rollback line should follow the claim line");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("spawn-failure rollback: needs-feedback round bounces back to needs-feedback (not ready)", () => {
+  // Feedback-mode dispatches must roll back to the original needs-feedback
+  // status, not to ready — otherwise the next tick would lose the "addressing
+  // PR feedback" signal and re-shape the task as a fresh ready entry.
+  const dir = mkdtempSync(resolve(tmpdir(), "tpm-orch-rollback-feedback-"));
+  try {
+    const task = writeClaimableTask(dir, "001-a", "needs-feedback");
+    mutate.start(task, ORCHESTRATOR_CLAIM_VERB);
+    mutate.setStatus(
+      task,
+      "needs-feedback",
+      "claim failed: agent spawn failed (exit 127, bin=/nope/claude); reverted to needs-feedback",
+    );
+    const text = readFileSync(task.path, "utf8");
+    assert.match(text, /status: needs-feedback/);
+    assert.match(text, /: claim failed: agent spawn failed .* reverted to needs-feedback$/m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

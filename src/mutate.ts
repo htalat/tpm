@@ -36,8 +36,14 @@ export interface ReparentResult extends MutateResult {
 
 // ---- public verbs ---------------------------------------------------------
 
-export function start(task: Task): MutateResult {
-  return transition(task, "in-progress", "started", {
+// `verb` overrides the Log line written on the ready -> in-progress flip.
+// Default is the agent's self-claim ("started"); the orchestrator passes
+// "claimed by orchestrator (spawning agent)" so the audit trail
+// differentiates an orchestrator-side eager claim from the agent's own
+// `tpm start`. Idempotent: re-calls on an already-in-progress task short-
+// circuit before the verb is ever written.
+export function start(task: Task, verb: string = "started"): MutateResult {
+  return transition(task, "in-progress", verb, {
     refusal: ["done", "dropped"],
   });
 }
@@ -78,12 +84,15 @@ export function revert(task: Task, reason?: string): MutateResult {
   return transition(task, "ready", verb, { refusal: ["done", "dropped"] });
 }
 
-export function setStatus(task: Task, newStatus: string): MutateResult {
+// `verb` overrides the Log line. Default is the generic `status -> <new>`
+// used by `tpm status` / `tpm poll`. The orchestrator's spawn-failure path
+// passes a custom verb so the rollback log reads as a single coherent line
+// ("claim failed: …; reverted to ready") instead of a generic flip.
+export function setStatus(task: Task, newStatus: string, verb?: string): MutateResult {
   if (!isStatus(newStatus)) {
     throw new Error(`Unknown status: ${newStatus}. Valid: ${VALID_STATUSES.join(", ")}.`);
   }
-  // Generic setter: log a neutral message.
-  return transition(task, newStatus, `status -> ${newStatus}`, { refusal: [] });
+  return transition(task, newStatus, verb ?? `status -> ${newStatus}`, { refusal: [] });
 }
 
 export function logEntry(task: Task, message: string): MutateResult {

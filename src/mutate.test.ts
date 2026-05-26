@@ -159,6 +159,45 @@ test("start: rejects done", () => {
   }
 });
 
+test("start: custom verb writes that verb to the Log section (orchestrator eager-claim path)", () => {
+  // Per task 108: the orchestrator flips ready -> in-progress before spawning
+  // the agent so `tpm serve` matches the claim. The custom verb keeps the
+  // audit trail distinguishable from the agent's own `tpm start`.
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "ready");
+    const t = loadTask(root, "alpha", "001-a");
+    const r = start(t, "claimed by orchestrator (spawning agent)");
+    assert.match(r.message, /-> in-progress/);
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: in-progress/);
+    assert.match(text, /: claimed by orchestrator \(spawning agent\)$/m);
+    // The default verb must not bleed through when a custom verb is passed.
+    assert.doesNotMatch(text, /: started$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("start: custom verb on an already-in-progress task is still a no-op (double-claim is safe)", () => {
+  // Rare race: orchestrator picks a stranded in-progress task (admitted by
+  // queue.ts via hasTaskLock) and eager-flips. The eager flip is a no-op and
+  // must not append a redundant Log line with the orchestrator verb.
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    const before = readFileSync(t.path, "utf8");
+    const r = start(t, "claimed by orchestrator (spawning agent)");
+    assert.match(r.message, /already in-progress/);
+    assert.equal(readFileSync(t.path, "utf8"), before);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 // ---- ready ----------------------------------------------------------------
 
 test("ready: open -> ready, logs promoted", () => {
@@ -1023,6 +1062,46 @@ test("revert: refuses done and dropped (terminal states)", () => {
     const t2 = loadTask(root, "alpha", "002-b");
     const r2 = revert(t2);
     assert.match(r2.message, /not in-progress/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("status: custom verb overrides the generic 'status -> X' Log line (orchestrator spawn-failure path)", () => {
+  // Per task 108: when the agent binary can't be spawned, the orchestrator
+  // rolls the eager flip back via setStatus with a verb that names the failed
+  // claim. Without the verb param this would write a useless "status -> ready"
+  // line and the actual failure detail would have to go in a separate logEntry
+  // write. The verb param folds both into one atomic Log entry.
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    setStatus(t, "ready", "claim failed: agent spawn failed (exit 127, bin=/nope/claude); reverted to ready");
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: ready/);
+    assert.match(text, /: claim failed: agent spawn failed \(exit 127, bin=\/nope\/claude\); reverted to ready$/m);
+    // Without an explicit verb override the generic line would appear; assert
+    // it doesn't slip through when the override is set.
+    assert.doesNotMatch(text, /: status -> ready$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("status: omitted verb still writes the generic 'status -> X' Log line (default path)", () => {
+  // The verb param is optional and back-compat — `tpm status` and `tpm poll`
+  // both call setStatus without a verb and expect the generic line.
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "ready");
+    const t = loadTask(root, "alpha", "001-a");
+    setStatus(t, "in-progress");
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: in-progress/);
+    assert.match(text, /: status -> in-progress$/m);
   } finally {
     rmTempDir(root);
   }
