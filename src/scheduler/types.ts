@@ -31,7 +31,7 @@ export function getScheduler(platform: NodeJS.Platform = process.platform): Sche
   if (platform === "darwin") {
     throw new Error(
       `tpm schedule: macOS launchd adapter is not yet implemented. ` +
-      `Install recurring jobs via crontab for now (see the README's "Recurring scripts" section).`,
+      `Install recurring jobs via crontab for now (see the README's "PR-signal poller" section for the cron pattern).`,
     );
   }
   throw new Error(`tpm schedule: unsupported platform "${platform}" (supported: linux, win32).`);
