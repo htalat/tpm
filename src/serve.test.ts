@@ -942,6 +942,135 @@ test("routeMutation: CLI success surfaces stdout in flash", () => {
   assert.match(decodeURIComponent(r.location ?? ""), /alpha\/001-a -> ready/);
 });
 
+// ---- inbox play button -----------------------------------------------------
+
+test("routeMutation: honors form `redirect=/` so the inbox stays put after promote", () => {
+  // Inbox play button posts to /t/<slug>/ready with redirect=/ so the user
+  // stays on the dashboard instead of being thrown onto the task page. The
+  // promoted row drops out of inbox on the next render.
+  const { runner, calls } = captureRunner();
+  const r = routeMutation("/t/alpha/001-a/ready", new URLSearchParams("redirect=/"), runner);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/\?flash=/);
+  assert.deepEqual(calls, [["ready", "alpha/001-a"]]);
+});
+
+test("routeMutation: rejects open-redirect attempts in `redirect` field", () => {
+  // Defensive against a stray (or hostile) form field bouncing the browser
+  // off the dashboard. Each case must fall back to the default task-page
+  // redirect, not honor the supplied value.
+  const { runner } = captureRunner();
+  const cases = [
+    "https://evil.example/",       // absolute external URL
+    "//evil.example/",             // protocol-relative
+    "javascript:alert(1)",          // pseudo-protocol
+    "/../../etc/passwd",            // path traversal
+    "/path with spaces",            // control-ish char
+    "",                             // empty string falls through to default
+  ];
+  for (const value of cases) {
+    const r = routeMutation("/t/alpha/001-a/ready", new URLSearchParams([["redirect", value]]), runner);
+    assert.equal(r.status, 303, `case=${JSON.stringify(value)}`);
+    assert.match(r.location ?? "", /^\/t\/alpha\/001-a\?flash=/, `case=${JSON.stringify(value)} should fall back to task page`);
+  }
+});
+
+test("routeMutation: strips query/fragment from `redirect` so the flash param stays trustworthy", () => {
+  // A redirect like "/?flash=fake" would let the form override the genuine
+  // CLI-result flash. Strip anything past `?` or `#` before reassembling the
+  // 303 target.
+  const { runner } = captureRunner();
+  const r = routeMutation(
+    "/t/alpha/001-a/ready",
+    new URLSearchParams("redirect=/?flash=spoofed"),
+    runner,
+  );
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/\?flash=/);
+  assert.doesNotMatch(r.location ?? "", /flash=spoofed/);
+});
+
+test("renderIndex: inbox open row renders the play form posting to /ready with redirect=/", () => {
+  const p = project("alpha", [task("001-open", "open")]);
+  const r = route("/", new URLSearchParams(), [p]);
+  assert.equal(r.status, 200);
+  assert.match(
+    r.body,
+    /<form[^>]*method="POST"[^>]*action="\/t\/alpha\/001-open\/ready"[^>]*class="promote-form[^"]*"[\s\S]*?name="redirect"[^>]*value="\/"/,
+  );
+});
+
+test("renderIndex: inbox blocked row renders the play form too", () => {
+  const p = project("alpha", [task("001-b", "blocked")]);
+  const r = route("/", new URLSearchParams(), [p]);
+  assert.match(
+    r.body,
+    /<form[^>]*action="\/t\/alpha\/001-b\/ready"[^>]*class="promote-form/,
+  );
+});
+
+test("renderIndex: open row uses the muted fast-path style; blocked row uses the default", () => {
+  // The visual hint distinguishes "skip discuss" (open) from "blocker
+  // resolved" (blocked) so users picking the discuss flow on unclear tasks
+  // still feel like that's the default for open rows.
+  const p = project("alpha", [
+    task("001-open", "open"),
+    task("002-b", "blocked"),
+  ]);
+  const r = route("/", new URLSearchParams(), [p]);
+  assert.match(
+    r.body,
+    /<form[^>]*action="\/t\/alpha\/001-open\/ready"[^>]*class="promote-form promote-fast"/,
+  );
+  // blocked row keeps the plain class — no fast-path modifier.
+  const blockedMatch = r.body.match(/<form[^>]*action="\/t\/alpha\/002-b\/ready"[^>]*class="([^"]+)"/);
+  assert.ok(blockedMatch, "expected blocked row promote form");
+  assert.doesNotMatch(blockedMatch![1], /promote-fast/);
+});
+
+test("renderIndex: needs-review row in inbox does NOT render a play button", () => {
+  // The "Reopen for agent" affordance on the task page targets needs-feedback
+  // (task 088). A one-click promote here would silently mis-route a review
+  // bounce through `ready` and skip the feedback flow entirely.
+  const p = project("alpha", [task("001-nr", "needs-review")]);
+  const r = route("/", new URLSearchParams(), [p]);
+  assert.doesNotMatch(
+    r.body,
+    /<form[^>]*action="\/t\/alpha\/001-nr\/ready"[^>]*class="promote-form/,
+  );
+});
+
+test("renderIndex: agent queue and in-flight rows do NOT render the play button", () => {
+  // Only the inbox section opts in. Ready rows already are ready; needs-
+  // feedback / in-progress rows have nothing useful to promote into.
+  const p = project("alpha", [
+    task("001-r", "ready"),
+    task("002-nf", "needs-feedback"),
+    task("003-ip", "in-progress"),
+  ]);
+  const r = route("/", new URLSearchParams(), [p]);
+  assert.doesNotMatch(r.body, /class="promote-form/);
+});
+
+test("renderProject: project page rows do NOT render the play button", () => {
+  // The button is an inbox-only affordance — taskRow opts in via showPromote
+  // from renderIndex only. A defensive check, since the per-status grouping
+  // on the project page already separates open/blocked into their own
+  // sections where a one-click promote could be useful in the future but
+  // isn't in scope for task 110.
+  const p = project("alpha", [task("001-open", "open"), task("002-b", "blocked")]);
+  const r = route("/p/alpha", new URLSearchParams(), [p]);
+  assert.doesNotMatch(r.body, /class="promote-form/);
+});
+
+test("renderIndex: flash banner renders when opts.flash is present (e.g. after a play-button promote)", () => {
+  const p = project("alpha", [task("001-r", "ready")]);
+  const r = route("/", new URLSearchParams(), [p], { flash: "alpha/001-open -> ready" });
+  assert.match(r.body, /<div class="flash">[\s\S]*alpha\/001-open -&gt; ready/);
+  // Dismiss link points back to the dashboard root, not a task page.
+  assert.match(r.body, /<a class="flash-dismiss" href="\/">/);
+});
+
 // ---- report flow (investigation deliverable) ------------------------------
 
 test("renderTask: rail surfaces a Report panel when report.md exists in the task folder", () => {
