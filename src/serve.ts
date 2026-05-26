@@ -12,6 +12,7 @@ import { findTask } from "./resolve.ts";
 import { resolveRepo } from "./context.ts";
 import { now } from "./time.ts";
 import { inboxItems } from "./queue.ts";
+import { listTaskLocks } from "./lock.ts";
 import { BASE_CSS, SERVE_CSS } from "./css.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { readPrCache, parsePrUrl } from "./pr_cache.ts";
@@ -62,6 +63,24 @@ export type RunLogRawReader = (task: Task, name: string) => string | null;
 // folder's `runs/` (filtered by `<child-slug>--` prefix for children);
 // tests inject in-memory stubs to keep the `/runs` index pure and disk-free.
 export type RunLogListReader = (task: Task) => string[];
+
+// Snapshot of one held per-task lock. Mirrors the fields the lock file
+// stores (agent id, pid, acquired stamp) — serve renders them in the task
+// detail header. We don't surface heartbeat / age here: the row chip is a
+// boolean (held or not), and `tpm lock release-stale` is the place for TTL
+// logic, not the UI.
+export interface TaskLockSnapshotEntry {
+  agentId: string;
+  pid: number;
+  acquired: string;
+}
+
+// Snapshot reader for the per-task lock dir. Returns a map keyed by
+// qualified slug so renderers can probe membership without re-walking disk
+// per row. Production builds it from `listTaskLocks(root)`; tests inject a
+// pre-baked Map. Called once per `route()` invocation (one readdir per
+// render); cheap enough not to deserve memoization.
+export type TaskLockReader = () => Map<string, TaskLockSnapshotEntry>;
 
 // A read-only view of a JSON config file (~/.tpm/config.json or
 // ~/.tpm/agents.json) for the `/config` page. The renderer wants both the raw
@@ -163,6 +182,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Ser
   const result = route(url.pathname, url.searchParams, projects, {
     flash,
     mutationsEnabled: ctx.mutationsEnabled,
+    taskLocks: () => snapshotTaskLocks(root),
   });
   if (result.location && result.status >= 300 && result.status < 400) {
     res.writeHead(result.status, { location: result.location });
@@ -247,6 +267,12 @@ export interface RouteOpts {
   // Harness-log reader for the `/logs` page. Default reads `~/.tpm/`; tests
   // inject in-memory stubs.
   harnessLog?: HarnessLogReader;
+  // Per-task lock snapshot reader. Defaults to an empty map (route() is
+  // pure / disk-free); `handleRequest` wires it to `listTaskLocks(root)` for
+  // the live server. The snapshot decorates task rows and the detail page
+  // with a "🔒 working" / "unclaimed" chip so the UI never disagrees with
+  // lock truth (task 109).
+  taskLocks?: TaskLockReader;
 }
 
 // Default tail size for the `/logs` page. Big enough that the operator can
@@ -262,8 +288,12 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
   const runLog: RunLogReader = opts.runLog ?? defaultRunLogReader;
   const runLogRaw: RunLogRawReader = opts.runLogRaw ?? defaultRunLogRawReader;
   const runLogList: RunLogListReader = opts.runLogList ?? defaultRunLogListReader;
+  // One snapshot per render — propagated to taskRow / renderTask so every row
+  // and the detail page see a consistent view of who's holding what.
+  const taskLocks: Map<string, TaskLockSnapshotEntry> =
+    (opts.taskLocks ?? (() => new Map<string, TaskLockSnapshotEntry>()))();
   if (pathname === "/" || pathname === "") {
-    return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project"), prCache));
+    return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project"), prCache, taskLocks));
   }
   if (pathname === "/api/refresh") {
     return ok("application/json", renderRefresh(projects));
@@ -334,7 +364,7 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const project = projects.find(p => p.slug === slug);
     if (!project) return notFound(`No project: ${slug}`);
     const showArchived = params.get("archived") === "1";
-    return ok("text/html; charset=utf-8", renderProject(project, projects, showArchived, prCache));
+    return ok("text/html; charset=utf-8", renderProject(project, projects, showArchived, prCache, taskLocks));
   }
   const taskLogMatch = pathname.match(/^\/t\/(.+)\/log\/?$/);
   if (taskLogMatch) {
@@ -398,7 +428,7 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const query = decodeURIComponent(taskMatch[1]);
     const match = findTask(projects, query);
     if (!match) return notFound(`No task: ${query}`);
-    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, projects, opts, prCache));
+    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, projects, opts, prCache, taskLocks));
   }
   return notFound(pathname);
 }
@@ -468,6 +498,19 @@ function resolveLegacyRunLog(projects: Project[], legacyName: string): string | 
     }
   }
   return null;
+}
+
+// Walks the lock dir once and returns a `qualifiedSlug -> { agentId, pid,
+// acquired }` map for serve to render. Repo-level locks (`repo--<project>`)
+// are skipped — they don't decorate task rows. Stale-lock filtering belongs
+// to `tpm lock release-stale`, not here.
+function snapshotTaskLocks(root: string): Map<string, TaskLockSnapshotEntry> {
+  const m = new Map<string, TaskLockSnapshotEntry>();
+  for (const e of listTaskLocks(root)) {
+    if (e.qualifiedSlug.startsWith("repo--")) continue;
+    m.set(e.qualifiedSlug, { agentId: e.data.agentId, pid: e.data.pid, acquired: e.data.acquired });
+  }
+  return m;
 }
 
 function defaultConfigSnapshot(): ConfigSnapshot {
@@ -612,7 +655,7 @@ function notFound(message: string): RouteResult {
 
 // ---- pages ----------------------------------------------------------------
 
-function renderIndex(projects: Project[], projectFilter: string | null, prCache: PrCacheReader): string {
+function renderIndex(projects: Project[], projectFilter: string | null, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>): string {
   const filtered = projectFilter ? projects.filter(p => p.slug === projectFilter) : projects;
 
   // Inbox = needs-review > blocked > open across the filtered set.
@@ -658,21 +701,21 @@ ${projectChips(projects, null)}
 </header>
 <section class="queue">
   <h2>Your inbox <span class="meta">(${inbox.length})</span></h2>
-  ${inbox.length === 0 ? `<p class="queue-empty">Inbox empty.</p>` : inbox.map(it => taskRow(it.project, it.task, it.status, prCache)).join("")}
+  ${inbox.length === 0 ? `<p class="queue-empty">Inbox empty.</p>` : inbox.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks)).join("")}
 </section>
 <section class="queue">
   <h2>Agent queue <span class="meta">(${agentItems.length})</span></h2>
-  ${agentItems.length === 0 ? `<p class="queue-empty">Nothing ready, needing feedback, or awaiting close.</p>` : agentItems.map(it => taskRow(it.project, it.task, it.status, prCache)).join("")}
+  ${agentItems.length === 0 ? `<p class="queue-empty">Nothing ready, needing feedback, or awaiting close.</p>` : agentItems.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks)).join("")}
 </section>
 <section class="queue">
   <h2>In flight <span class="meta">(${inFlight.length})</span></h2>
-  ${inFlight.length === 0 ? `<p class="queue-empty">No in-progress tasks.</p>` : inFlight.map(it => taskRow(it.project, it.task, "in-progress", prCache)).join("")}
+  ${inFlight.length === 0 ? `<p class="queue-empty">No in-progress tasks.</p>` : inFlight.map(it => taskRow(it.project, it.task, "in-progress", prCache, taskLocks)).join("")}
 </section>
 `;
   return layout("tpm", body, { autoRefresh: 30 });
 }
 
-function renderProject(project: Project, allProjects: Project[], showArchived: boolean, prCache: PrCacheReader): string {
+function renderProject(project: Project, allProjects: Project[], showArchived: boolean, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>): string {
   const repo = resolveRepo(project);
   const tasks = flatTasks(project.tasks).filter(t => !isParent(t) && (showArchived || !t.archived));
   const byStatus = new Map<string, Task[]>();
@@ -692,7 +735,7 @@ function renderProject(project: Project, allProjects: Project[], showArchived: b
       if (s === "done" || s === "dropped") {
         group.sort((a, b) => String(b.data.closed ?? "").localeCompare(String(a.data.closed ?? "")));
       }
-      const rows = group.map(t => taskRow(project, t, s, prCache)).join("");
+      const rows = group.map(t => taskRow(project, t, s, prCache, taskLocks)).join("");
       return `<section class="queue"><h2>${esc(s)} <span class="meta">(${group.length})</span></h2>${rows}</section>`;
     })
     .join("");
@@ -862,6 +905,7 @@ function renderTask(
   allProjects: Project[],
   opts: RouteOpts = {},
   prCache: PrCacheReader = (url) => readPrCache(url),
+  taskLocks: Map<string, TaskLockSnapshotEntry> = new Map(),
 ): string {
   const repo = resolveRepo(project, task);
   const status = rollupStatus(task);
@@ -891,6 +935,20 @@ function renderTask(
 
   const taskUrl = taskHref(project, task);
 
+  const qualifiedSlug = task.parent
+    ? `${project.slug}/${task.parent}/${task.slug}`
+    : `${project.slug}/${task.slug}`;
+  const lockEntry = taskLocks.get(qualifiedSlug) ?? null;
+  const headerLockChip = lockChip(task, status, lockEntry !== null);
+  // Holder line: surface PID / agent / acquired-stamp inline under the
+  // status header so the operator can tell who is holding the lock without
+  // pulling up `tpm lock list`. Gated on the same suppression rule as the
+  // chip — terminal/archived tasks treat any remaining lock as hygiene,
+  // not UI signal — so we skip the line when `headerLockChip` is empty.
+  const lockHolderMeta = lockEntry && headerLockChip !== ""
+    ? `<p class="meta lock-holder">Lock held by <code>${esc(lockEntry.agentId)}</code> (pid ${esc(String(lockEntry.pid))}, acquired ${esc(lockEntry.acquired)}).</p>`
+    : "";
+
   const hasReport = taskHasReport(task);
   const logLink = renderTaskLogRailLink(taskUrl);
   const runsLink = renderTaskRunsRailLink(taskUrl);
@@ -907,13 +965,14 @@ ${projectChips(allProjects, project.slug)}
 ${breadcrumbFor(project, task)}
 ${flashBanner}
 <header>
-  <h1>${esc(title)} <span class="badge s-${cls(status)}">${esc(status)}</span></h1>
+  <h1>${esc(title)} <span class="badge s-${cls(status)}">${esc(status)}</span> ${headerLockChip}</h1>
   <p class="meta"><code>${esc(task.slug)}</code>  ·  type: ${esc(strOr(task.data.type, "?"))}  ·  project: <a href="/p/${esc(project.slug)}">${esc(project.slug)}</a></p>
+  ${lockHolderMeta}
 </header>
 <div class="layout${hasRail ? "" : " no-rail"}">
   <aside class="sidebar">
     <dl>
-      <dt>Status</dt><dd><span class="badge s-${cls(status)}">${esc(status)}</span></dd>
+      <dt>Status</dt><dd><span class="badge s-${cls(status)}">${esc(status)}</span> ${headerLockChip}</dd>
       <dt>Type</dt><dd>${esc(strOr(task.data.type, "?"))}</dd>
       ${repoBlock}
       ${localBlock}
@@ -1783,7 +1842,7 @@ function archiveForm(href: string): string {
 
 // ---- helpers --------------------------------------------------------------
 
-function taskRow(project: Project, task: Task, status: string, prCache: PrCacheReader): string {
+function taskRow(project: Project, task: Task, status: string, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>): string {
   const slug = task.parent
     ? `${project.slug}/${task.parent}/${task.slug}`
     : `${project.slug}/${task.slug}`;
@@ -1804,12 +1863,31 @@ function taskRow(project: Project, task: Task, status: string, prCache: PrCacheR
     : `<a class="title" href="${href}">${esc(title)}</a>`;
   return `<div class="${classes.join(" ")}">
     <span class="badge s-${cls(status)}${task.archived ? " s-archived" : ""}">${esc(status)}</span>
+    ${lockChip(task, status, taskLocks.has(slug))}
     ${titleCell}
     ${prChipsFor(task, prCache)}
     <span class="slug">${esc(slug)}</span>
     ${archivedTag}
     <span class="when">${esc(when)}</span>
   </div>`;
+}
+
+// Renders the per-task lock indicator next to a status badge. Truth comes
+// from the lock dir, not the frontmatter, so the UI catches both stranded
+// `in-progress` tasks (status stuck but the lock is gone) and claimed-
+// but-not-yet-flipped tasks (orchestrator took the lock before the agent
+// ran `tpm start`). Suppressed on terminal/archived rows: a stale lock on a
+// done task is hygiene, not a UI signal.
+function lockChip(task: Task, status: string, locked: boolean): string {
+  if (task.archived) return "";
+  if (status === "done" || status === "dropped") return "";
+  if (locked) {
+    return `<span class="lock-chip lock-chip-working" title="agent holds the per-task lock">working</span>`;
+  }
+  if (status === "in-progress") {
+    return `<span class="lock-chip lock-chip-unclaimed" title="status is in-progress but no agent lock is held — stranded">unclaimed</span>`;
+  }
+  return "";
 }
 
 // ---- PR panel + chips -----------------------------------------------------
