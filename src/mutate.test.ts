@@ -215,6 +215,26 @@ test("ready: open -> ready, logs promoted", () => {
   }
 });
 
+test("ready: blocked -> ready in one call (inbox play-button path)", () => {
+  // The inbox play button on a blocked row posts /t/<slug>/ready directly,
+  // not a two-step reopen-then-ready. `transition()` doesn't refuse from
+  // blocked, so this must land on ready in a single call (task 110).
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "blocked");
+    const t = loadTask(root, "alpha", "001-a");
+    ready(t);
+    const text = readFileSync(t.path, "utf8");
+    const { data } = parse(text);
+    assert.equal(data.status, "ready");
+    assert.equal(data.allow_orchestrator, true);
+    assert.match(text, /: promoted to ready$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 test("ready: idempotent", () => {
   const root = mkTempDir();
   try {

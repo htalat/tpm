@@ -293,7 +293,7 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
   const taskLocks: Map<string, TaskLockSnapshotEntry> =
     (opts.taskLocks ?? (() => new Map<string, TaskLockSnapshotEntry>()))();
   if (pathname === "/" || pathname === "") {
-    return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project"), prCache, taskLocks));
+    return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project"), prCache, taskLocks, opts.flash));
   }
   if (pathname === "/api/refresh") {
     return ok("application/json", renderRefresh(projects));
@@ -562,23 +562,47 @@ export function routeMutation(pathname: string, body: URLSearchParams, runner: C
   const action = m[2];
   if (!MUTATION_ACTIONS.has(action)) return { status: 404, body: `Unknown action: ${action}` };
 
+  // Optional `redirect` field: forms (e.g. the inbox play button) can send the
+  // user back to a queue view instead of the task page. Validated against an
+  // open-redirect allowlist before honoring.
+  const override = redirectOverride(body.get("redirect"));
+
   const args = buildCliArgs(slugPath, action, body);
   if (!args) {
-    return flashRedirect(slugPath, `bad request: missing required field for ${action}`);
+    return flashRedirect(slugPath, `bad request: missing required field for ${action}`, override);
   }
   const result = runner(args);
   const flash = result.ok
     ? (result.stdout || `${action}: ok`)
     : (result.stderr || `${action}: failed`);
-  return flashRedirect(slugPath, flash);
+  return flashRedirect(slugPath, flash, override);
 }
 
-function flashRedirect(slugPath: string, flash: string): MutationResult {
+function flashRedirect(slugPath: string, flash: string, override?: string | null): MutationResult {
   const segs = slugPath.split("/").map(encodeURIComponent).join("/");
+  const target = override ?? `/t/${segs}`;
   return {
     status: 303,
-    location: `/t/${segs}?flash=${encodeURIComponent(flash)}`,
+    location: `${target}?flash=${encodeURIComponent(flash)}`,
   };
+}
+
+// Validate a form-supplied redirect target. Same-origin local paths only:
+// starts with a single `/`, no `//` (protocol-relative), no `..` segments, no
+// control chars. Same-origin POST check already gates the request, but we
+// narrow what the form can name so a stray field can't bounce the browser off
+// the dashboard.
+function redirectOverride(raw: string | null): string | null {
+  if (!raw) return null;
+  if (!raw.startsWith("/")) return null;
+  if (raw.startsWith("//")) return null;
+  if (raw.includes("..")) return null;
+  if (/[\s\r\n\\]/.test(raw)) return null;
+  // Strip any embedded query/fragment — the flash query param is appended by
+  // `flashRedirect`, and accepting a pre-baked query opens the door to
+  // overriding it with attacker text.
+  const cleaned = raw.split(/[?#]/, 1)[0];
+  return cleaned || null;
 }
 
 function buildCliArgs(slug: string, action: string, body: URLSearchParams): string[] | null {
@@ -655,7 +679,7 @@ function notFound(message: string): RouteResult {
 
 // ---- pages ----------------------------------------------------------------
 
-function renderIndex(projects: Project[], projectFilter: string | null, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>): string {
+function renderIndex(projects: Project[], projectFilter: string | null, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, flash?: string): string {
   const filtered = projectFilter ? projects.filter(p => p.slug === projectFilter) : projects;
 
   // Inbox = needs-review > blocked > open across the filtered set.
@@ -692,8 +716,13 @@ function renderIndex(projects: Project[], projectFilter: string | null, prCache:
     ? `<p class="meta">Filtered by project <code>${esc(projectFilter)}</code> · <a href="/">show all</a></p>`
     : "";
 
+  const flashBanner = flash
+    ? `<div class="flash">${esc(flash)} <a class="flash-dismiss" href="/">dismiss</a></div>`
+    : "";
+
   const body = `
 ${projectChips(projects, null)}
+${flashBanner}
 <header>
   <h1>tpm</h1>
   <p class="meta">${esc(now())}  ·  ${projects.length} project${projects.length === 1 ? "" : "s"}</p>
@@ -701,7 +730,7 @@ ${projectChips(projects, null)}
 </header>
 <section class="queue">
   <h2>Your inbox <span class="meta">(${inbox.length})</span></h2>
-  ${inbox.length === 0 ? `<p class="queue-empty">Inbox empty.</p>` : inbox.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks)).join("")}
+  ${inbox.length === 0 ? `<p class="queue-empty">Inbox empty.</p>` : inbox.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPromote: true })).join("")}
 </section>
 <section class="queue">
   <h2>Agent queue <span class="meta">(${agentItems.length})</span></h2>
@@ -1842,7 +1871,17 @@ function archiveForm(href: string): string {
 
 // ---- helpers --------------------------------------------------------------
 
-function taskRow(project: Project, task: Task, status: string, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>): string {
+interface TaskRowOpts {
+  // Render an inline "promote to ready" button for open/blocked rows. Only the
+  // inbox section opts in — task 110: one-click promote without leaving the
+  // landing page. needs-review rows skip the button because the dominant action
+  // there is "Reopen for agent (→ needs-feedback)" on the task page (task 088),
+  // and a one-click promote-to-ready would silently mis-route a review bounce
+  // through the wrong queue.
+  showPromote?: boolean;
+}
+
+function taskRow(project: Project, task: Task, status: string, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, opts: TaskRowOpts = {}): string {
   const slug = task.parent
     ? `${project.slug}/${task.parent}/${task.slug}`
     : `${project.slug}/${task.slug}`;
@@ -1861,7 +1900,9 @@ function taskRow(project: Project, task: Task, status: string, prCache: PrCacheR
   const titleCell = task.parent
     ? `<span class="title-cell"><a class="parent-crumb" href="/t/${esc(project.slug)}/${esc(task.parent)}">${esc(task.parent)}</a><a class="title" href="${href}">${esc(title)}</a></span>`
     : `<a class="title" href="${href}">${esc(title)}</a>`;
+  const promote = promoteButton(href, task, status, opts);
   return `<div class="${classes.join(" ")}">
+    ${promote}
     <span class="badge s-${cls(status)}${task.archived ? " s-archived" : ""}">${esc(status)}</span>
     ${lockChip(task, status, taskLocks.has(slug))}
     ${titleCell}
@@ -1870,6 +1911,28 @@ function taskRow(project: Project, task: Task, status: string, prCache: PrCacheR
     ${archivedTag}
     <span class="when">${esc(when)}</span>
   </div>`;
+}
+
+// Inbox "play" affordance — one-click promote-to-ready without leaving the
+// landing page (task 110). Only rendered when the caller opts in
+// (`showPromote`) and the row is in a status where promote-to-ready makes
+// sense. Defensive guards repeat the inbox's own filter (no archived, no
+// parents, no terminal) so the button can't escape into unsafe contexts if a
+// future caller passes `showPromote: true` without those filters upstream.
+function promoteButton(href: string, task: Task, status: string, opts: TaskRowOpts): string {
+  if (!opts.showPromote) return "";
+  if (task.archived) return "";
+  if (isParent(task)) return "";
+  // open: deliberate "skip discuss" fast-path. blocked: blocker resolved,
+  // bounce back. needs-review: skipped — see TaskRowOpts comment above.
+  const fastPath = status === "open";
+  if (status !== "open" && status !== "blocked") return "";
+  const cls = fastPath ? "promote-form promote-fast" : "promote-form";
+  const label = fastPath ? "Promote (skip discuss)" : "Promote to ready";
+  return `<form method="POST" action="${href}/ready" class="${cls}">
+    <input type="hidden" name="redirect" value="/">
+    <button type="submit" title="${esc(label)}" aria-label="${esc(label)}">▶</button>
+  </form>`;
 }
 
 // Renders the per-task lock indicator next to a status badge. Truth comes
