@@ -91,6 +91,10 @@ nav.project-chips { display: flex; gap: .4rem; flex-wrap: wrap; align-items: cen
 .task-row.archived { opacity: .65; }
 .task-row.archived a.title { font-weight: 400; }
 .archived-tag { font-size: .7em; text-transform: uppercase; letter-spacing: .04em; color: #8d96a0; padding: 1px 6px; border-radius: 4px; background: #eaeef2; }
+.lock-chip { display: inline-block; padding: 1px 8px; border-radius: 12px; font-size: .7em; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
+.lock-chip-working { background: #d9f7be; color: #2f6f1a; }
+.lock-chip-unclaimed { background: #ffebe9; color: #cf222e; }
+.lock-holder { margin-top: .35rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .8em; }
 body { max-width: 1600px; }
 .layout { display: grid; grid-template-columns: 220px minmax(0, 1fr) 260px; gap: 1.5rem; align-items: start; }
 .layout.no-rail { grid-template-columns: 220px minmax(0, 1fr); }
@@ -126,6 +130,8 @@ body { max-width: 1600px; }
   .chip.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
   .archive-toggle a { color: #8d96a0; }
   .archived-tag { background: #21262d; color: #8d96a0; }
+  .lock-chip-working { background: #1d3a14; color: #7ee787; }
+  .lock-chip-unclaimed { background: #5d1a1a; color: #ff7b72; }
   .task-row { border-color: #21262d; }
   .task-row:hover { background: #161b22; }
   .sidebar dt { color: #8d96a0; }

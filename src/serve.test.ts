@@ -733,6 +733,119 @@ test("renderTask: flash banner is HTML-escaped (no injection)", () => {
   assert.match(r.body, /&lt;script&gt;/);
 });
 
+// ---- lock-state decoration (task 109) -------------------------------------
+
+function lockSnapshot(entries: Record<string, { agentId?: string; pid?: number; acquired?: string }>) {
+  const m = new Map<string, { agentId: string; pid: number; acquired: string }>();
+  for (const [slug, e] of Object.entries(entries)) {
+    m.set(slug, {
+      agentId: e.agentId ?? "agent-x",
+      pid: e.pid ?? 1234,
+      acquired: e.acquired ?? "2026-05-26 09:00 PDT",
+    });
+  }
+  return () => m;
+}
+
+test("taskRow: ready task with held lock renders a working chip on the index", () => {
+  const t = task("001-claimed", "ready");
+  const p = project("alpha", [t]);
+  const r = route("/", new URLSearchParams(), [p], {
+    taskLocks: lockSnapshot({ "alpha/001-claimed": {} }),
+  });
+  // The row sits in the Agent queue and now carries the lock chip next to ready.
+  assert.match(r.body, /001-claimed/);
+  assert.match(r.body, /class="lock-chip lock-chip-working"/);
+});
+
+test("taskRow: in-progress task with no lock renders an unclaimed chip", () => {
+  const t = task("002-stranded", "in-progress");
+  const p = project("alpha", [t]);
+  const r = route("/", new URLSearchParams(), [p], { taskLocks: lockSnapshot({}) });
+  assert.match(r.body, /002-stranded/);
+  assert.match(r.body, /class="lock-chip lock-chip-unclaimed"/);
+  assert.doesNotMatch(r.body, /class="lock-chip lock-chip-working"/);
+});
+
+test("taskRow: in-progress task with a held lock renders working (not unclaimed)", () => {
+  const t = task("003-live", "in-progress");
+  const p = project("alpha", [t]);
+  const r = route("/", new URLSearchParams(), [p], {
+    taskLocks: lockSnapshot({ "alpha/003-live": {} }),
+  });
+  assert.match(r.body, /class="lock-chip lock-chip-working"/);
+  assert.doesNotMatch(r.body, /class="lock-chip lock-chip-unclaimed"/);
+});
+
+test("taskRow: terminal tasks never render a lock chip, even with a stale lock present", () => {
+  const done = task("001-d", "done", { closed: "2026-04-01 12:00 PDT" });
+  const dropped = task("002-x", "dropped", { closed: "2026-04-02 12:00 PDT" });
+  const p = project("alpha", [done, dropped]);
+  const r = route("/p/alpha", new URLSearchParams(), [p], {
+    taskLocks: lockSnapshot({ "alpha/001-d": {}, "alpha/002-x": {} }),
+  });
+  assert.match(r.body, /001-d/);
+  assert.match(r.body, /002-x/);
+  assert.doesNotMatch(r.body, /class="lock-chip/);
+});
+
+test("taskRow: archived task never renders a lock chip", () => {
+  const t = task("001-old", "in-progress");
+  t.archived = true;
+  const p = project("alpha", [t]);
+  const r = route("/p/alpha", new URLSearchParams("archived=1"), [p], {
+    taskLocks: lockSnapshot({ "alpha/001-old": {} }),
+  });
+  assert.match(r.body, /001-old/);
+  assert.doesNotMatch(r.body, /class="lock-chip/);
+});
+
+test("taskRow: lock snapshot keys child rows by the full qualified slug", () => {
+  const child = task("003-child", "ready", { parent: "002-parent" });
+  child.parent = "002-parent";
+  const parent = task("002-parent", "ready");
+  parent.children = [child];
+  const p = project("alpha", [parent]);
+  const r = route("/p/alpha", new URLSearchParams(), [p], {
+    taskLocks: lockSnapshot({ "alpha/002-parent/003-child": {} }),
+  });
+  assert.match(r.body, /003-child/);
+  assert.match(r.body, /class="lock-chip lock-chip-working"/);
+});
+
+test("renderTask: detail page mirrors the working chip and surfaces lock holder metadata", () => {
+  const t = task("001-claimed", "ready");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-claimed", new URLSearchParams(), [p], {
+    taskLocks: lockSnapshot({
+      "alpha/001-claimed": { agentId: "claude-orch", pid: 4242, acquired: "2026-05-26 09:15 PDT" },
+    }),
+  });
+  assert.match(r.body, /class="lock-chip lock-chip-working"/);
+  // Holder line includes the agent id, pid, and acquired stamp from the snapshot.
+  assert.match(r.body, /Lock held by <code>claude-orch<\/code>/);
+  assert.match(r.body, /pid 4242/);
+  assert.match(r.body, /2026-05-26 09:15 PDT/);
+});
+
+test("renderTask: detail page on a stranded in-progress task shows unclaimed and no holder line", () => {
+  const t = task("002-stranded", "in-progress");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/002-stranded", new URLSearchParams(), [p], { taskLocks: lockSnapshot({}) });
+  assert.match(r.body, /class="lock-chip lock-chip-unclaimed"/);
+  assert.doesNotMatch(r.body, /Lock held by/);
+});
+
+test("renderTask: terminal task with a stale lock in the snapshot still renders no chip", () => {
+  const t = task("001-d", "done", { closed: "2026-04-01 12:00 PDT" });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-d", new URLSearchParams(), [p], {
+    taskLocks: lockSnapshot({ "alpha/001-d": {} }),
+  });
+  assert.doesNotMatch(r.body, /class="lock-chip/);
+  assert.doesNotMatch(r.body, /Lock held by/);
+});
+
 // ---- routeMutation (POST dispatch) ----------------------------------------
 
 test("routeMutation: /t/<slug>/ready dispatches `tpm ready <slug>` and 303-redirects", () => {
