@@ -301,6 +301,14 @@ export async function fetchFeedbackContexts(urls: string[]): Promise<string> {
   return blocks.join("\n\n");
 }
 
+// Verb written to the task body Log section when the orchestrator eager-flips
+// `ready` (or `needs-feedback`) to `in-progress` *before* spawning the agent.
+// Distinct from the agent's own `tpm start` verb ("started") so the audit
+// trail differentiates the orchestrator-side claim from the agent's self-
+// claim. Exported so the spawn-failure-revert message can name the same
+// concept ("claim failed") without drifting from this string.
+export const ORCHESTRATOR_CLAIM_VERB = "claimed by orchestrator (spawning agent)";
+
 function snapshotTask(task: Task): DispositionSnapshot {
   return {
     status: String(task.data.status ?? ""),
@@ -598,7 +606,12 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   // PR list is empty or the fetch errors out — we'd rather ship a less-rich
   // prompt than skip the dispatch.
   const briefing = buildBriefing(root, slug);
+  // Pre-flip snapshot: classifyDisposition / shouldAutoRevert need to see the
+  // task's real entry status, not the post-eager-flip `in-progress`. Capture
+  // here so the disposition log still reads `status=ready->needs-review` etc.
+  // even after the orchestrator pre-claims on disk.
   const beforeStatus = String(pick.task.data.status ?? "");
+  const before = snapshotTask(pick.task);
   const prUrls = parsePrUrls(pick.task);
   let prompt: string;
   if (beforeStatus === "needs-feedback" && prUrls.length > 0) {
@@ -607,6 +620,28 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     logLine("INFO", `${slug}: feedback-mode prompt with ${prUrls.length} PR(s)`);
   } else {
     prompt = buildExecutionPrompt(briefing);
+  }
+
+  // Eager flip: claim the task on-disk *before* the spawn. The agent's own
+  // `tpm start` (step 3 of the /tpm skill) runs ~30s+ after spawn — between
+  // spawn and that flip, `tpm serve` reads the frontmatter and shows `ready`
+  // even though the orchestrator has already claimed. Flipping here matches
+  // disk truth to the claim. mutate.start is idempotent (no-op when already
+  // in-progress, e.g. stranded-reclaim path), and uses a distinct verb so the
+  // Log section distinguishes orchestrator-claim from agent self-start.
+  try {
+    mutate.start(pick.task, ORCHESTRATOR_CLAIM_VERB);
+  } catch (e) {
+    logLine("ERROR", `${slug}: eager claim flip failed: ${(e as Error).message}`);
+    try { lock.releaseTask(root, slug, agentId); } catch (le) {
+      logLine("ERROR", `lock release failed for ${slug}: ${(le as Error).message}`);
+    }
+    if (resolveSameRepoStrategy(pick.project) === "serialize") {
+      try { lock.releaseRepo(root, pick.project.slug, agentId); } catch (le) {
+        logLine("ERROR", `repo lock release failed for ${pick.project.slug}: ${(le as Error).message}`);
+      }
+    }
+    return { exitCode: 1 };
   }
 
   let result: OrchestrateResult;
@@ -661,6 +696,36 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     }
   }
 
+  // Spawn-failure rollback: exit 127 means runWithTimeout's child.on("error")
+  // fired — the agent binary couldn't be spawned (missing, not executable,
+  // wrong arch, etc.). The eager flip already happened, so without rollback
+  // the task sits at `in-progress` with no agent ever having run. Revert to
+  // the pre-claim status with a Log line naming the failed claim.
+  //
+  // Skip when the pre-claim status was already `in-progress` (stranded-
+  // reclaim path) — the eager flip was a no-op so there's nothing to undo.
+  // The harder case (process crashed *after* the eager flip but *before*
+  // `tpm start` would have run) is covered by the existing auto-revert /
+  // stranded-lock-sweep paths.
+  if (result.exitCode === 127 && beforeStatus !== "in-progress") {
+    const projectsForRollback = loadProjects(root);
+    const matchForRollback = findTask(projectsForRollback, slug);
+    if (matchForRollback) {
+      try {
+        mutate.setStatus(
+          matchForRollback.task,
+          beforeStatus,
+          `claim failed: agent spawn failed (exit 127, bin=${agentBin}); reverted to ${beforeStatus}`,
+        );
+        logLine("WARN", `${slug}: spawn failed; reverted status to ${beforeStatus}`);
+      } catch (e) {
+        logLine("ERROR", `spawn-failure revert for ${slug} failed: ${(e as Error).message}`);
+      }
+    } else {
+      logLine("WARN", `${slug}: spawn failed but task not found on disk (was it archived?)`);
+    }
+  }
+
   // Notify finish/fail. Re-resolve the task because mid-run frontmatter
   // mutations can flip the cascade (e.g. agent set notifications.fail: false).
   const projectsAfter = loadProjects(root);
@@ -673,7 +738,6 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     fireNotification("tpm", `${agentId} ${verb} ${pick.task.slug}`);
   }
 
-  const before = snapshotTask(pick.task);
   const after = matchAfter ? snapshotTask(matchAfter.task) : null;
   const disposition = classifyDisposition({
     exitCode: result.exitCode,
