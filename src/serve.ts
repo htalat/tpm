@@ -346,12 +346,13 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const slugPath = match.task.parent
       ? `${match.project.slug}/${match.task.parent}/${match.task.slug}`
       : `${match.project.slug}/${match.task.slug}`;
-    const linesParam = parseTailParam(params.get("lines"));
-    const sources = reader({ lines: linesParam, filter: slugPath });
+    const tail = parseTailParam(params.get("lines"));
+    const sources = reader({ lines: tail.value, filter: slugPath });
     const taskLog = parseTaskLogEntries(match.task.body);
     return ok("text/html; charset=utf-8", renderTaskLog(projects, match.project, match.task, sources, {
       taskFilter: slugPath,
-      tail: linesParam,
+      tail: tail.value,
+      tailMode: tail.mode,
       taskLog,
     }));
   }
@@ -1152,21 +1153,32 @@ function isPlainObject(v: unknown): boolean {
 interface LogsViewOpts {
   taskFilter?: string;
   tail: number;
+  // Which tail chip is highlighted on the page. Derived alongside `tail` from
+  // `?lines=`; "custom" hides the chip selection when the operator passes an
+  // arbitrary N that doesn't match one of the canned options.
+  tailMode: TailMode;
   // Task body Log entries to merge with envelope output. Non-empty only when
   // `taskFilter` resolved to a real task; otherwise the page renders the
   // legacy per-source panels.
   taskLog?: HarnessLogLine[];
 }
 
-// Clamp `?lines=N` to [1, LOGS_MAX_TAIL]. Falls back to the default for any
-// non-numeric / out-of-range value — the param is for ad-hoc deeper digs, not
-// a security boundary, but unbounded N would let a curl pull arbitrarily much
-// memory.
-function parseTailParam(raw: string | null): number {
-  if (raw === null) return LOGS_DEFAULT_TAIL;
+type TailMode = "200" | "1000" | "all" | "custom";
+
+// Clamp `?lines=N` to [1, LOGS_MAX_TAIL] and also resolve the chip-row mode.
+// `all` is the sentinel for "no cap" (value 0 — `tailFile` treats non-positive
+// `lines` as unlimited). Non-numeric / out-of-range values fall back to the
+// default — the param is for ad-hoc deeper digs, not a security boundary, but
+// unbounded N would let a curl pull arbitrarily much memory.
+function parseTailParam(raw: string | null): { value: number; mode: TailMode } {
+  if (raw === null) return { value: LOGS_DEFAULT_TAIL, mode: "200" };
+  if (raw === "all") return { value: 0, mode: "all" };
   const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n <= 0) return LOGS_DEFAULT_TAIL;
-  return Math.min(n, LOGS_MAX_TAIL);
+  if (!Number.isFinite(n) || n <= 0) return { value: LOGS_DEFAULT_TAIL, mode: "200" };
+  const clamped = Math.min(n, LOGS_MAX_TAIL);
+  if (clamped === 200) return { value: 200, mode: "200" };
+  if (clamped === 1000) return { value: 1000, mode: "1000" };
+  return { value: clamped, mode: "custom" };
 }
 
 // Categories used to split the harness logs across pages. The prefix matches
@@ -1190,10 +1202,11 @@ function renderCategoryPage(
   category: LogCategory,
 ): RouteResult {
   const reader = opts.harnessLog ?? defaultHarnessLogReader;
-  const linesParam = parseTailParam(params.get("lines"));
-  const sources = filterByCategory(reader({ lines: linesParam }), category);
+  const tail = parseTailParam(params.get("lines"));
+  const sources = filterByCategory(reader({ lines: tail.value }), category);
   return ok("text/html; charset=utf-8", renderLogsCategory(projects, sources, {
-    tail: linesParam,
+    tail: tail.value,
+    tailMode: tail.mode,
   }, category));
 }
 
@@ -1279,6 +1292,7 @@ ${projectChips(projects, null, "logs")}
   <h1>${esc(label)} logs</h1>
   <p class="meta">Tail of the ${esc(label.toLowerCase())} envelope logs from <code>~/.tpm/</code>. Auto-refreshes every 5s.</p>
 </header>
+${renderTailChips(route, opts.tailMode)}
 ${panels}
 `;
   return layout(`tpm · ${label.toLowerCase()} logs`, body, { autoRefresh: 5 });
@@ -1306,6 +1320,7 @@ function renderTaskLog(
   }
   const title = strOr(task.data.title, task.slug);
   const taskUrl = taskHref(project, task);
+  const logPath = `${taskUrl}/log`;
   const body = `
 ${projectChips(projects, project.slug)}
 ${breadcrumbFor(project, task, { suffix: "log" })}
@@ -1313,6 +1328,7 @@ ${breadcrumbFor(project, task, { suffix: "log" })}
   <h1>Log — ${esc(title)}</h1>
   <p class="meta">Merged envelope + task-body Log entries for <code>${esc(opts.taskFilter ?? "")}</code>. <a href="${taskUrl}">Back to task →</a>  ·  Auto-refreshes every 5s.</p>
 </header>
+${renderTailChips(logPath, opts.tailMode)}
 ${panels}
 `;
   return layout(`tpm · ${title} · log`, body, { autoRefresh: 5 });
@@ -1364,28 +1380,51 @@ function renderLogPanel(source: HarnessLogSource, opts: LogsViewOpts): string {
 
 function renderLogLine(line: HarnessLogLine): string {
   if (line.source === "task-log") {
-    // Task-body Log entry: no level chip; the script column holds the
-    // `task-log` source badge styled to distinguish from envelope rows.
-    // Empty `.log-level` keeps the timestamp / source / message columns
-    // visually aligned with envelope lines in the merged stream.
+    // Task-body Log entry: no level chip. The meta row carries the timestamp
+    // and a `task-log` source badge; the message wraps full-width below it
+    // (no fixed column layout, so long messages don't get clipped).
     return `<li class="log-line log-line-task-log">
-    <span class="log-ts">${esc(line.timestamp ?? "")}</span>
-    <span class="log-level"></span>
-    <span class="log-script log-source-task-log">${esc(line.script ?? "task-log")}</span>
+    <div class="log-meta-row">
+      <span class="log-ts">${esc(line.timestamp ?? "")}</span>
+      <span class="log-script log-source-task-log">${esc(line.script ?? "task-log")}</span>
+    </div>
     <span class="log-msg">${esc(line.message ?? "")}</span>
   </li>`;
   }
   if (!line.level) {
-    // Free-form / pre-task-042 output. Surface verbatim, no level chip.
+    // Free-form / pre-task-042 output. Surface verbatim, no level chip, no
+    // forced indent — the row is just the raw text, wrapping like the
+    // structured message column.
     return `<li class="log-line log-line-raw"><span class="log-raw">${esc(line.raw)}</span></li>`;
   }
   const levelClass = `log-level-${line.level.toLowerCase()}`;
   return `<li class="log-line">
-    <span class="log-ts">${esc(line.timestamp ?? "")}</span>
-    <span class="log-level ${levelClass}">${esc(line.level)}</span>
-    <span class="log-script">${esc(line.script ?? "")}</span>
+    <div class="log-meta-row">
+      <span class="log-ts">${esc(line.timestamp ?? "")}</span>
+      <span class="log-level ${levelClass}">${esc(line.level)}</span>
+      <span class="log-script">${esc(line.script ?? "")}</span>
+    </div>
     <span class="log-msg">${esc(line.message ?? "")}</span>
   </li>`;
+}
+
+// Tail-size chip row: 200 / 1000 / all. The active mode renders as a span so
+// it isn't a no-op link; the others are anchors pointing at the same path with
+// the relevant `?lines=` value. `currentPath` is the route the chips live on
+// (e.g. `/logs/orchestrate` or `/t/<proj>/<slug>/log`) so the hrefs round-trip.
+function renderTailChips(currentPath: string, mode: TailMode): string {
+  const chip = (label: string, target: TailMode, hrefValue: string): string => {
+    if (mode === target) {
+      return `<span class="log-tail-chip active">${esc(label)}</span>`;
+    }
+    return `<a class="log-tail-chip" href="${esc(currentPath)}?lines=${esc(hrefValue)}">${esc(label)}</a>`;
+  };
+  return `<div class="log-tail-controls">
+    <span class="log-tail-label">Tail:</span>
+    ${chip("200", "200", "200")}
+    ${chip("1000", "1000", "1000")}
+    ${chip("all", "all", "all")}
+  </div>`;
 }
 
 // ---- per-task /runs subpage -----------------------------------------------

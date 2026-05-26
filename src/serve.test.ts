@@ -1813,6 +1813,60 @@ test("route: /logs/orchestrate ?lines=N clamps and forwards the tail size", () =
   assert.equal(receivedLines, 200);
 });
 
+test("route: /logs/orchestrate ?lines=all bypasses the tail cap (sentinel 0 to the reader)", () => {
+  // `all` is the chip-row sentinel for "no cap" — `tailFile` interprets a
+  // non-positive `lines` as unlimited, so the reader receives 0.
+  let receivedLines = -1;
+  const reader: HarnessLogReader = (opts) => {
+    receivedLines = opts.lines;
+    return [harnessSource("orchestrator-laptop", [])];
+  };
+  route("/logs/orchestrate", new URLSearchParams("lines=all"), [], { harnessLog: reader });
+  assert.equal(receivedLines, 0);
+});
+
+test("route: /logs/orchestrate renders a tail-chip row with the active chip reflecting ?lines=", () => {
+  const reader: HarnessLogReader = () => [harnessSource("orchestrator-laptop", [
+    "2026-05-15T18:42:25Z  INFO   orchestrate      ok",
+  ])];
+  // Default (no param) — 200 is active.
+  const def = route("/logs/orchestrate", new URLSearchParams(), [], { harnessLog: reader });
+  assert.match(def.body, /<span class="log-tail-chip active">200<\/span>/);
+  assert.match(def.body, /<a class="log-tail-chip" href="\/logs\/orchestrate\?lines=1000">1000<\/a>/);
+  assert.match(def.body, /<a class="log-tail-chip" href="\/logs\/orchestrate\?lines=all">all<\/a>/);
+  // ?lines=1000 — 1000 active, 200 and all are links.
+  const oneK = route("/logs/orchestrate", new URLSearchParams("lines=1000"), [], { harnessLog: reader });
+  assert.match(oneK.body, /<span class="log-tail-chip active">1000<\/span>/);
+  assert.match(oneK.body, /<a class="log-tail-chip" href="\/logs\/orchestrate\?lines=200">200<\/a>/);
+  // ?lines=all — all active.
+  const all = route("/logs/orchestrate", new URLSearchParams("lines=all"), [], { harnessLog: reader });
+  assert.match(all.body, /<span class="log-tail-chip active">all<\/span>/);
+});
+
+test("route: /logs/orchestrate structured row uses a two-row block (meta row + full-width msg)", () => {
+  // The redesigned row puts ts/level/script on a dim meta row and the message
+  // on its own line so a long message can wrap without crowding the columns.
+  const reader: HarnessLogReader = () => [harnessSource("orchestrator-laptop", [
+    "2026-05-15T18:42:25Z  INFO   orchestrate      " + "x".repeat(400),
+  ])];
+  const r = route("/logs/orchestrate", new URLSearchParams(), [], { harnessLog: reader });
+  // Meta row wraps timestamp + level chip + script together.
+  assert.match(r.body, /<div class="log-meta-row">[\s\S]*?<span class="log-ts">2026-05-15T18:42:25Z<\/span>[\s\S]*?<span class="log-level log-level-info">INFO<\/span>[\s\S]*?<span class="log-script">orchestrate<\/span>[\s\S]*?<\/div>/);
+  // Message hangs below the meta row as a block-display span, full-width.
+  assert.match(r.body, /<span class="log-msg">x{400}<\/span>/);
+});
+
+test("route: /t/<proj>/<slug>/log carries the same tail chips with hrefs pointing back at the task log path", () => {
+  const t = task("064-foo", "ready");
+  t.body = "## Log\n- 2026-05-15 13:56 PDT: started\n";
+  const p = project("tpm", [t]);
+  const reader: HarnessLogReader = () => [];
+  const r = route("/t/tpm/064-foo/log", new URLSearchParams("lines=1000"), [p], { harnessLog: reader });
+  assert.match(r.body, /<span class="log-tail-chip active">1000<\/span>/);
+  assert.match(r.body, /<a class="log-tail-chip" href="\/t\/tpm\/064-foo\/log\?lines=200">200<\/a>/);
+  assert.match(r.body, /<a class="log-tail-chip" href="\/t\/tpm\/064-foo\/log\?lines=all">all<\/a>/);
+});
+
 test("route: /logs/orchestrate renders a placeholder when a log file is missing", () => {
   const reader: HarnessLogReader = () => [
     {
