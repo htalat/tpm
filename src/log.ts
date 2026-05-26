@@ -2,9 +2,10 @@ import { isoWithOffset } from "./time.ts";
 
 export type LogLevel = "INFO" | "WARN" | "ERROR";
 
-// Structured log line — same shape as the legacy scripts/recurring/_log.sh
-// emitted, so tailing a single tpm log file (orchestrator runs, poll tick,
-// future recurring scripts) sorts/greps cleanly across producers.
+// Structured log line — one envelope shape across every producer
+// (`tpm orchestrate`, `tpm poll`, any user-written recurring shell script
+// that mimics the format) so tailing a single tpm log file sorts/greps
+// cleanly.
 //
 //   2026-05-15T09:14:23-07:00  INFO   <script>          <message>
 //

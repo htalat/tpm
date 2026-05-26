@@ -140,7 +140,7 @@ mechanism that puts it on `PATH` works.
 
 ## Setting up the harness
 
-So far you have a tracker (`tpm new task`, `tpm ls`, `tpm context`). The **harness** is the optional automation around it: the two-queue lifecycle, the autonomous loop that drains the agent queue, the recurring scripts that feed it, the live dashboard you keep open while doing other things. tpm works as a plain CLI without any of it — turn on whatever you want.
+So far you have a tracker (`tpm new task`, `tpm ls`, `tpm context`). The **harness** is the optional automation around it: the two-queue lifecycle, the autonomous loop that drains the agent queue, the PR-signal poller that flips in-flight tasks based on review/CI state, the live dashboard you keep open while doing other things. tpm works as a plain CLI without any of it — turn on whatever you want.
 
 ### The two queues
 
@@ -157,7 +157,7 @@ tpm splits work across two inboxes:
 | `blocked`         | human       | `tpm inbox` (external dep)        |
 | `done` / `dropped`| —           | (terminal)                        |
 
-`tpm next` selection priority: `needs-feedback` > stranded `in-progress` > `ready` (in-flight signal first, then reclaim, then new tasks). A task counts as "stranded" when its status is `in-progress` but no per-task lock file exists — the lock is the source of truth for "is someone working on this," and a released lock with a stuck status means a prior agent exited without cleaning up. `tpm next` admits the stranded task; `scripts/recurring/reclaim-stranded.sh` auto-reverts it after a configurable idle threshold (default 30m) as a backstop. `needs-close` isn't dispatched — the PR-signal poller flips a merged PR's task to `needs-close` then immediately calls `tpm complete --outcome "<derived from PR title + body>"` in the same tick. Stragglers (auto-close failed: PR body empty, Outcome already filled, lock contention) stay at `needs-close` for the manual `/tpm done <slug>` escape hatch — `tpm ls --status needs-close` surfaces them. `tpm inbox` lists `needs-review`, `blocked`, and `open` cross-project, most actionable first.
+`tpm next` selection priority: `needs-feedback` > stranded `in-progress` > `ready` (in-flight signal first, then reclaim, then new tasks). A task counts as "stranded" when its status is `in-progress` but no per-task lock file exists — the lock is the source of truth for "is someone working on this," and a released lock with a stuck status means a prior agent exited without cleaning up. `tpm next` admits the stranded task on the next tick — that in-process admission is the sole recovery mechanism. `needs-close` isn't dispatched — the PR-signal poller flips a merged PR's task to `needs-close` then immediately calls `tpm complete --outcome "<derived from PR title + body>"` in the same tick. Stragglers (auto-close failed: PR body empty, Outcome already filled, lock contention) stay at `needs-close` for the manual `/tpm done <slug>` escape hatch — `tpm ls --status needs-close` surfaces them. `tpm inbox` lists `needs-review`, `blocked`, and `open` cross-project, most actionable first.
 
 Promotion `open` → `ready` is a deliberate human act. The canonical way is the `/tpm discuss <slug>` Claude Code skill mode, which shapes the task body via conversation and only flips status on explicit confirmation. Manual frontmatter edits also work.
 
@@ -194,7 +194,7 @@ stateDiagram-v2
     dropped --> [*]
 ```
 
-The poller that flips `in-progress` → `done` (inline auto-close on merge) / `needs-feedback` / `needs-review` is `tpm poll` — see [Recurring scripts](#recurring-scripts) below.
+The poller that flips `in-progress` → `done` (inline auto-close on merge) / `needs-feedback` / `needs-review` is `tpm poll` — see [PR-signal poller](#pr-signal-poller) below.
 
 ### Drain the agent queue: three flavors
 
@@ -284,30 +284,20 @@ The `--autonomous` gate is the safety boundary between "an agent can run this wh
 
 **Agent CLI.** `tpm orchestrate` defaults to invoking `claude`. To dispatch via the GitHub Copilot CLI instead, set `agent: copilot` in task or project frontmatter (cascade: task > project > `agent` in `~/.tpm/config.json` > built-in default `claude`), or pass `--agent copilot` to the verb. The registry in `src/agent_cli.ts` lists the supported entries (today: `claude`, `copilot`); each entry knows the right NDJSON output flags and the non-interactive flag set (claude relies on `~/.claude/settings.json` plus task 085's prompt rule; copilot uses `--allow-all-tools --no-ask-user --autopilot`). Bin path comes from the matching env var — `CLAUDE_BIN`, `COPILOT_BIN` — so cron entries can pin a specific binary without code changes. For unattended copilot runs, the cron/launchd env also needs `COPILOT_GITHUB_TOKEN` (or `GH_TOKEN`). The per-run log carries a `# tpm-run agent=… outputFormat=…` header as its first line so `tpm serve`'s viewer dispatches on the right NDJSON dialect; pre-092 logs default to `claude-stream-json`.
 
-### Recurring scripts
+### PR-signal poller
 
-Tasks don't have to be human-authored. A recurring script harvests state on a clock (open PRs, stale deps, alert spikes) and creates pre-shaped `ready` tasks via the CLI. No LLM, no judgment — mechanical intake.
+`tpm poll` is the in-process PR-signal poller. Walks every non-terminal task with a linked PR (plus every `in-progress` task — the round may open its PR mid-tick): `ready`, `in-progress`, `needs-review`, `needs-feedback`, `needs-close`. The PR is alive across all of those — review states, CI runs, eventual merge — so the watch set spans the whole non-terminal lifecycle rather than just the in-flight slice. `open` / `blocked` / `done` / `dropped` are skipped. The rule lives in `shouldWatchForPrSignal` in `src/pr_signal.ts`. Each candidate dispatches to a host adapter per linked PR URL. Adapters ship for GitHub (`gh pr view`) and Azure DevOps (`az repos pr show` + `az pipelines runs list`); adding a new host is one file under `src/hosts/<name>.ts` plus an entry in the `HOSTS` array in `src/pr_signal.ts`. Each adapter answers the same coarse question in its own dialect — `merged` / `needs-agent` / `needs-human` / `abandoned` / `no-action` — so the harness never carries `if host === 'ado'` branches. Per-host CLI presence is checked inside the adapter (an ADO-only user doesn't need `gh` installed). Aggregated signal flips status to `needs-feedback` (merge conflict / CI red / branch behind / open threads — agent attempts the rebase and other fixes via `/tpm feedback`), `needs-review` (`CHANGES_REQUESTED`, ADO vote ≤ -5, or a PR closed-without-merge — the human decides whether to reopen or drop), or **auto-closes inline** when any linked PR merged: flips to `needs-close`, derives an Outcome from PR title + body (Test plan + Claude Code footer stripped), and calls the same code path as `tpm complete --outcome "<derived>"` in the same tick. No claude session spawned, no orchestrator wait. If the inline auto-close fails (body empty, Outcome already filled, lock contention) the task stays at `needs-close` for manual `/tpm done <slug>`. `tpm poll --dry-run` previews decisions without mutating.
 
-Two recurring scripts ship in this repo, plus one CLI-native poller:
+Cron pattern combining the signal poller and the drain:
 
-- **`scripts/recurring/template.sh`** — copy this, fill in the four TODO blocks (source command, slug derivation, optional Context/Plan population, summary line). Idempotent on re-run via the `tpm context "$PROJECT/$slug" >/dev/null 2>&1` existence check.
-- **`scripts/recurring/reclaim-stranded.sh`** — the stranded-`in-progress` sweeper (task 065). Reverts any task that's been at `in-progress` with no per-task lock for longer than `--threshold-min` (default 30m, matching the default time bound). Distinct from `tpm lock release-stale` (task 018), which handles the inverse failure: lock file present, holder dead. Run on the same cadence as `tpm poll` (every poll tick) — together with the in-queue admission in `src/queue.ts`, the worst-case strand is bounded by the next orchestrator tick on a hot queue and by the sweeper threshold otherwise.
-- **`tpm poll`** — the PR-signal poller, in-process CLI subcommand (was `scripts/recurring/check-pr-signal.sh` before task 079 folded the bash glue back into the CLI; `tpm check-pr-signal` remains as a back-compat alias). Walks every non-terminal task with a linked PR (plus every `in-progress` task — the round may open its PR mid-tick): `ready`, `in-progress`, `needs-review`, `needs-feedback`, `needs-close`. The PR is alive across all of those — review states, CI runs, eventual merge — so the watch set spans the whole non-terminal lifecycle rather than just the in-flight slice. `open` / `blocked` / `done` / `dropped` are skipped. The rule lives in `shouldWatchForPrSignal` in `src/pr_signal.ts`. Each candidate dispatches to a host adapter per linked PR URL. Adapters ship for GitHub (`gh pr view`) and Azure DevOps (`az repos pr show` + `az pipelines runs list`); adding a new host is one file under `src/hosts/<name>.ts` plus an entry in the `HOSTS` array in `src/pr_signal.ts`. Each adapter answers the same coarse question in its own dialect — `merged` / `needs-agent` / `needs-human` / `abandoned` / `no-action` — so the harness never carries `if host === 'ado'` branches. Per-host CLI presence is checked inside the adapter (an ADO-only user doesn't need `gh` installed). Aggregated signal flips status to `needs-feedback` (merge conflict / CI red / branch behind / open threads — agent attempts the rebase and other fixes via `/tpm feedback`), `needs-review` (`CHANGES_REQUESTED`, ADO vote ≤ -5, or a PR closed-without-merge — the human decides whether to reopen or drop), or **auto-closes inline** when any linked PR merged: flips to `needs-close`, derives an Outcome from PR title + body (Test plan + Claude Code footer stripped), and calls the same code path as `tpm complete --outcome "<derived>"` in the same tick. No claude session spawned, no orchestrator wait. If the inline auto-close fails (body empty, Outcome already filled, lock contention) the task stays at `needs-close` for manual `/tpm done <slug>`. `tpm poll --dry-run` previews decisions without mutating.
-
-Customize the template for your own intake (review my open PRs, sweep stale dependency reports, file an alert-driven task, etc.):
-
-```sh
-cp ~/Developer/tpm/scripts/recurring/template.sh ~/.tpm/scripts/recurring/intake-prs.sh
-$EDITOR ~/.tpm/scripts/recurring/intake-prs.sh
+```cron
+# Every 15 min during work hours: flip in-flight PRs to needs-feedback / needs-review
+*/15 9-19 * * 1-5   /opt/homebrew/bin/tpm poll >> ~/.tpm/recurring-poll.log 2>&1
+# Nightly: drain whatever is ready or needs-feedback + allow_orchestrator: true
+0 6 * * *    TPM_AGENT_ID=nightly-runner task=$(/opt/homebrew/bin/tpm next --autonomous --claim "$TPM_AGENT_ID") && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/tpm orchestrate --task "$task" --claude /opt/homebrew/bin/claude >> ~/.tpm/orchestrator-nightly-runner.log 2>&1
 ```
 
-By default, tasks created by the recurring-script template are `ready` but **not** `allow_orchestrator: true`: the template runs `tpm ready` (which now sets the flag) immediately followed by `tpm disallow`, so manual `tpm next` picks them up but the unattended drain doesn't. Opt a task in for autonomous runs with `tpm allow <task>`, or drop the `tpm disallow` line in the script for a class of tasks you trust.
-
-**Portability.** Recurring scripts must run on stock macOS — BSD `awk`, BSD `sed`, no `gawk` / `gnu-sed` / `grep -P`. tpm is zero-deps; a cron-fired script that requires `brew install gawk` violates that. In practice: stick to 2-arg `match()` + `substr` (not gawk's 3-arg capture-array form), `sed -E` (portable on both sides), and `grep -E` instead of `grep -P`.
-
-**Don't silence stderr from external commands.** A cron-fired script that does `gh ... 2>/dev/null` and skips on failure leaves you guessing at 8am why nothing got flipped — was it auth, rate limit, a bad URL, network? Capture stderr to a temp file and surface a one-line excerpt (with the exit code) when the command fails. Reserve `2>/dev/null` for deliberate existence checks where a missing target is the expected case (e.g. `tpm context "$slug" >/dev/null 2>&1` to test if a slug already exists).
-
-**Use the structured log helper.** All recurring scripts (and `tpm orchestrate`) emit one line per event in the same format so a single log file greps + sorts cleanly:
+`tpm orchestrate` and `tpm poll` emit one structured line per event so a single log file greps + sorts cleanly:
 
 ```
 2026-05-15T09:14:33-07:00  INFO   poll             no tasks to watch
@@ -317,32 +307,7 @@ By default, tasks created by the recurring-script template are `ready` but **not
 2026-05-15T09:14:38-07:00  INFO   poll             summary checked=6 flipped=2 no-signal=3 fetch-failed=1
 ```
 
-ISO-8601 second precision in the configured TZ (from `~/.tpm/config.json`, falls back to UTC) with explicit `±HH:MM` offset; level padded to 5 chars; script padded to 16 chars; free-form single-line message. The format is lexicographically sortable within a single TZ (DST transitions stay ordered because the offset is part of the string) and unambiguous if logs are ever shipped cross-host. INFO/WARN write to stdout, ERROR to stderr (cron's `>> log 2>&1` collapses both — the split is for interactive runs that want `2>/dev/null` for warn-free output).
-
-Bash recurring scripts source `scripts/recurring/_log.sh` to emit the same envelope shape (`tpm poll` and `tpm orchestrate` use `src/log.ts` directly — same format, no shell wrapper):
-
-```sh
-SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$SCRIPT_DIR/_log.sh"
-log_info  "started"
-log_warn  "skip foo (gh exit=4)"
-log_error "classifier exited 1 for tpm/041"
-```
-
-`grep -E '^\d{4}.*ERROR' ~/.tpm/*.log` returns only the actual errors. `grep 'action=no-signal'` shows everything the PR-signal poller passed on (was previously invisible — silent no-signal skips were lumped into the same `skipped=N` bucket as fetch-failures). The poller's summary line splits that bucket into honest counters: `checked=N flipped=N no-signal=N fetch-failed=N` add up to `checked`.
-
-Cron pattern combining intake, signal poller, and drain:
-
-```cron
-# Monday morning: harvest open PRs into review tasks
-0 16 * * 1   ~/.tpm/scripts/recurring/intake-prs.sh tpm >> ~/.tpm/recurring-intake-prs.log 2>&1
-# Every 15 min during work hours: flip in-flight PRs to needs-feedback / needs-review
-*/15 9-19 * * 1-5   /opt/homebrew/bin/tpm poll >> ~/.tpm/recurring-poll.log 2>&1
-# Nightly: drain whatever is ready or needs-feedback + allow_orchestrator: true
-0 6 * * *    TPM_AGENT_ID=nightly-runner task=$(/opt/homebrew/bin/tpm next --autonomous --claim "$TPM_AGENT_ID") && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/tpm orchestrate --task "$task" --claude /opt/homebrew/bin/claude >> ~/.tpm/orchestrator-nightly-runner.log 2>&1
-```
-
-The pipeline: **scripts populate the queue → loops drain it.** Don't put judgment work in scripts; if a job needs an LLM, do it in a `/tpm <slug>` flavor instead.
+ISO-8601 second precision in the configured TZ (from `~/.tpm/config.json`, falls back to UTC) with explicit `±HH:MM` offset; level padded to 5 chars; script padded to 16 chars; free-form single-line message. The format is lexicographically sortable within a single TZ (DST transitions stay ordered because the offset is part of the string) and unambiguous if logs are ever shipped cross-host. INFO/WARN write to stdout, ERROR to stderr (cron's `>> log 2>&1` collapses both — the split is for interactive runs that want `2>/dev/null` for warn-free output). `grep -E '^\d{4}.*ERROR' ~/.tpm/*.log` returns only the actual errors; `grep 'action=no-signal'` shows everything the poller passed on. The summary line's `checked=N flipped=N no-signal=N fetch-failed=N` add up to `checked`.
 
 #### `tpm schedule` (cross-platform scheduler wrapper)
 
@@ -365,13 +330,6 @@ tpm schedule uninstall poll
 **macOS:** `tpm schedule` is not yet wired up on Darwin — the launchd adapter is a follow-up (separate task). For now, stick with the manual `crontab` examples above on macOS.
 
 A bare `tpm` as the command (i.e. `-- tpm <args>`) is auto-resolved to this install's absolute `bin/tpm` so the unit/cron/Task Scheduler line keeps working under the stripped `PATH` that systemd-user, cron, and schtasks all see. Override with `TPM_BIN=/abs/path/to/tpm tpm schedule install ...` if you keep multiple installs. On Windows, the binary install shim lands in a follow-up task — until then, pass an absolute path to your `tpm.cmd` (or whatever shim you've wired up) instead of bare `tpm`.
-
-**Where to keep your scripts.** tpm doesn't care; pick whichever fits your sync model:
-
-- `$(tpm root)/.scripts/recurring/<name>.sh` — travels with the data tree if you sync via Dropbox/git.
-- `~/.tpm/scripts/recurring/<name>.sh` — per-device, sits next to the tpm config.
-- `~/Developer/<project>/scripts/recurring/<name>.sh` — colocated with the code the script reasons about.
-- The tpm CLI repo's `scripts/recurring/` — only for scripts generic enough to be useful upstream.
 
 ### Live dashboard
 

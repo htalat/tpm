@@ -1,11 +1,10 @@
-// PR-signal poller: in-process replacement for the deleted
-// scripts/recurring/check-pr-signal.sh. Walks every non-terminal task with a
-// linked PR, dispatches per-URL fetches to the host adapter registry, and
-// flips status based on the aggregated signal — same vocabulary as the bash
-// version (merged → needs-close + inline auto-close; CI red / behind /
-// conflict / open threads → needs-feedback; CHANGES_REQUESTED / abandoned →
-// needs-review). Logs in the same structured envelope as `tpm orchestrate`
-// (src/log.ts) so a single `tpm` log file tails cleanly.
+// PR-signal poller. Walks every non-terminal task with a linked PR,
+// dispatches per-URL fetches to the host adapter registry, and flips status
+// based on the aggregated signal: merged → needs-close + inline auto-close;
+// CI red / behind / conflict / open threads → needs-feedback;
+// CHANGES_REQUESTED / abandoned → needs-review. Logs in the same structured
+// envelope as `tpm orchestrate` (src/log.ts) so a single `tpm` log file tails
+// cleanly.
 
 import { findRoot } from "./root.ts";
 import { flatTasks, loadProjects } from "./tree.ts";
