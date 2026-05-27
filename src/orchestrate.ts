@@ -325,6 +325,15 @@ function logLine(level: LogLevel, message: string): void {
   sharedLogLine(level, "orchestrate", message);
 }
 
+// Per-worker variant: prefixes the envelope message with `agent=<worker-id>` so
+// merged `/logs` stays readable when multiple workers run in one orchestrate
+// invocation (task 111). Falls back to a bare emitter when no id is set so
+// pre-pool single-shot callers keep their existing log shape.
+function workerLogger(agentId: string | undefined): (level: LogLevel, message: string) => void {
+  if (!agentId) return logLine;
+  return (level, message) => sharedLogLine(level, "orchestrate", `agent=${agentId} ${message}`);
+}
+
 export type RepoCheck =
   | { ok: true; cwd: string }
   | { ok: false; reason: string };
@@ -386,14 +395,27 @@ export interface OrchestrateOpts {
   // New callers should use the CLAUDE_BIN env var or `agentName` instead.
   claudeBin?: string;
   // Invocation-time agent override (the `--agent <name>` flag on
-  // `tpm orchestrate`). Wins over task/project/config selection.
+  // `tpm orchestrate`). Wins over task/project/config selection. In pool
+  // mode, `cliPerWorker` (one entry per slot) wins over this.
   agentName?: string;
+  // `--minutes N`. In pool mode, this is the pool-shared deadline; each worker
+  // exits its loop when the deadline passes, draining any in-flight task. In
+  // single-shot mode (`preClaimedTask` set), no pool runs — the value still
+  // bounds the dispatch via the per-task time-bound cascade default.
   minutesOverride?: number;
   graceSeconds?: number;
   // Pre-claimed task slug. Caller (e.g. cron line that ran `tpm next --claim`
   // and then `tpm drift-check`) has already locked the task; orchestrate uses
-  // it directly. Lock release on exit still happens.
+  // it directly and runs a single iteration (workers/cliPerWorker ignored).
   preClaimedTask?: string;
+  // Number of concurrent worker loops in this invocation (task 111). Default 1.
+  // Each worker gets an auto id (`worker-1`, `worker-2`, …) used as the
+  // `TPM_AGENT_ID` for lock attribution and log tagging.
+  workers?: number;
+  // Optional comma-separated agent name per worker slot. Length must equal
+  // `workers` when provided. Default: every worker uses `agentName` (or the
+  // registry default).
+  cliPerWorker?: string[];
 }
 
 export interface OrchestrateResult {
@@ -420,14 +442,45 @@ export function noPickLogEntry(candidatesCount: number): { level: "INFO" | "WARN
   };
 }
 
-// Run one orchestrator turn:
+// Idle sleep between attempts when a worker can't claim a task. Short enough
+// that a worker wakes within seconds of new work appearing; long enough that
+// a deadline-bound pool with nothing to do doesn't churn on `loadProjects`.
+const WORKER_IDLE_SLEEP_MS = 10_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Validate worker pool inputs (workers, cliPerWorker). Throws with a clear
+// message on mismatch so callers (CLI, tests) fail loudly instead of dispatching
+// a half-configured pool. Returns the resolved worker count.
+export function resolvePoolShape(opts: OrchestrateOpts): { workers: number } {
+  const workers = opts.workers ?? 1;
+  if (!Number.isInteger(workers) || workers <= 0) {
+    throw new Error(`--workers must be a positive integer, got ${workers}`);
+  }
+  if (opts.cliPerWorker && opts.cliPerWorker.length !== workers) {
+    throw new Error(
+      `--cli has ${opts.cliPerWorker.length} entries but --workers is ${workers}; lengths must match`,
+    );
+  }
+  return { workers };
+}
+
+// Dispatcher entry point. Two modes:
+//   - `preClaimedTask` set: single-shot iteration against that task. Used by
+//     legacy cron lines that ran `tpm next --claim` then `tpm orchestrate
+//     --task <slug>`. Pool flags are ignored.
+//   - otherwise: pool mode (task 111). Fans out N worker loops; each worker
+//     gets an auto id (`worker-1`, …) used as `TPM_AGENT_ID` for lock
+//     attribution. Workers exit the loop when the shared deadline passes,
+//     draining any in-flight task first. Idle workers sleep briefly and retry.
+//
+// A single iteration does:
 //   1. tpm next --autonomous (filters to allow_orchestrator: true)
 //   2. spawn `<agentBin> <agent.buildArgs(prompt, repoLocal)>` with a hard
 //      time bound. The agent CLI (claude, copilot, …) is resolved from the
-//      task/project/config registry in src/agent_cli.ts. The prompt is built
-//      inline (briefing from `context()`, rules from `buildExecutionPrompt`)
-//      so the agent skips skill discovery and starts executing the Plan
-//      immediately.
+//      task/project/config registry in src/agent_cli.ts.
 //   3. on timeout, SIGTERM (then SIGKILL after grace), then `tpm revert <slug>`
 //   4. additionally, poll the task every ~5s; if it goes terminal externally
 //      (done/dropped/archived) SIGTERM the child early — disposition: terminal.
@@ -436,12 +489,123 @@ export function noPickLogEntry(candidatesCount: number): { level: "INFO" | "WARN
 export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<OrchestrateResult> {
   const root = findRoot();
   const cfg = readConfig();
-  const agentId = process.env.TPM_AGENT_ID ?? `${hostname()}-${process.pid}`;
 
   // Hygiene: clear stale per-task locks before claiming. TTL = global time
   // bound + 5m buffer (per-task overrides apply on acquire, not on cleanup).
   const ttl = (cfg.time_bound_minutes ?? DEFAULT_TIME_BOUND_MINUTES) + 5;
   lock.releaseStaleTaskLocks(root, ttl);
+
+  if (opts.preClaimedTask) {
+    const agentId = process.env.TPM_AGENT_ID ?? `${hostname()}-${process.pid}`;
+    return runWorkerIteration({
+      root,
+      cfg,
+      agentId,
+      preClaimedTask: opts.preClaimedTask,
+      agentName: opts.agentName,
+      claudeBin: opts.claudeBin,
+      graceSeconds: opts.graceSeconds,
+      minutesOverride: opts.minutesOverride,
+    });
+  }
+
+  const { workers } = resolvePoolShape(opts);
+  const deadlineMinutes = opts.minutesOverride ?? cfg.time_bound_minutes ?? DEFAULT_TIME_BOUND_MINUTES;
+  const deadlineMs = Date.now() + deadlineMinutes * 60_000;
+  logLine(
+    "INFO",
+    `pool start workers=${workers} deadline=${deadlineMinutes}m`,
+  );
+
+  const results = await Promise.all(
+    Array.from({ length: workers }, (_, i) => runWorkerLoop({
+      root,
+      cfg,
+      workerId: `worker-${i + 1}`,
+      deadlineMs,
+      agentName: opts.cliPerWorker?.[i] ?? opts.agentName,
+      claudeBin: opts.claudeBin,
+      graceSeconds: opts.graceSeconds,
+    })),
+  );
+
+  logLine("INFO", `pool finished workers=${workers}`);
+  // Aggregate: succeed if no worker had a hard failure. Spawn failures (127)
+  // surface as failed iterations inside the worker loop; the pool itself
+  // completes a natural lifecycle and exits 0 so cron wrappers don't loop on
+  // a misleading non-zero.
+  const _ = results;
+  return { exitCode: 0 };
+}
+
+interface WorkerIterationOpts {
+  root: string;
+  cfg: ReturnType<typeof readConfig>;
+  agentId: string;
+  agentName?: string;
+  claudeBin?: string;
+  graceSeconds?: number;
+  preClaimedTask?: string;
+  minutesOverride?: number;
+}
+
+interface WorkerLoopOpts {
+  root: string;
+  cfg: ReturnType<typeof readConfig>;
+  workerId: string;
+  deadlineMs: number;
+  agentName?: string;
+  claudeBin?: string;
+  graceSeconds?: number;
+}
+
+// A worker loop: claim → run → release, repeat until the pool deadline. Sleeps
+// briefly when nothing is eligible so a quiet queue doesn't churn on
+// `loadProjects`. Per-task locks dedup against sibling workers, so the body
+// here is the same as a single-shot orchestrate turn.
+async function runWorkerLoop(opts: WorkerLoopOpts): Promise<OrchestrateResult> {
+  const log = workerLogger(opts.workerId);
+  log("INFO", `worker start`);
+  let lastResult: OrchestrateResult = { exitCode: 0 };
+  let idleSinceLog = false;
+  while (Date.now() < opts.deadlineMs) {
+    const result = await runWorkerIteration({
+      root: opts.root,
+      cfg: opts.cfg,
+      agentId: opts.workerId,
+      agentName: opts.agentName,
+      claudeBin: opts.claudeBin,
+      graceSeconds: opts.graceSeconds,
+    });
+    lastResult = result;
+    if (result.exitCode === 1) {
+      // No eligible task (or all repos busy). Sleep until either work appears
+      // or the deadline passes. Re-log only on the first idle in a streak so
+      // the merged /logs view doesn't fill with idle ticks.
+      if (!idleSinceLog) {
+        log("INFO", `idle; sleeping ${Math.round(WORKER_IDLE_SLEEP_MS / 1000)}s`);
+        idleSinceLog = true;
+      }
+      const remaining = opts.deadlineMs - Date.now();
+      if (remaining <= 0) break;
+      await sleep(Math.min(WORKER_IDLE_SLEEP_MS, remaining));
+      continue;
+    }
+    idleSinceLog = false;
+  }
+  log("INFO", `worker stop (deadline reached)`);
+  return lastResult;
+}
+
+// One orchestrator iteration. Originally the whole body of `runOrchestrate`;
+// extracted so a worker loop can call it repeatedly under one process. All
+// state (root, cfg, agentId) is passed in — the iteration owns no globals
+// other than the lock files it acquires and releases.
+async function runWorkerIteration(opts: WorkerIterationOpts): Promise<OrchestrateResult> {
+  const root = opts.root;
+  const cfg = opts.cfg;
+  const agentId = opts.agentId;
+  const log = workerLogger(opts.agentId);
 
   const projects = loadProjects(root);
   let pick: { project: Project; task: Task } | null = null;
@@ -452,14 +616,14 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     slug = opts.preClaimedTask;
     const match = findTask(projects, slug);
     if (!match) {
-      logLine("ERROR", `pre-claimed task not found: ${slug}`);
+      log("ERROR", `pre-claimed task not found: ${slug}`);
       return { exitCode: 1 };
     }
     pick = match;
     // Sanity-check the lock is ours; refuse to run a task we don't own.
     const status = lock.statusTask(root, slug);
     if (!status.includes(`agent-id=${agentId}`)) {
-      logLine("ERROR", `pre-claimed task ${slug} is not held by ${agentId} (status: ${status})`);
+      log("ERROR", `pre-claimed task ${slug} is not held by ${agentId} (status: ${status})`);
       return { exitCode: 1 };
     }
   } else {
@@ -487,7 +651,7 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
         // 035/003). Refuse to dispatch rather than silently colliding on
         // the working tree.
         lock.releaseTask(root, candSlug, agentId);
-        logLine(
+        log(
           "ERROR",
           `${candSlug}: same_repo_strategy: worktree is declared but not yet implemented in tpm orchestrate. Switch to serialize or run the task manually.`,
         );
@@ -508,7 +672,7 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     }
     if (!pick) {
       const entry = noPickLogEntry(candidates.length);
-      logLine(entry.level, entry.message);
+      log(entry.level, entry.message);
       return { exitCode: 1 };
     }
   }
@@ -546,17 +710,17 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     if (guard.action === "block") {
       try {
         mutate.block(pick.task, guard.reason);
-        logLine("WARN", `${slug}: blocked — ${guard.reason}`);
+        log("WARN", `${slug}: blocked — ${guard.reason}`);
       } catch (e) {
-        logLine("ERROR", `block ${slug} failed: ${(e as Error).message}`);
+        log("ERROR", `block ${slug} failed: ${(e as Error).message}`);
       }
     }
     try { lock.releaseTask(root, slug, agentId); } catch (e) {
-      logLine("ERROR", `lock release failed for ${slug}: ${(e as Error).message}`);
+      log("ERROR", `lock release failed for ${slug}: ${(e as Error).message}`);
     }
     if (resolveSameRepoStrategy(pick.project) === "serialize") {
       try { lock.releaseRepo(root, pick.project.slug, agentId); } catch (e) {
-        logLine("ERROR", `repo lock release failed for ${pick.project.slug}: ${(e as Error).message}`);
+        log("ERROR", `repo lock release failed for ${pick.project.slug}: ${(e as Error).message}`);
       }
     }
     return { exitCode: 1 };
@@ -579,11 +743,11 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   try {
     logFile = prepareRunLogPath(pick.task).logFile;
   } catch (e) {
-    logLine("WARN", `${slug}: could not prepare run log path (${(e as Error).message}); continuing without capture`);
+    log("WARN", `${slug}: could not prepare run log path (${(e as Error).message}); continuing without capture`);
   }
   const logHeader = formatRunLogHeader(agentCli.name, agentCli.outputFormat);
-  logLine("INFO", `start ${slug} as ${agentId} time-bound=${minutes}m agent=${agentCli.name} bin=${agentBin}`);
-  if (logFile) logLine("INFO", `run log: ${logFile}`);
+  log("INFO", `start ${slug} time-bound=${minutes}m agent=${agentCli.name} bin=${agentBin}`);
+  if (logFile) log("INFO", `run log: ${logFile}`);
 
   // Heartbeat the lock every 60s so a long-running agent doesn't get
   // reclaimed by a sibling's stale-lock sweep.
@@ -617,7 +781,7 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   if (beforeStatus === "needs-feedback" && prUrls.length > 0) {
     const prContext = await fetchFeedbackContexts(prUrls);
     prompt = buildFeedbackPrompt(briefing, prContext);
-    logLine("INFO", `${slug}: feedback-mode prompt with ${prUrls.length} PR(s)`);
+    log("INFO", `${slug}: feedback-mode prompt with ${prUrls.length} PR(s)`);
   } else {
     prompt = buildExecutionPrompt(briefing);
   }
@@ -632,13 +796,13 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   try {
     mutate.start(pick.task, ORCHESTRATOR_CLAIM_VERB);
   } catch (e) {
-    logLine("ERROR", `${slug}: eager claim flip failed: ${(e as Error).message}`);
+    log("ERROR", `${slug}: eager claim flip failed: ${(e as Error).message}`);
     try { lock.releaseTask(root, slug, agentId); } catch (le) {
-      logLine("ERROR", `lock release failed for ${slug}: ${(le as Error).message}`);
+      log("ERROR", `lock release failed for ${slug}: ${(le as Error).message}`);
     }
     if (resolveSameRepoStrategy(pick.project) === "serialize") {
       try { lock.releaseRepo(root, pick.project.slug, agentId); } catch (le) {
-        logLine("ERROR", `repo lock release failed for ${pick.project.slug}: ${(le as Error).message}`);
+        log("ERROR", `repo lock release failed for ${pick.project.slug}: ${(le as Error).message}`);
       }
     }
     return { exitCode: 1 };
@@ -659,14 +823,14 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
         const projectsAfter = loadProjects(root);
         const match = findTask(projectsAfter, slug);
         if (!match) {
-          logLine("WARN", `task ${slug} not found after timeout (was it archived mid-run?)`);
+          log("WARN", `task ${slug} not found after timeout (was it archived mid-run?)`);
           return;
         }
         try {
           const r = mutate.revert(match.task, `time bound ${minutes}m exceeded`);
-          logLine("INFO", `revert ${slug}: ${r.message}`);
+          log("INFO", `revert ${slug}: ${r.message}`);
         } catch (e) {
-          logLine("ERROR", `revert ${slug} failed: ${(e as Error).message}`);
+          log("ERROR", `revert ${slug} failed: ${(e as Error).message}`);
         }
       },
       () => {
@@ -685,13 +849,13 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     try {
       lock.releaseTask(root, slug, agentId);
     } catch (e) {
-      logLine("ERROR", `lock release failed for ${slug}: ${(e as Error).message}`);
+      log("ERROR", `lock release failed for ${slug}: ${(e as Error).message}`);
     }
     if (resolveSameRepoStrategy(pick.project) === "serialize") {
       try {
         lock.releaseRepo(root, pick.project.slug, agentId);
       } catch (e) {
-        logLine("ERROR", `repo lock release failed for ${pick.project.slug}: ${(e as Error).message}`);
+        log("ERROR", `repo lock release failed for ${pick.project.slug}: ${(e as Error).message}`);
       }
     }
   }
@@ -717,12 +881,12 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
           beforeStatus,
           `claim failed: agent spawn failed (exit 127, bin=${agentBin}); reverted to ${beforeStatus}`,
         );
-        logLine("WARN", `${slug}: spawn failed; reverted status to ${beforeStatus}`);
+        log("WARN", `${slug}: spawn failed; reverted status to ${beforeStatus}`);
       } catch (e) {
-        logLine("ERROR", `spawn-failure revert for ${slug} failed: ${(e as Error).message}`);
+        log("ERROR", `spawn-failure revert for ${slug} failed: ${(e as Error).message}`);
       }
     } else {
-      logLine("WARN", `${slug}: spawn failed but task not found on disk (was it archived?)`);
+      log("WARN", `${slug}: spawn failed but task not found on disk (was it archived?)`);
     }
   }
 
@@ -746,7 +910,7 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     terminationReason: result.terminationReason,
   });
   const level = disposition === "stalled" ? "WARN" : "INFO";
-  logLine(level, formatDispositionLine(slug, disposition, result.exitCode, before, after));
+  log(level, formatDispositionLine(slug, disposition, result.exitCode, before, after));
 
   // Strand-on-exit safety net (task 063). If the agent left the task at
   // in-progress with no shipping signal, revert to ready so the next
@@ -761,15 +925,15 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
       terminationReason: result.terminationReason,
     })
   ) {
-    logLine(
+    log(
       "WARN",
       `${slug}: agent exited cleanly with task still in-progress and no PR; auto-reverting to ready`,
     );
     try {
       const r = mutate.revert(matchAfter.task, "agent exited with no progress (auto-revert)");
-      logLine("INFO", `revert ${slug}: ${r.message}`);
+      log("INFO", `revert ${slug}: ${r.message}`);
     } catch (e) {
-      logLine("ERROR", `auto-revert ${slug} failed: ${(e as Error).message}`);
+      log("ERROR", `auto-revert ${slug} failed: ${(e as Error).message}`);
     }
   }
 

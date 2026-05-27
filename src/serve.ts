@@ -35,8 +35,6 @@ import {
   DEFAULT_TIME_BOUND_MINUTES,
 } from "./config.ts";
 import type { Config } from "./config.ts";
-import { AGENTS_PATH } from "./agents.ts";
-import type { AgentEntry } from "./agents.ts";
 import { defaultHarnessLogReader, parseTaskLogEntries } from "./harness_log.ts";
 import type { HarnessLogReader, HarnessLogSource, HarnessLogLine } from "./harness_log.ts";
 
@@ -82,12 +80,11 @@ export interface TaskLockSnapshotEntry {
 // render); cheap enough not to deserve memoization.
 export type TaskLockReader = () => Map<string, TaskLockSnapshotEntry>;
 
-// A read-only view of a JSON config file (~/.tpm/config.json or
-// ~/.tpm/agents.json) for the `/config` page. The renderer wants both the raw
-// text (to pretty-print) and the parsed value (to surface interpretive fields),
-// plus the file's path and a parse/IO error if either failed. `missing` is
-// distinguished from `error` so the UI can render a "no file yet — using
-// defaults" hint instead of a scary parse-error block.
+// A read-only view of `~/.tpm/config.json` for the `/config` page. The renderer
+// wants both the raw text (to pretty-print) and the parsed value (to surface
+// interpretive fields), plus the file's path and a parse/IO error if either
+// failed. `missing` is distinguished from `error` so the UI can render a
+// "no file yet — using defaults" hint instead of a scary parse-error block.
 export interface ConfigSnapshot {
   path: string;
   raw: string;
@@ -260,10 +257,9 @@ export interface RouteOpts {
   // Lists every run log basename for a slug, newest-first. Used by the
   // `/t/<proj>/<slug>/runs` index. Defaults read `~/.tpm/runs/`; tests stub.
   runLogList?: RunLogListReader;
-  // Config-file snapshots for the `/config` page. Default readers hit disk;
-  // tests inject in-memory stubs.
+  // Config-file snapshot for the `/config` page. Default reader hits disk;
+  // tests inject an in-memory stub.
   configSnapshot?: ConfigSnapshotReader;
-  agentsSnapshot?: ConfigSnapshotReader;
   // Harness-log reader for the `/logs` page. Default reads `~/.tpm/`; tests
   // inject in-memory stubs.
   harnessLog?: HarnessLogReader;
@@ -300,8 +296,7 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
   }
   if (pathname === "/config") {
     const cfg = (opts.configSnapshot ?? defaultConfigSnapshot)();
-    const agents = (opts.agentsSnapshot ?? defaultAgentsSnapshot)();
-    return ok("text/html; charset=utf-8", renderConfig(projects, cfg, agents));
+    return ok("text/html; charset=utf-8", renderConfig(projects, cfg));
   }
   if (pathname === "/logs") {
     const taskFilter = params.get("task")?.trim() || undefined;
@@ -517,14 +512,10 @@ function defaultConfigSnapshot(): ConfigSnapshot {
   return readConfigSnapshot(CONFIG_PATH);
 }
 
-function defaultAgentsSnapshot(): ConfigSnapshot {
-  return readConfigSnapshot(AGENTS_PATH);
-}
-
 // Non-throwing snapshot reader for the /config page. Distinguishes
 // missing-file (return defaults) from invalid-JSON (show parse error + raw).
-// Doesn't run the stricter validators in `readConfig` / `readAgentsRegistry` —
-// the UI should surface what the file says, even when fields are off-spec.
+// Doesn't run the stricter validator in `readConfig` — the UI should surface
+// what the file says, even when fields are off-spec.
 function readConfigSnapshot(path: string): ConfigSnapshot {
   if (!existsSync(path)) {
     return { path, raw: "", parsed: null, error: null, missing: true };
@@ -1129,29 +1120,22 @@ ${main}
 
 // ---- /config page ---------------------------------------------------------
 
-// Read-only view of the two ~/.tpm JSON files driving harness behavior. Pairs
-// an interpretive `dl` (the fields people actually care about, with defaults
-// from `src/defaults` / `src/config.ts` filled in) with the raw pretty-printed
-// JSON for everything else.
-function renderConfig(projects: Project[], cfg: ConfigSnapshot, agents: ConfigSnapshot): string {
+// Read-only view of `~/.tpm/config.json`. Pairs an interpretive `dl` (the
+// fields people actually care about, with defaults from `src/defaults` /
+// `src/config.ts` filled in) with the raw pretty-printed JSON.
+function renderConfig(projects: Project[], cfg: ConfigSnapshot): string {
   const body = `
 ${projectChips(projects, null, "config")}
 <nav class="crumbs"><a href="/config">config</a></nav>
 <header>
   <h1>Configuration</h1>
-  <p class="meta">Harness config + agent registry. Read-only — edit the files to change them.</p>
+  <p class="meta">Harness config. Read-only — edit the file to change it.</p>
 </header>
 <section class="config-section">
   <h2>Harness config</h2>
   <p class="meta">File: <code>${esc(displayPath(cfg.path))}</code></p>
   ${renderHarnessInterp(cfg)}
   ${renderConfigJson(cfg)}
-</section>
-<section class="config-section">
-  <h2>Agents</h2>
-  <p class="meta">File: <code>${esc(displayPath(agents.path))}</code></p>
-  ${renderAgentsInterp(agents)}
-  ${renderConfigJson(agents)}
 </section>
 `;
   return layout("tpm · config", body);
@@ -1189,29 +1173,6 @@ function renderHarnessInterp(snap: ConfigSnapshot): string {
   <dt>Time bound</dt><dd>${tb}</dd>
   <dt>Notifications</dt><dd>${notifBody}</dd>
 </dl>`;
-}
-
-function renderAgentsInterp(snap: ConfigSnapshot): string {
-  const parsed = isPlainObject(snap.parsed) ? (snap.parsed as { agents?: unknown }) : {};
-  const agentsRaw = parsed.agents;
-  if (!isPlainObject(agentsRaw)) {
-    return `<p class="config-empty">No agents configured. Run <code>tpm agents add &lt;id&gt; --repo &lt;slug&gt;</code> to register one.</p>`;
-  }
-  const entries = Object.entries(agentsRaw as Record<string, unknown>);
-  if (entries.length === 0) {
-    return `<p class="config-empty">No agents configured. Run <code>tpm agents add &lt;id&gt; --repo &lt;slug&gt;</code> to register one.</p>`;
-  }
-  const rows = entries.map(([id, entryRaw]) => {
-    const entry = isPlainObject(entryRaw) ? (entryRaw as AgentEntry & Record<string, unknown>) : ({} as AgentEntry);
-    const repos = Array.isArray(entry.prefer_repos) && entry.prefer_repos.length
-      ? entry.prefer_repos.map(r => `<code>${esc(String(r))}</code>`).join(", ")
-      : `<em>none</em>`;
-    const comment = typeof entry.comment === "string" && entry.comment.length
-      ? `  ·  <span class="config-comment">${esc(entry.comment)}</span>`
-      : "";
-    return `<dt>${esc(id)}</dt><dd>prefer: ${repos}${comment}</dd>`;
-  }).join("");
-  return `<dl class="config-interp">${rows}</dl>`;
 }
 
 function renderConfigJson(snap: ConfigSnapshot): string {
