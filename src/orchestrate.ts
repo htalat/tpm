@@ -453,7 +453,9 @@ function sleep(ms: number): Promise<void> {
 
 // Validate worker pool inputs (workers, cliPerWorker). Throws with a clear
 // message on mismatch so callers (CLI, tests) fail loudly instead of dispatching
-// a half-configured pool. Returns the resolved worker count.
+// a half-configured pool. Returns the resolved worker count (the bootstrap
+// default — the running pool tracks ~/.tpm/config.json's `workers` field after
+// the first reconcile tick, see task 113).
 export function resolvePoolShape(opts: OrchestrateOpts): { workers: number } {
   const workers = opts.workers ?? 1;
   if (!Number.isInteger(workers) || workers <= 0) {
@@ -465,6 +467,58 @@ export function resolvePoolShape(opts: OrchestrateOpts): { workers: number } {
     );
   }
   return { workers };
+}
+
+// Clamp a raw `workers` value from config.json into a usable count. Accepts
+// non-negative integers as-is (including 0 — the documented "park the pool"
+// value); negatives, non-integers, missing values, and non-numbers all clamp
+// to 1 with a warning describing the input. The orchestrator de-dupes the
+// warning so a steady-state bad config doesn't spam the log every tick.
+export interface ClampedWorkers {
+  value: number;
+  warning: string | null;
+}
+
+export function clampWorkers(raw: unknown): ClampedWorkers {
+  if (raw === undefined || raw === null) {
+    return { value: 1, warning: null };
+  }
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    return {
+      value: 1,
+      warning: `workers must be a non-negative integer, got ${JSON.stringify(raw)}; clamping to 1`,
+    };
+  }
+  if (!Number.isInteger(raw) || raw < 0) {
+    return {
+      value: 1,
+      warning: `workers must be a non-negative integer, got ${raw}; clamping to 1`,
+    };
+  }
+  return { value: raw, warning: null };
+}
+
+// Pure planner for pool reconciliation. Given the set of currently-live (not
+// already draining) worker ids and a desired total, return:
+//   - spawn: ids 1..desired that aren't currently live (ascending — fills the
+//     lowest free slot first so worker-1 is stable across scale events)
+//   - drain: ids above desired (descending — highest first, so a 3->2 scale
+//     drains worker-3 before worker-2)
+// Idempotent: planReconcile([1,2,3], 3) → {spawn: [], drain: []}.
+export interface PoolReconcilePlan {
+  spawn: number[];
+  drain: number[];
+}
+
+export function planReconcile(currentIds: Iterable<number>, desired: number): PoolReconcilePlan {
+  const live = new Set<number>();
+  for (const id of currentIds) live.add(id);
+  const spawn: number[] = [];
+  for (let id = 1; id <= desired; id++) {
+    if (!live.has(id)) spawn.push(id);
+  }
+  const drain = [...live].filter(id => id > desired).sort((a, b) => b - a);
+  return { spawn, drain };
 }
 
 // Dispatcher entry point. Two modes:
@@ -509,33 +563,178 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     });
   }
 
-  const { workers } = resolvePoolShape(opts);
+  // Validate flag shape up front (--workers must parse, --cli length must
+  // match --workers if both passed). The resolved value is the *bootstrap*
+  // default: the running pool tracks `workers` in ~/.tpm/config.json after
+  // the first reconcile tick, so this is only consulted when config.workers
+  // is unset.
+  const { workers: bootstrapWorkers } = resolvePoolShape(opts);
   const deadlineMinutes = opts.minutesOverride ?? cfg.time_bound_minutes ?? DEFAULT_TIME_BOUND_MINUTES;
   const deadlineMs = Date.now() + deadlineMinutes * 60_000;
   logLine(
     "INFO",
-    `pool start workers=${workers} deadline=${deadlineMinutes}m`,
+    `pool start bootstrap-workers=${bootstrapWorkers} deadline=${deadlineMinutes}m`,
   );
 
-  const results = await Promise.all(
-    Array.from({ length: workers }, (_, i) => runWorkerLoop({
+  await runPool({
+    initialDesired: bootstrapWorkers,
+    deadlineMs,
+    reconcileIntervalMs: POOL_RECONCILE_INTERVAL_MS,
+    readDesired: () => readDesiredWorkers(bootstrapWorkers),
+    log: logLine,
+    spawnWorker: (id, shouldDrain) => runWorkerLoop({
       root,
       cfg,
-      workerId: `worker-${i + 1}`,
+      workerId: `worker-${id}`,
       deadlineMs,
-      agentName: opts.cliPerWorker?.[i] ?? opts.agentName,
+      // Per-worker CLI override: slot N reads cliPerWorker[N-1]. Slots beyond
+      // the list (e.g. config bumped workers past --cli length) fall back to
+      // the global --agent / registry default. resolvePoolShape rejects a
+      // longer --cli than --workers at bootstrap, but config-driven growth
+      // can outpace the list; that's documented in the help text.
+      agentName: opts.cliPerWorker?.[id - 1] ?? opts.agentName,
       claudeBin: opts.claudeBin,
       graceSeconds: opts.graceSeconds,
-    })),
-  );
+      shouldDrain,
+    }),
+  });
 
-  logLine("INFO", `pool finished workers=${workers}`);
-  // Aggregate: succeed if no worker had a hard failure. Spawn failures (127)
-  // surface as failed iterations inside the worker loop; the pool itself
-  // completes a natural lifecycle and exits 0 so cron wrappers don't loop on
-  // a misleading non-zero.
-  const _ = results;
+  logLine("INFO", `pool finished`);
+  // Pool runs to its natural lifecycle. Per-iteration spawn failures (127)
+  // surface inside the worker loop; the outer process exits 0 so cron
+  // wrappers don't loop on a misleading non-zero.
   return { exitCode: 0 };
+}
+
+// Reconcile cadence. 10s matches WORKER_IDLE_SLEEP_MS so an idle pool reacts
+// to a config change on roughly the same beat that a busy pool would pick up
+// a newly-queued task. Faster reconciles would just churn loadProjects/
+// readConfig with no extra responsiveness for a human operator.
+const POOL_RECONCILE_INTERVAL_MS = 10_000;
+
+// Read the desired worker count from ~/.tpm/config.json. Returns the
+// `bootstrap` value when the config file is missing the `workers` field
+// (flag-as-bootstrap-default semantics). Logs at most one warning per
+// distinct error/clamp message so a steady-state bad config doesn't spam
+// the log on every tick.
+let lastWorkersWarning: string | null = null;
+function readDesiredWorkers(bootstrap: number): number {
+  let cfg: ReturnType<typeof readConfig>;
+  try {
+    cfg = readConfig();
+  } catch (e) {
+    const msg = `config read failed during pool reconcile: ${(e as Error).message}; reusing bootstrap (${bootstrap})`;
+    if (lastWorkersWarning !== msg) {
+      logLine("WARN", msg);
+      lastWorkersWarning = msg;
+    }
+    return bootstrap;
+  }
+  if (cfg.workers === undefined) {
+    lastWorkersWarning = null;
+    return bootstrap;
+  }
+  const clamped = clampWorkers(cfg.workers);
+  if (clamped.warning) {
+    if (lastWorkersWarning !== clamped.warning) {
+      logLine("WARN", clamped.warning);
+      lastWorkersWarning = clamped.warning;
+    }
+  } else {
+    lastWorkersWarning = null;
+  }
+  return clamped.value;
+}
+
+export interface RunPoolOpts {
+  initialDesired: number;
+  deadlineMs: number;
+  reconcileIntervalMs: number;
+  // Re-read the desired worker count each tick (typically from config.json).
+  readDesired: () => number;
+  // Spawn a worker with the given id. The returned promise should resolve
+  // when the worker has finished (either because shouldDrain() flipped, or
+  // because the worker hit its own internal stopping condition such as the
+  // pool deadline). The pool awaits all outstanding worker promises before
+  // returning from runPool.
+  spawnWorker: (id: number, shouldDrain: () => boolean) => Promise<unknown>;
+  log: (level: LogLevel, message: string) => void;
+  // Sleep impl, injectable for tests so we don't real-sleep through the
+  // reconcile interval. Defaults to `setTimeout`-based sleep.
+  sleep?: (ms: number) => Promise<void>;
+}
+
+// Pool supervisor. Owns the reconcile loop: every tick, it re-reads the
+// desired count, diffs against the live pool, and spawns / marks-for-drain to
+// converge. Per task 113:
+//   - A scale-up spawns the lowest free ids first (so worker-1 is stable).
+//   - A scale-down marks the highest ids for drain; the worker finishes its
+//     in-flight iteration before exiting (no SIGKILL).
+//   - workers: 0 parks the pool (no workers; runPool keeps ticking so a later
+//     `tpm config set workers N` flips it back on without restart).
+// Pure-ish: all I/O (config read, child spawn) is injected via callbacks, so
+// the supervisor itself is unit-testable without standing up a real tree.
+export async function runPool(opts: RunPoolOpts): Promise<void> {
+  const sleepFn = opts.sleep ?? sleep;
+  // Each entry's `drain` flag is the signal the worker loop polls; the
+  // `promise` is held so we can await every worker before returning.
+  const handles = new Map<number, { drain: boolean; promise: Promise<unknown> }>();
+  let lastDesired = -1; // sentinel so the initial reconcile always logs
+
+  const spawn = (id: number) => {
+    const handle: { drain: boolean; promise: Promise<unknown> } = {
+      drain: false,
+      promise: Promise.resolve(),
+    };
+    handle.promise = opts.spawnWorker(id, () => handle.drain).finally(() => {
+      handles.delete(id);
+    });
+    handles.set(id, handle);
+  };
+
+  const reconcile = () => {
+    const desired = opts.readDesired();
+    const liveIds = [...handles.entries()]
+      .filter(([, h]) => !h.drain)
+      .map(([id]) => id);
+    const plan = planReconcile(liveIds, desired);
+    const changed = desired !== lastDesired;
+    if (changed || plan.spawn.length > 0 || plan.drain.length > 0) {
+      const parts: string[] = [];
+      if (plan.spawn.length > 0) {
+        parts.push(`spawning ${plan.spawn.map(i => `worker-${i}`).join(", ")}`);
+      }
+      if (plan.drain.length > 0) {
+        parts.push(`draining ${plan.drain.map(i => `worker-${i}`).join(", ")}`);
+      }
+      const action = parts.length > 0 ? ` (${parts.join("; ")})` : " (no-op)";
+      const fromCount = lastDesired === -1 ? 0 : lastDesired;
+      opts.log("INFO", `workers: ${fromCount} -> ${desired}${action}`);
+    }
+    for (const id of plan.spawn) spawn(id);
+    for (const id of plan.drain) {
+      const h = handles.get(id);
+      if (h) h.drain = true;
+    }
+    lastDesired = desired;
+  };
+
+  // Initial converge before the first sleep — so a `--workers 3` cron line
+  // dispatches workers immediately instead of waiting one reconcile interval.
+  reconcile();
+
+  while (Date.now() < opts.deadlineMs) {
+    const remaining = opts.deadlineMs - Date.now();
+    const sleepMs = Math.min(opts.reconcileIntervalMs, remaining);
+    if (sleepMs <= 0) break;
+    await sleepFn(sleepMs);
+    if (Date.now() >= opts.deadlineMs) break;
+    reconcile();
+  }
+
+  // Deadline reached — every worker loop also checks Date.now() against the
+  // shared deadlineMs, so they'll exit on their own. Await to collect.
+  await Promise.allSettled([...handles.values()].map(h => h.promise));
 }
 
 interface WorkerIterationOpts {
@@ -557,6 +756,11 @@ interface WorkerLoopOpts {
   agentName?: string;
   claudeBin?: string;
   graceSeconds?: number;
+  // Pool supervisor sets this flag (via the callback) when the worker should
+  // exit gracefully — typically a scale-down via `tpm config set workers N`.
+  // Checked at the top of each loop iteration so any in-flight task finishes
+  // before the worker exits (no SIGKILL on the agent). Absent: never drain.
+  shouldDrain?: () => boolean;
 }
 
 // A worker loop: claim → run → release, repeat until the pool deadline. Sleeps
@@ -568,7 +772,12 @@ async function runWorkerLoop(opts: WorkerLoopOpts): Promise<OrchestrateResult> {
   log("INFO", `worker start`);
   let lastResult: OrchestrateResult = { exitCode: 0 };
   let idleSinceLog = false;
+  let stopReason = "deadline reached";
   while (Date.now() < opts.deadlineMs) {
+    if (opts.shouldDrain?.()) {
+      stopReason = "drained (pool scaled down)";
+      break;
+    }
     const result = await runWorkerIteration({
       root: opts.root,
       cfg: opts.cfg,
@@ -578,6 +787,13 @@ async function runWorkerLoop(opts: WorkerLoopOpts): Promise<OrchestrateResult> {
       graceSeconds: opts.graceSeconds,
     });
     lastResult = result;
+    if (opts.shouldDrain?.()) {
+      // Drain flipped while the iteration was in flight (the documented
+      // scale-down case: "finish any in-flight task, release the lock,
+      // exit"). The iteration's finally{} already released the per-task lock.
+      stopReason = "drained (pool scaled down)";
+      break;
+    }
     if (result.exitCode === 1) {
       // No eligible task (or all repos busy). Sleep until either work appears
       // or the deadline passes. Re-log only on the first idle in a streak so
@@ -588,13 +804,33 @@ async function runWorkerLoop(opts: WorkerLoopOpts): Promise<OrchestrateResult> {
       }
       const remaining = opts.deadlineMs - Date.now();
       if (remaining <= 0) break;
-      await sleep(Math.min(WORKER_IDLE_SLEEP_MS, remaining));
+      // Wake early on drain so a scale-down doesn't have to wait out the full
+      // idle interval before the worker exits.
+      await sleepInterruptible(
+        Math.min(WORKER_IDLE_SLEEP_MS, remaining),
+        () => opts.shouldDrain?.() === true,
+      );
       continue;
     }
     idleSinceLog = false;
   }
-  log("INFO", `worker stop (deadline reached)`);
+  log("INFO", `worker stop (${stopReason})`);
   return lastResult;
+}
+
+// Sleep up to `ms`, waking early if `shouldWake()` returns true. Poll cadence
+// is 1s (short enough that a drain signal is honored quickly, long enough that
+// an idle pool isn't burning CPU on the predicate). Used by the worker loop's
+// idle sleep so a scale-down doesn't have to wait out WORKER_IDLE_SLEEP_MS.
+async function sleepInterruptible(ms: number, shouldWake: () => boolean): Promise<void> {
+  const deadline = Date.now() + ms;
+  const pollMs = 1_000;
+  while (Date.now() < deadline) {
+    if (shouldWake()) return;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return;
+    await sleep(Math.min(pollMs, remaining));
+  }
 }
 
 // One orchestrator iteration. Originally the whole body of `runOrchestrate`;

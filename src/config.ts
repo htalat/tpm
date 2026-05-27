@@ -14,6 +14,13 @@ export interface Config {
   // and per-project `agent:` frontmatter overrides this; the orchestrator's
   // `--agent <name>` flag wins over both. See src/agent_cli.ts.
   agent?: string;
+  // Desired worker pool size for `tpm orchestrate`. Re-read each reconcile
+  // tick so `tpm config set workers N` adjusts the live pool without
+  // restarting the process. `0` parks the pool (no workers; orchestrate
+  // keeps watching the config). Negative / non-integer values are clamped
+  // to 1 by the orchestrator with a warning — config.ts permits any finite
+  // number so a hand-edited bad value doesn't crash every consumer.
+  workers?: number;
 }
 
 export interface NotificationsConfig {
@@ -64,6 +71,9 @@ export function readConfig(): Config {
   if (record.agent !== undefined) {
     cfg.agent = expectString(record.agent, "agent");
   }
+  if (record.workers !== undefined) {
+    cfg.workers = expectFiniteNumber(record.workers, "workers");
+  }
   return cfg;
 }
 
@@ -95,6 +105,18 @@ function expectString(value: unknown, field: string): string {
 function expectPositiveInt(value: unknown, field: string): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     throw new Error(`${CONFIG_PATH}: "${field}" must be a positive integer, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+// Permissive number validator: rejects non-number/non-finite types so the
+// caller is guaranteed `typeof value === "number"`, but accepts zero,
+// negatives, and floats. Callers that need stricter semantics (e.g. clamp
+// bad values to 1 at runtime) apply their own logic — see clampWorkers in
+// src/orchestrate.ts.
+function expectFiniteNumber(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${CONFIG_PATH}: "${field}" must be a finite number, got ${JSON.stringify(value)}`);
   }
   return value;
 }

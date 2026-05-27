@@ -110,6 +110,26 @@ test("readConfig: rejects non-positive or non-integer time_bound_minutes", () =>
   }
 });
 
+test("readConfig: accepts workers as any finite number (clamping is the orchestrator's job)", () => {
+  // The orchestrator clamps bad runtime values (clampWorkers in
+  // src/orchestrate.ts) to 1 with a warning rather than crashing the pool on
+  // a hand-edited config; the reader just enforces a number type so
+  // downstream callers don't need to handle string/array shapes.
+  writeConfig({ root: "/x" });
+  for (const ok of [0, 1, 3, -1, 1.5]) {
+    writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x", workers: ok }));
+    assert.deepEqual(readConfig(), { root: "/x", workers: ok });
+  }
+});
+
+test("readConfig: rejects non-number workers (NaN / string / array)", () => {
+  writeConfig({ root: "/x" });
+  for (const bad of ["3", null, [], { n: 1 }, true, NaN, Infinity]) {
+    writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x", workers: bad }));
+    assert.throws(() => readConfig(), /"workers" must be a finite number/);
+  }
+});
+
 test("readConfig: accepts notifications block (any subset of keys)", () => {
   writeConfig({ root: "/x" });
   writeFileSync(CONFIG_PATH, JSON.stringify({
