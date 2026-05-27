@@ -707,9 +707,7 @@ function renderIndex(projects: Project[], projectFilter: string | null, prCache:
     ? `<p class="meta">Filtered by project <code>${esc(projectFilter)}</code> · <a href="/">show all</a></p>`
     : "";
 
-  const flashBanner = flash
-    ? `<div class="flash">${esc(flash)} <a class="flash-dismiss" href="/">dismiss</a></div>`
-    : "";
+  const flashBanner = renderFlashBanner(flash, "/");
 
   const body = `
 ${projectChips(projects, null)}
@@ -949,9 +947,7 @@ function renderTask(
     ? ""
     : `<dt>Autonomous</dt><dd>${esc(allowField)}</dd>`;
 
-  const flashBanner = opts.flash
-    ? `<div class="flash">${esc(opts.flash)} <a class="flash-dismiss" href="${esc(taskHref(project, task))}">dismiss</a></div>`
-    : "";
+  const flashBanner = renderFlashBanner(opts.flash, taskHref(project, task));
 
   const taskUrl = taskHref(project, task);
 
@@ -2123,6 +2119,18 @@ function extractSection(body: string, heading: string): string | null {
   if (!m) return null;
   const content = m[1].trim().replace(/^<!--[\s\S]*?-->\s*/g, "").trim();
   return content.length ? content : null;
+}
+
+// Inline auto-dismiss for the post-mutation flash banner. Strips `?flash=`
+// from the URL on load (so a manual refresh doesn't re-render stale
+// confirmations through the 30s auto-refresh), then fades the banner out
+// after 3s. The dismiss link remains as an immediate-dismiss escape hatch.
+const FLASH_AUTO_DISMISS_SCRIPT = `(function(){var f=document.querySelector('.flash');if(!f)return;try{var u=new URL(location.href);if(u.searchParams.has('flash')){u.searchParams.delete('flash');var q=u.searchParams.toString();history.replaceState(null,'',u.pathname+(q?'?'+q:'')+u.hash);}}catch(e){}setTimeout(function(){f.classList.add('flash-fade');setTimeout(function(){if(f.parentNode)f.parentNode.removeChild(f);},250);},3000);})();`;
+
+function renderFlashBanner(message: string | undefined, dismissHref: string): string {
+  if (!message) return "";
+  return `<div class="flash" role="status" aria-live="polite">${esc(message)} <a class="flash-dismiss" href="${esc(dismissHref)}">dismiss</a></div>
+<script>${FLASH_AUTO_DISMISS_SCRIPT}</script>`;
 }
 
 function layout(title: string, body: string, opts: { autoRefresh?: number } = {}): string {
