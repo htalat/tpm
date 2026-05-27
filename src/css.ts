@@ -151,7 +151,8 @@ body { max-width: 1600px; }
   .run-list li { border-color: #21262d; }
   .run-list-ts { color: #8d96a0; }
 }
-.flash { margin: 0 0 1rem; padding: .55rem .85rem; border-radius: 6px; background: #fff8c5; border: 1px solid #d4a72c; color: #57606a; font-size: .9em; display: flex; gap: .75rem; align-items: center; justify-content: space-between; }
+.flash { margin: 0 0 1rem; padding: .55rem .85rem; border-radius: 6px; background: #fff8c5; border: 1px solid #d4a72c; color: #57606a; font-size: .9em; display: flex; gap: .75rem; align-items: center; justify-content: space-between; opacity: 1; transition: opacity .25s ease-out; }
+.flash.flash-fade { opacity: 0; }
 .flash a.flash-dismiss { color: #57606a; font-size: .8em; }
 .task-actions { margin-top: 2rem; padding-top: 1rem; border-top: 2px solid #d0d7de; }
 .task-actions h2 { font-size: 1.05rem; margin-top: 0; padding-bottom: .2rem; border: 0; }

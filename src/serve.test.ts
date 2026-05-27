@@ -1066,9 +1066,29 @@ test("renderProject: project page rows do NOT render the play button", () => {
 test("renderIndex: flash banner renders when opts.flash is present (e.g. after a play-button promote)", () => {
   const p = project("alpha", [task("001-r", "ready")]);
   const r = route("/", new URLSearchParams(), [p], { flash: "alpha/001-open -> ready" });
-  assert.match(r.body, /<div class="flash">[\s\S]*alpha\/001-open -&gt; ready/);
+  assert.match(r.body, /<div class="flash"[^>]*>[\s\S]*alpha\/001-open -&gt; ready/);
   // Dismiss link points back to the dashboard root, not a task page.
   assert.match(r.body, /<a class="flash-dismiss" href="\/">/);
+});
+
+test("flash banner: auto-dismiss script + aria-live ship with the banner", () => {
+  // After a mutation the page redirects with `?flash=`. The inline script
+  // (1) strips `?flash=` via history.replaceState so the 30s auto-refresh
+  // doesn't re-render stale confirmations, and (2) removes the banner after
+  // ~3s. aria-live="polite" announces to screen readers before removal.
+  const p = project("alpha", [task("001-r", "ready")]);
+  const r = route("/", new URLSearchParams(), [p], { flash: "alpha/001-r -> in-progress" });
+  assert.match(r.body, /class="flash"[^>]*aria-live="polite"/);
+  assert.match(r.body, /history\.replaceState/);
+  assert.match(r.body, /flash-fade/);
+  assert.match(r.body, /setTimeout/);
+});
+
+test("flash banner: no banner, no script, when flash is absent", () => {
+  const p = project("alpha", [task("001-r", "ready")]);
+  const r = route("/", new URLSearchParams(), [p]);
+  assert.doesNotMatch(r.body, /class="flash"/);
+  assert.doesNotMatch(r.body, /history\.replaceState/);
 });
 
 // ---- report flow (investigation deliverable) ------------------------------
