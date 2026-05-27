@@ -33,11 +33,16 @@ export const AGENT_CLIS: Record<string, AgentCli> = {
     // claude to emit NDJSON events as they happen; without it the CLI only
     // prints the final message. `--add-dir` is redundant with spawn `cwd`
     // (task 084) but harmless and documents the allowed scope explicitly.
+    // `--disallowed-tools AskUserQuestion` is the structural belt to task
+    // 085's prompt-side rule: an orchestrator run has no human on the other
+    // end, so the question tool is dead weight — deny it at the CLI surface
+    // so a prompt regression can't reintroduce the halt.
     buildArgs: (prompt, repoLocal) => [
       "-p",
       "--add-dir", repoLocal,
       "--output-format", "stream-json",
       "--verbose",
+      "--disallowed-tools", "AskUserQuestion",
       prompt,
     ],
   },
