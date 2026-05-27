@@ -15,6 +15,7 @@ import {
   ORCHESTRATOR_CLAIM_VERB,
   parsePrUrls,
   repoGuardAction,
+  resolvePoolShape,
   resolveTimeBound,
   runWithTimeout,
   shouldAutoRevert,
@@ -1327,5 +1328,176 @@ test("spawn-failure rollback: needs-feedback round bounces back to needs-feedbac
     assert.match(text, /: claim failed: agent spawn failed .* reverted to needs-feedback$/m);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- worker pool shape (task 111) ----------------------------------------
+
+test("resolvePoolShape: defaults to 1 worker when --workers is omitted", () => {
+  assert.deepEqual(resolvePoolShape({}), { workers: 1 });
+});
+
+test("resolvePoolShape: accepts a positive integer", () => {
+  assert.deepEqual(resolvePoolShape({ workers: 4 }), { workers: 4 });
+});
+
+test("resolvePoolShape: rejects zero / negative / non-integer worker counts", () => {
+  assert.throws(() => resolvePoolShape({ workers: 0 }), /positive integer/);
+  assert.throws(() => resolvePoolShape({ workers: -1 }), /positive integer/);
+  assert.throws(() => resolvePoolShape({ workers: 2.5 }), /positive integer/);
+});
+
+test("resolvePoolShape: accepts a --cli list when its length matches --workers", () => {
+  assert.deepEqual(
+    resolvePoolShape({ workers: 2, cliPerWorker: ["claude", "copilot"] }),
+    { workers: 2 },
+  );
+});
+
+test("resolvePoolShape: rejects a --cli list whose length differs from --workers", () => {
+  // The whole point of per-worker CLI is to pin which agent each slot runs;
+  // a length mismatch is almost always a typo and silently dropping/truncating
+  // would dispatch the wrong CLI for the unnamed slots.
+  assert.throws(
+    () => resolvePoolShape({ workers: 2, cliPerWorker: ["claude"] }),
+    /--cli has 1 entries but --workers is 2/,
+  );
+  assert.throws(
+    () => resolvePoolShape({ workers: 1, cliPerWorker: ["claude", "copilot"] }),
+    /--cli has 2 entries but --workers is 1/,
+  );
+});
+
+test("resolvePoolShape: --cli alone (no --workers) only validates against the default of 1", () => {
+  // If you pass --cli without --workers, you implicitly opted into a one-worker
+  // pool — any list longer than that is a mismatch the operator should fix.
+  assert.deepEqual(resolvePoolShape({ cliPerWorker: ["claude"] }), { workers: 1 });
+  assert.throws(
+    () => resolvePoolShape({ cliPerWorker: ["claude", "copilot"] }),
+    /--cli has 2 entries but --workers is 1/,
+  );
+});
+
+// The pool's no-double-dispatch guarantee rides on the per-task lock (atomic
+// O_CREAT|O_EXCL on `~/.tpm/locks/<slug>.lock`) — exactly the contention model
+// that `tpm next --claim` already deduplicates against. The full
+// runOrchestrate pool spawns real child processes which is awkward to bring up
+// in a unit test; this test exercises the same selection+lock contract two
+// workers would race on, using the same queue+lock primitives runWorkerIteration
+// calls.
+test("worker pool: two concurrent workers pick distinct tasks via lock contention", async () => {
+  const { selectCandidates } = await import("./queue.ts");
+  const { acquireTask, releaseTask } = await import("./lock.ts");
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-orch-pool-"));
+  try {
+    // Two ready, autonomous tasks under one project. selectCandidates reads
+    // the in-memory Project[] only — no disk I/O for the tasks themselves —
+    // and acquireTask creates `<root>/.tpm/locks/` lazily.
+    const projects = [{
+      slug: "alpha",
+      path: resolve(root, "alpha", "project.md"),
+      dir: resolve(root, "alpha"),
+      data: { slug: "alpha", status: "active" },
+      body: "",
+      tasks: [
+        {
+          slug: "001-a",
+          path: resolve(root, "alpha", "tasks", "001-a.md"),
+          archived: false,
+          data: { slug: "001-a", status: "ready", allow_orchestrator: true, created: "2026-01-01 00:00 PDT" },
+          body: "",
+        },
+        {
+          slug: "002-b",
+          path: resolve(root, "alpha", "tasks", "002-b.md"),
+          archived: false,
+          data: { slug: "002-b", status: "ready", allow_orchestrator: true, created: "2026-01-01 00:01 PDT" },
+          body: "",
+        },
+      ],
+    }];
+    const candidates = selectCandidates(projects as unknown as Parameters<typeof selectCandidates>[0], { autonomous: true });
+    assert.equal(candidates.length, 2);
+
+    // Simulate two workers picking in parallel: each grabs the first claimable
+    // candidate. The atomic `wx` open guarantees one acquire per slug.
+    const claimed: Array<{ workerId: string; slug: string }> = [];
+    function walkAndClaim(workerId: string): string | null {
+      for (const c of candidates) {
+        const slug = `alpha/${c.task.slug}`;
+        const r = acquireTask(root, slug, workerId);
+        if (r.acquired) return slug;
+      }
+      return null;
+    }
+    const a = walkAndClaim("worker-1");
+    const b = walkAndClaim("worker-2");
+    if (a) claimed.push({ workerId: "worker-1", slug: a });
+    if (b) claimed.push({ workerId: "worker-2", slug: b });
+
+    // Both workers should have claimed; the slugs should be distinct.
+    assert.equal(claimed.length, 2, `expected two claims, got ${claimed.length}`);
+    assert.notEqual(claimed[0].slug, claimed[1].slug);
+
+    // Cleanup: both workers can release the lock they hold.
+    for (const c of claimed) {
+      const r = releaseTask(root, c.slug, c.workerId);
+      assert.equal(r.released, true, `worker ${c.workerId} should release its own lock`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("worker pool: a third worker finds nothing claimable once two locks are held", async () => {
+  // The pool can't dispatch the same task twice — once a worker holds a per-
+  // task lock, sibling workers walking the same candidate list see EEXIST and
+  // fall through. With only two tasks and two locks held, the third worker's
+  // pick must come back empty.
+  const { selectCandidates } = await import("./queue.ts");
+  const { acquireTask } = await import("./lock.ts");
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-orch-pool-third-"));
+  try {
+    const projects = [{
+      slug: "alpha",
+      path: resolve(root, "alpha", "project.md"),
+      dir: resolve(root, "alpha"),
+      data: { slug: "alpha", status: "active" },
+      body: "",
+      tasks: [
+        {
+          slug: "001-a",
+          path: resolve(root, "alpha", "tasks", "001-a.md"),
+          archived: false,
+          data: { slug: "001-a", status: "ready", allow_orchestrator: true, created: "2026-01-01 00:00 PDT" },
+          body: "",
+        },
+        {
+          slug: "002-b",
+          path: resolve(root, "alpha", "tasks", "002-b.md"),
+          archived: false,
+          data: { slug: "002-b", status: "ready", allow_orchestrator: true, created: "2026-01-01 00:01 PDT" },
+          body: "",
+        },
+      ],
+    }];
+    const candidates = selectCandidates(projects as unknown as Parameters<typeof selectCandidates>[0], { autonomous: true });
+
+    assert.equal(acquireTask(root, "alpha/001-a", "worker-1").acquired, true);
+    assert.equal(acquireTask(root, "alpha/002-b", "worker-2").acquired, true);
+    // The third worker walks the same candidate list and finds every slug
+    // already locked — exactly the "all eligible tasks claimable but repos
+    // busy or task-locked" case noPickLogEntry reports.
+    let thirdClaim: string | null = null;
+    for (const c of candidates) {
+      const slug = `alpha/${c.task.slug}`;
+      if (acquireTask(root, slug, "worker-3").acquired) {
+        thirdClaim = slug;
+        break;
+      }
+    }
+    assert.equal(thirdClaim, null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

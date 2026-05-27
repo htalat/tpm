@@ -9,7 +9,6 @@ import { archiveTask, foldTask, loadProjects, flatTasks, rollupStatus, taskHasRe
 import type { Task } from "./tree.ts";
 import { selectNext, selectCandidates, inboxItems } from "./queue.ts";
 import { resolveSameRepoStrategy } from "./strategy.ts";
-import { affinityFor, readAgentsRegistry, setAgent, removeAgent, AGENTS_PATH } from "./agents.ts";
 import { findTask, findRepoTarget } from "./resolve.ts";
 import { init } from "./init.ts";
 import { CONFIG_PATH, readConfig } from "./config.ts";
@@ -518,17 +517,7 @@ try {
       // Skip a stale-lock sweep first as a hygiene step.
       const ttl = staleTtlDefault(root);
       lock.releaseStaleTaskLocks(root, ttl);
-      let candidates = selectCandidates(projects, { projectFilter, autonomous, hasTaskLock });
-      // Apply agent affinity: if the agent has prefer_repos configured AND
-      // --any-repo is not set, restrict to candidates whose project slug
-      // matches. Agents with no entry (or empty prefer_repos) see all.
-      const anyRepo = args.includes("--any-repo");
-      if (!anyRepo) {
-        const prefer = affinityFor(claimAgent);
-        if (prefer.length > 0) {
-          candidates = candidates.filter(c => prefer.includes(c.project.slug));
-        }
-      }
+      const candidates = selectCandidates(projects, { projectFilter, autonomous, hasTaskLock });
       for (const c of candidates) {
         const slug = qualifySlug(c.project.slug, c.task);
         const strategy = resolveSameRepoStrategy(c.project);
@@ -617,16 +606,30 @@ try {
       const claudeArg = parseFlag(args, "--claude");
       const agentArg = parseFlag(args, "--agent");
       const taskArg = parseFlag(args, "--task");
+      const workersArg = parseFlag(args, "--workers");
+      const cliArg = parseFlag(args, "--cli");
       const opts: {
         minutesOverride?: number;
         claudeBin?: string;
         agentName?: string;
         preClaimedTask?: string;
+        workers?: number;
+        cliPerWorker?: string[];
       } = {};
       if (minutesArg !== undefined) {
         const n = Number(minutesArg);
         if (!Number.isInteger(n) || n <= 0) usage("--minutes must be a positive integer");
         opts.minutesOverride = n;
+      }
+      if (workersArg !== undefined) {
+        const n = Number(workersArg);
+        if (!Number.isInteger(n) || n <= 0) usage("--workers must be a positive integer");
+        opts.workers = n;
+      }
+      if (cliArg !== undefined) {
+        const list = cliArg.split(",").map(s => s.trim()).filter(s => s.length > 0);
+        if (list.length === 0) usage("--cli must list at least one agent name");
+        opts.cliPerWorker = list;
       }
       // `--claude <path>` is the pre-092 flag — kept as a back-compat alias
       // that pins the agent to claude AND overrides its bin path. `--agent
@@ -639,46 +642,6 @@ try {
       if (taskArg !== undefined) opts.preClaimedTask = taskArg;
       const r = await runOrchestrate(opts);
       process.exit(r.exitCode);
-    }
-    case "agents": {
-      const sub = args[1];
-      switch (sub) {
-        case "list": {
-          const reg = readAgentsRegistry();
-          const entries = Object.entries(reg.agents);
-          if (entries.length === 0) {
-            console.log(`no agents in ${AGENTS_PATH}`);
-            break;
-          }
-          const idW = Math.max("AGENT-ID".length, ...entries.map(([id]) => id.length));
-          const reposW = Math.max("PREFER_REPOS".length, ...entries.map(([, e]) => (e.prefer_repos.join(", ") || "(any)").length));
-          console.log(`${pad("AGENT-ID", idW)}  ${pad("PREFER_REPOS", reposW)}  COMMENT`);
-          for (const [id, e] of entries) {
-            const repos = e.prefer_repos.length ? e.prefer_repos.join(", ") : "(any)";
-            console.log(`${pad(id, idW)}  ${pad(repos, reposW)}  ${e.comment ?? ""}`);
-          }
-          break;
-        }
-        case "add": {
-          const id = args[2];
-          const repo = parseFlag(args, "--repo");
-          const comment = parseFlag(args, "--comment");
-          if (!id || !repo) usage('tpm agents add <agent-id> --repo <project-slug> [--comment "..."]');
-          setAgent(id, repo, comment);
-          console.log(`added ${id} -> ${repo}`);
-          break;
-        }
-        case "remove": {
-          const id = args[2];
-          if (!id) usage("tpm agents remove <agent-id>");
-          const removed = removeAgent(id);
-          console.log(removed ? `removed ${id}` : `no entry for ${id}`);
-          break;
-        }
-        default:
-          usage("tpm agents list | add <id> --repo <slug> [--comment <s>] | remove <id>");
-      }
-      break;
     }
     case "inbox": {
       const root = findRoot();
@@ -957,15 +920,15 @@ Usage:
   tpm drift-check <project | task>           verify the project's repo.local is on its default branch + clean
   tpm migrate reports                        one-shot: move flat <project>/reports/<slug>.md files into <project>/tasks/<slug>/report.md (auto-folds file-form tasks) and strip legacy report: frontmatter; safe to re-run
   tpm migrate runs                           one-shot: move flat ~/.tpm/runs/*.log captures into each task's own <task>/runs/<utc>.log (auto-folds file-form tasks); unresolvable files land in ~/.tpm/runs/orphans/; safe to re-run
-  tpm next [--project <slug>] [--autonomous] [--claim <id>] [--any-repo]
-                                             print next leaf task (needs-feedback > ready, oldest first); --claim atomically locks; affinity from ~/.tpm/agents.json applies unless --any-repo
-  tpm agents list                            print the per-host agent registry
-  tpm agents add <id> --repo <slug> [--comment <s>]   register an agent's preferred repo
-  tpm agents remove <id>                     drop an agent entry
+  tpm next [--project <slug>] [--autonomous] [--claim <id>]
+                                             print next leaf task (needs-feedback > ready, oldest first); --claim atomically locks
   tpm inbox                                  list human-queue tasks (needs-review, blocked, open) cross-project
-  tpm orchestrate [--minutes <N>] [--agent <name>] [--claude <path>] [--task <slug>]
-                                             pick next --autonomous task (or --task pre-claimed) and run the agent CLI (claude, copilot, …) with a hard time bound;
-                                             --claude <path> is a back-compat alias that pins the agent to claude with a bin override
+  tpm orchestrate [--workers <N>] [--cli claude,copilot,…] [--minutes <N>] [--agent <name>] [--claude <path>] [--task <slug>]
+                                             run a pool of N concurrent worker loops in one invocation (default: 1).
+                                             each worker claims its own task via lock; --minutes is a pool-shared deadline.
+                                             --cli is a comma-separated CLI per worker slot (length must equal --workers).
+                                             --task pins a single pre-claimed task (--workers ignored).
+                                             --claude <path> is a back-compat alias that pins the agent to claude with a bin override.
   tpm poll [--dry-run]                       PR-signal poller: walk linked PRs, flip status, auto-close on merge
   tpm schedule install <name> --every <sec> -- <cmd> [args...]
                                              install a recurring job (Linux: systemd --user timer / cron fallback; Windows: Task Scheduler via schtasks)

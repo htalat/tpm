@@ -210,7 +210,7 @@ tmux attach -t tpm-loop          # peek
 tmux kill-session -t tpm-loop    # stop
 ```
 
-**3. Cron** — the most hands-off:
+**3. Cron** — the most hands-off. `tpm orchestrate` defaults to a single-worker pool; bump `--workers N` to drain in parallel from one invocation:
 
 ```sh
 which tpm                        # e.g. /opt/homebrew/bin/tpm
@@ -219,44 +219,15 @@ crontab -e
 ```
 
 ```cron
-# Every 4 hours, atomic per-task claim + drift-check, dispatched through tpm orchestrate
-0 */4 * * * TPM_AGENT_ID=nightly-runner task=$(/opt/homebrew/bin/tpm next --autonomous --claim "$TPM_AGENT_ID") && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/tpm orchestrate --task "$task" --claude /opt/homebrew/bin/claude >> ~/.tpm/orchestrator-nightly-runner.log 2>&1
+# Every 5 minutes, fan out two concurrent workers (each claims its own task)
+*/5 * * * * /opt/homebrew/bin/tpm orchestrate --workers 2 >> ~/.tpm/orchestrator.log 2>&1
 ```
 
 Substitute the absolute paths from `which`. cron has a minimal `PATH`, so absolute paths are required. The machine must be awake and logged in for cron to fire.
 
-`TPM_AGENT_ID` names the agent for `tpm lock list`, stale-lock recovery, and notification messages. Pick a stable string per cron entry (`nightly-runner`, `pr-feedback-runner`, etc.) so the lock listing is human-readable and notifications can tell you which runner pinged. For ad-hoc shell use, `${HOSTNAME}-$$` is a fine default.
+Each worker gets an auto id (`worker-1`, `worker-2`, …) used as `TPM_AGENT_ID` for lock attribution and for the `agent=<worker-id>` prefix on its envelope log lines, so a merged log file still reads cleanly. `--minutes N` (default = global time bound) is the pool-shared deadline: workers stop picking new tasks once it passes and drain whatever's in flight. Per-task locks (`~/.tpm/locks/<slug>.lock`) deduplicate against sibling workers — no double-dispatch.
 
-**Agent affinity.** When you have a "big-repo agent" with that repo's deps and credentials already set up, you don't want a different agent grabbing tasks for it. Declare per-agent preferences in `~/.tpm/agents.json`:
-
-```json
-{
-  "agents": {
-    "nightly-runner":      { "prefer_repos": ["tpm"],            "comment": "fires hourly; tpm-only" },
-    "work-bigrepo-runner": { "prefer_repos": ["acme-platform"],  "comment": "has the right env" },
-    "laptop-htalat":       { "prefer_repos": []                                                      }
-  }
-}
-```
-
-`tpm next --claim "$TPM_AGENT_ID"` filters candidates to the agent's `prefer_repos` (matched against the project slug). Agents with empty `prefer_repos` (or no entry) see all tasks. The escape hatch is `tpm next --claim ... --any-repo` — skips the filter for "I really want any task." File is per-host; never sync it via git.
-
-CLI helpers:
-
-```sh
-tpm agents list                                    # who's preferred where
-tpm agents add nightly-runner --repo tpm           # append a preferred repo
-tpm agents remove laptop-htalat                    # drop an entry
-```
-
-Backward compat: missing or empty `~/.tpm/agents.json` means "no affinity configured" — the harness behaves exactly as if the registry didn't exist.
-
-**Per-agent log files.** Redirect each cron entry's stdout/stderr to its own file (`~/.tpm/orchestrator-<agent-id>.log`) so multiple agents don't interleave their logs. Same convention for tmux loops:
-
-```sh
-tmux new -d -s tpm-loop-laptop \
-  'export TPM_AGENT_ID=tmux-laptop; while sleep 60; do task=$(tpm next --autonomous --claim "$TPM_AGENT_ID") || continue; tpm orchestrate --task "$task" --claude $(which claude); done >> ~/.tpm/orchestrator-tmux-laptop.log 2>&1'
-```
+Mix CLIs across workers with `--cli claude,copilot,…` (length must equal `--workers`). Bin paths come from the per-CLI env var (`CLAUDE_BIN`, `COPILOT_BIN`), so a cron line can pin a specific binary without code changes.
 
 `tpm lock list` is the live view of who's running what:
 
@@ -279,7 +250,8 @@ The `--autonomous` gate is the safety boundary between "an agent can run this wh
   - **`worktree`** — *declared but not implemented in v0.* Each task would get its own `git worktree add` checkout, allowing same-repo parallelism at the cost of N working trees. The frontmatter field accepts the value (so projects can pre-declare intent), but `tpm orchestrate` and `tpm next --claim` currently refuse to dispatch worktree-strategy tasks. Implementation lands in a follow-up; until then, leave the field unset (or set to `serialize`) to use the harness.
 - **Repo presence** — before spawning, the orchestrator resolves the project's `repo.local` and confirms it exists on disk (the agent's sandbox cwd has to be a real checkout). If `repo.local` is unset or the path isn't cloned yet, the task is flipped to `blocked` (the reason names the missing path) rather than skipped — so it surfaces in `tpm inbox` and drops off the `ready`/`needs-feedback` queue instead of re-failing and re-logging the same WARN on every tick. Clone (or `git init`) the repo, then `tpm ready <task>` to re-enter the autonomous queue. A task already blocked this way isn't re-blocked on a later tick.
 - **Drift check** — `tpm drift-check <task>` refuses to dispatch if the project's `repo.local` is on a non-default branch or has uncommitted changes. Manual `/tpm <slug>` runs skip this; humans can knowingly work on a dirty tree.
-- **Time bound + revert** — the dispatched run is hard-killed at the `time_bound_minutes` boundary (cascade: task > project > global config > built-in default 30m). On timeout, `tpm revert <task>` flips the task back to `ready` so the next cron tick can retry. Exit codes mirror `timeout(1)` (`124` on timeout).
+- **Time bound + revert** — each dispatched run is hard-killed at the `time_bound_minutes` boundary (cascade: task > project > global config > built-in default 30m). On timeout, `tpm revert <task>` flips the task back to `ready` so the next cron tick can retry. Exit codes mirror `timeout(1)` (`124` on timeout). In pool mode, `--minutes N` is the orchestrate-wide deadline — workers stop picking new tasks once it passes and finish whatever's in flight.
+- **Worker pool** — `--workers N` (default 1) fans out N concurrent worker loops inside one orchestrate invocation. Each worker independently picks + claims its own task via the per-task lock — no cross-worker coordination needed. Worker ids (`worker-1`, `worker-2`, …) are used both for lock attribution and as the `agent=<id>` prefix on envelope log lines so a merged log file stays readable. Mix CLIs across slots with `--cli claude,copilot,…` (length must equal `--workers`).
 - **Notifications** — desktop pings at start/finish/fail, gated by a `notifications` cascade (task > project > global config > default `{ start: false, finish: true, fail: true }`). Channels per platform: macOS uses `osascript`; Windows uses `powershell.exe` and prefers the [BurntToast](https://www.powershellgallery.com/packages/BurntToast) module (`Install-Module BurntToast` — optional but recommended), falling back to the built-in `Windows.UI.Notifications` WinRT API if BurntToast isn't installed; other platforms log to stderr and skip. `tpm notify <event> <task>` is the same hook as a CLI verb.
 
 **Agent CLI.** `tpm orchestrate` defaults to invoking `claude`. To dispatch via the GitHub Copilot CLI instead, set `agent: copilot` in task or project frontmatter (cascade: task > project > `agent` in `~/.tpm/config.json` > built-in default `claude`), or pass `--agent copilot` to the verb. The registry in `src/agent_cli.ts` lists the supported entries (today: `claude`, `copilot`); each entry knows the right NDJSON output flags and the non-interactive flag set (claude relies on `~/.claude/settings.json` plus task 085's prompt rule; copilot uses `--allow-all-tools --no-ask-user --autopilot`). Bin path comes from the matching env var — `CLAUDE_BIN`, `COPILOT_BIN` — so cron entries can pin a specific binary without code changes. For unattended copilot runs, the cron/launchd env also needs `COPILOT_GITHUB_TOKEN` (or `GH_TOKEN`). The per-run log carries a `# tpm-run agent=… outputFormat=…` header as its first line so `tpm serve`'s viewer dispatches on the right NDJSON dialect; pre-092 logs default to `claude-stream-json`.
@@ -293,9 +265,21 @@ Cron pattern combining the signal poller and the drain:
 ```cron
 # Every 15 min during work hours: flip in-flight PRs to needs-feedback / needs-review
 */15 9-19 * * 1-5   /opt/homebrew/bin/tpm poll >> ~/.tpm/recurring-poll.log 2>&1
-# Nightly: drain whatever is ready or needs-feedback + allow_orchestrator: true
-0 6 * * *    TPM_AGENT_ID=nightly-runner task=$(/opt/homebrew/bin/tpm next --autonomous --claim "$TPM_AGENT_ID") && /opt/homebrew/bin/tpm drift-check "$task" && /opt/homebrew/bin/tpm orchestrate --task "$task" --claude /opt/homebrew/bin/claude >> ~/.tpm/orchestrator-nightly-runner.log 2>&1
+# Every 5 min: drain the agent queue with two concurrent workers
+*/5 * * * *         /opt/homebrew/bin/tpm orchestrate --workers 2 >> ~/.tpm/orchestrator.log 2>&1
 ```
+
+Or as a long-running tmux loop (the equivalent of the cron pattern above):
+
+```sh
+#!/bin/bash
+trap 'kill 0' EXIT
+(while true; do tpm poll;                  echo "[poll] sleeping";        sleep 60;  done) &
+(while true; do tpm orchestrate --workers 2; echo "[orchestrate] sleeping"; sleep 300; done) &
+wait
+```
+
+Bump worker count or mix CLIs by editing one line.
 
 `tpm orchestrate` and `tpm poll` emit one structured line per event so a single log file greps + sorts cleanly:
 
@@ -388,7 +372,7 @@ claude -p "/tpm $task"
 # 4. Run via orchestrate. `tpm ready` (step 2) already set allow_orchestrator: true,
 #    so the task is autonomous-eligible — run `tpm disallow sandbox/hello-world` first
 #    if you'd rather keep it manual-only.
-tpm orchestrate --claude "$(which claude)" --minutes 5
+tpm orchestrate --minutes 5
 
 # 5. Confirm closure.
 tpm ls --status done --project sandbox
