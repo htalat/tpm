@@ -11,7 +11,7 @@ import { selectNext, selectCandidates, inboxItems } from "./queue.ts";
 import { resolveSameRepoStrategy } from "./strategy.ts";
 import { findTask, findRepoTarget } from "./resolve.ts";
 import { init } from "./init.ts";
-import { CONFIG_PATH, readConfig } from "./config.ts";
+import { CONFIG_PATH, readConfig, writeConfig } from "./config.ts";
 import { now } from "./time.ts";
 import * as mutate from "./mutate.ts";
 import * as lock from "./lock.ts";
@@ -212,6 +212,48 @@ try {
     case "now": {
       console.log(now());
       break;
+    }
+    case "config": {
+      const sub = args[1];
+      const key = args[2];
+      if (sub === "get") {
+        if (!key) usage("tpm config get <key>");
+        const cfg = readConfig();
+        // `workers` is the only key plumbed through CLI today; other keys
+        // (root/timezone/...) have purpose-built verbs (`tpm root`, `tpm now`).
+        // We surface the known-key list explicitly so unknown keys fail loudly
+        // instead of returning a misleading empty string.
+        if (!isKnownConfigKey(key)) {
+          usage(`tpm config get <key>: unknown key "${key}" (known: ${KNOWN_CONFIG_KEYS.join(", ")})`);
+        }
+        const value = (cfg as Record<string, unknown>)[key];
+        if (value === undefined) {
+          console.log("");
+        } else if (typeof value === "object") {
+          console.log(JSON.stringify(value));
+        } else {
+          console.log(String(value));
+        }
+        break;
+      }
+      if (sub === "set") {
+        const raw = args[3];
+        if (!key || raw === undefined) usage("tpm config set <key> <value>");
+        if (!isKnownConfigKey(key)) {
+          usage(`tpm config set <key> <value>: unknown key "${key}" (known: ${KNOWN_CONFIG_KEYS.join(", ")})`);
+        }
+        if (key === "workers") {
+          const n = Number(raw);
+          if (!Number.isInteger(n) || n < 0) usage("workers must be a non-negative integer");
+          const cfg = readConfig();
+          cfg.workers = n;
+          writeConfig(cfg);
+          console.log(`workers: ${n}`);
+          break;
+        }
+        usage(`tpm config set: setter for "${key}" not implemented`);
+      }
+      usage("tpm config get|set <key> [value]");
     }
     case "start": {
       const r = mutate.start(resolveLiveTask(args[1], "tpm start <task>"));
@@ -762,6 +804,17 @@ function parseFlag(args: string[], flag: string): string | undefined {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
+// Keys exposed via `tpm config get/set`. Kept short on purpose — most callers
+// want `workers` (the only one that benefits from runtime adjustment); the rest
+// of the config has purpose-built verbs (`tpm root`, `tpm now`) or is a one-
+// time bootstrap (`tpm init`). Extending this list is intentional.
+const KNOWN_CONFIG_KEYS = ["workers"] as const;
+type KnownConfigKey = (typeof KNOWN_CONFIG_KEYS)[number];
+
+function isKnownConfigKey(key: string): key is KnownConfigKey {
+  return (KNOWN_CONFIG_KEYS as readonly string[]).includes(key);
+}
+
 function resolveLiveTask(query: string | undefined, usageMsg: string): Task {
   if (!query) usage(usageMsg);
   const root = findRoot();
@@ -924,10 +977,12 @@ Usage:
                                              print next leaf task (needs-feedback > ready, oldest first); --claim atomically locks
   tpm inbox                                  list human-queue tasks (needs-review, blocked, open) cross-project
   tpm orchestrate [--workers <N>] [--cli claude,copilot,…] [--minutes <N>] [--agent <name>] [--claude <path>] [--task <slug>]
-                                             run a pool of N concurrent worker loops in one invocation (default: 1).
-                                             each worker claims its own task via lock; --minutes is a pool-shared deadline.
-                                             --cli is a comma-separated CLI per worker slot (length must equal --workers).
-                                             --task pins a single pre-claimed task (--workers ignored).
+                                             run a pool of concurrent worker loops in one invocation. pool size tracks
+                                             \`workers\` in ~/.tpm/config.json (default: 1) — \`tpm config set workers N\`
+                                             adjusts the live pool within one reconcile tick (scale-down drains).
+                                             --workers <N> is a bootstrap default used only when config.workers is unset.
+                                             --cli is a comma-separated CLI per worker slot (extra slots beyond the list use the default agent).
+                                             --task pins a single pre-claimed task (pool flags ignored).
                                              --claude <path> is a back-compat alias that pins the agent to claude with a bin override.
   tpm poll [--dry-run]                       PR-signal poller: walk linked PRs, flip status, auto-close on merge
   tpm schedule install <name> --every <sec> -- <cmd> [args...]
@@ -942,6 +997,9 @@ Usage:
   tpm root                                   print the tree root
   tpm path <project | task | project/task>   print the local repo path
   tpm now                                    timestamp in the configured timezone
+  tpm config get <key>                       read a config key from ~/.tpm/config.json (known: ${KNOWN_CONFIG_KEYS.join(", ")})
+  tpm config set <key> <value>               write a config key to ~/.tpm/config.json (e.g. \`tpm config set workers 3\`);
+                                             tpm orchestrate hot-reloads workers each reconcile tick
   tpm version                                print the installed version
 
 Layout (inside a tree):

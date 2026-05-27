@@ -7,6 +7,7 @@ import {
   buildExecutionPrompt,
   buildFeedbackPrompt,
   checkProjectRepo,
+  clampWorkers,
   classifyDisposition,
   evaluateTerminalState,
   fetchFeedbackContexts,
@@ -14,9 +15,11 @@ import {
   noPickLogEntry,
   ORCHESTRATOR_CLAIM_VERB,
   parsePrUrls,
+  planReconcile,
   repoGuardAction,
   resolvePoolShape,
   resolveTimeBound,
+  runPool,
   runWithTimeout,
   shouldAutoRevert,
 } from "./orchestrate.ts";
@@ -1500,4 +1503,269 @@ test("worker pool: a third worker finds nothing claimable once two locks are hel
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ---- hot-reload workers (task 113) -----------------------------------------
+
+test("clampWorkers: undefined/null fall through to 1 with no warning", () => {
+  assert.deepEqual(clampWorkers(undefined), { value: 1, warning: null });
+  assert.deepEqual(clampWorkers(null), { value: 1, warning: null });
+});
+
+test("clampWorkers: accepts non-negative integers as-is", () => {
+  // 0 is the documented "park the pool" value — not clamped.
+  assert.deepEqual(clampWorkers(0), { value: 0, warning: null });
+  assert.deepEqual(clampWorkers(1), { value: 1, warning: null });
+  assert.deepEqual(clampWorkers(7), { value: 7, warning: null });
+});
+
+test("clampWorkers: clamps negatives, non-integers, and bad types to 1 with a warning", () => {
+  for (const bad of [-1, -10, 1.5, NaN, Infinity, -Infinity, "3", true, [], {}]) {
+    const r = clampWorkers(bad);
+    assert.equal(r.value, 1, `clampWorkers(${JSON.stringify(bad)}) should clamp to 1`);
+    assert.ok(r.warning, `clampWorkers(${JSON.stringify(bad)}) should warn`);
+    assert.match(r.warning!, /workers must be a non-negative integer/);
+  }
+});
+
+test("planReconcile: from empty, spawns 1..desired in order", () => {
+  assert.deepEqual(planReconcile([], 0), { spawn: [], drain: [] });
+  assert.deepEqual(planReconcile([], 1), { spawn: [1], drain: [] });
+  assert.deepEqual(planReconcile([], 3), { spawn: [1, 2, 3], drain: [] });
+});
+
+test("planReconcile: scale-up adds the next free ids without disturbing existing workers", () => {
+  // 1->3: worker-1 stays; spawn 2 and 3.
+  assert.deepEqual(planReconcile([1], 3), { spawn: [2, 3], drain: [] });
+  // 2->5: spawn 3,4,5 — no churn on 1 or 2.
+  assert.deepEqual(planReconcile([1, 2], 5), { spawn: [3, 4, 5], drain: [] });
+});
+
+test("planReconcile: scale-down drains the highest ids first", () => {
+  // The plan is documented as "worker-1 survives a 3->2 scale".
+  assert.deepEqual(planReconcile([1, 2, 3], 2), { spawn: [], drain: [3] });
+  assert.deepEqual(planReconcile([1, 2, 3, 4], 1), { spawn: [], drain: [4, 3, 2] });
+});
+
+test("planReconcile: workers: 0 drains every live worker", () => {
+  assert.deepEqual(planReconcile([1, 2, 3], 0), { spawn: [], drain: [3, 2, 1] });
+});
+
+test("planReconcile: gap in live ids refills the missing slot on a scale-up", () => {
+  // Worker-2 drained out (e.g. spawn failed mid-run); the next reconcile
+  // sees ids {1,3} and a desired of 3 should refill slot 2.
+  assert.deepEqual(planReconcile([1, 3], 3), { spawn: [2], drain: [] });
+});
+
+test("planReconcile: steady state is a no-op", () => {
+  assert.deepEqual(planReconcile([1, 2, 3], 3), { spawn: [], drain: [] });
+});
+
+// Pool integration: drive runPool with fake spawnWorker / readDesired / sleep
+// so we can verify the supervisor's spawn/drain decisions without spinning up
+// real child processes. The supervisor's contract is that the worker's promise
+// resolves once shouldDrain() (or its own deadline check) tells it to exit;
+// our fake mirrors that by resolving as soon as shouldDrain() is true. Each
+// test installs its own Date.now() so the supervisor's deadline check, the
+// fake clock, and the orchestrated `sleep` callback all agree.
+interface FakeWorker {
+  id: number;
+  shouldDrain: () => boolean;
+  resolve: () => void;
+}
+
+function makeFakePool() {
+  const spawned: number[] = [];
+  const drainedAtExit: number[] = [];
+  const active = new Map<number, FakeWorker>();
+  return {
+    spawned,
+    drainedAtExit,
+    active,
+    spawnWorker(id: number, shouldDrain: () => boolean): Promise<void> {
+      spawned.push(id);
+      return new Promise<void>((resolve) => {
+        active.set(id, {
+          id,
+          shouldDrain,
+          resolve: () => {
+            if (shouldDrain()) drainedAtExit.push(id);
+            active.delete(id);
+            resolve();
+          },
+        });
+      });
+    },
+    // Resolve any worker whose drain flag has flipped (mirrors a real worker
+    // observing shouldDrain() between iterations).
+    flushDrained(): number[] {
+      const out: number[] = [];
+      for (const [id, w] of active) {
+        if (w.shouldDrain()) {
+          out.push(id);
+          w.resolve();
+        }
+      }
+      return out;
+    },
+    // Resolve every still-active worker — simulates the deadline propagating
+    // to each worker loop (the real loop's `while (Date.now() < deadlineMs)`
+    // exits too). Used at the end of a test to let Promise.allSettled return.
+    resolveAll(): void {
+      for (const w of [...active.values()]) w.resolve();
+    },
+  };
+}
+
+test("runPool: initial converge spawns workers up to the desired count", async () => {
+  const fake = makeFakePool();
+  const logs: Array<[string, string]> = [];
+  let now = 1000;
+  const realNow = Date.now;
+  Date.now = () => now;
+  try {
+    const deadlineMs = now + 60_000;
+    let tick = 0;
+    await runPool({
+      initialDesired: 3,
+      deadlineMs,
+      reconcileIntervalMs: 10,
+      readDesired: () => 3,
+      spawnWorker: (id, shouldDrain) => fake.spawnWorker(id, shouldDrain),
+      log: (level, msg) => logs.push([level, msg]),
+      sleep: async () => {
+        tick++;
+        // Initial reconcile fires before the first sleep. On the first sleep
+        // tick, simulate the deadline arriving: resolve every worker (their
+        // own loop would do this on `Date.now() < deadlineMs` going false)
+        // and push the clock past the deadline so runPool exits.
+        if (tick === 1) {
+          fake.resolveAll();
+          now = deadlineMs + 1;
+        }
+      },
+    });
+  } finally {
+    Date.now = realNow;
+  }
+  assert.deepEqual(fake.spawned, [1, 2, 3], "initial reconcile should spawn workers 1..3");
+  assert.ok(
+    logs.some(([l, m]) => l === "INFO" && /workers: 0 -> 3.*spawning worker-1, worker-2, worker-3/.test(m)),
+    `expected initial-spawn log, got: ${logs.map(([, m]) => m).join(" | ")}`,
+  );
+});
+
+test("runPool: scale-down marks the highest worker ids for drain — worker-1 survives", async () => {
+  const fake = makeFakePool();
+  const logs: Array<[string, string]> = [];
+  let desired = 3;
+  let tick = 0;
+  let now = 1000;
+  const realNow = Date.now;
+  Date.now = () => now;
+  try {
+    const deadlineMs = now + 60_000;
+    await runPool({
+      initialDesired: 3,
+      deadlineMs,
+      reconcileIntervalMs: 10,
+      readDesired: () => desired,
+      spawnWorker: (id, shouldDrain) => fake.spawnWorker(id, shouldDrain),
+      log: (level, msg) => logs.push([level, msg]),
+      sleep: async () => {
+        tick++;
+        if (tick === 1) {
+          // Initial spawn done. Scale down 3 -> 1 before the next reconcile.
+          desired = 1;
+        } else if (tick === 2) {
+          // After the reconcile flipped drain on workers 2 and 3, let them
+          // observe the flag and resolve (mirrors a real worker checking
+          // shouldDrain() at the top of its next iteration).
+          fake.flushDrained();
+          // Then propagate the deadline to worker-1 so the supervisor exits.
+          fake.resolveAll();
+          now = deadlineMs + 1;
+        }
+      },
+    });
+  } finally {
+    Date.now = realNow;
+  }
+
+  assert.deepEqual(fake.spawned, [1, 2, 3]);
+  // Workers 2 and 3 exited because shouldDrain() was true — the documented
+  // "scale-down picks the highest-id workers first" rule. Worker-1 exited
+  // because the deadline propagated (shouldDrain() false), so it isn't in
+  // the drained set.
+  assert.deepEqual(fake.drainedAtExit.sort((a, b) => a - b), [2, 3]);
+  assert.ok(
+    logs.some(([l, m]) => l === "INFO" && /workers: 3 -> 1.*draining worker-3, worker-2/.test(m)),
+    `expected a 3->1 drain log, got: ${logs.map(([, m]) => m).join(" | ")}`,
+  );
+});
+
+test("runPool: workers: 0 parks the pool — no spawns, supervisor keeps ticking", async () => {
+  const fake = makeFakePool();
+  const logs: Array<[string, string]> = [];
+  let now = 1000;
+  let tick = 0;
+  const realNow = Date.now;
+  Date.now = () => now;
+  try {
+    const deadlineMs = now + 60_000;
+    await runPool({
+      initialDesired: 0,
+      deadlineMs,
+      reconcileIntervalMs: 10,
+      readDesired: () => 0,
+      spawnWorker: (id, shouldDrain) => fake.spawnWorker(id, shouldDrain),
+      log: (level, msg) => logs.push([level, msg]),
+      sleep: async () => {
+        tick++;
+        // No workers exist; just advance through a couple of ticks and exit.
+        if (tick >= 2) now = deadlineMs + 1;
+      },
+    });
+  } finally {
+    Date.now = realNow;
+  }
+  assert.deepEqual(fake.spawned, [], "no workers should spawn when desired = 0");
+  // Supervisor still tick'd a couple of times (proving it doesn't exit just
+  // because the pool is empty — a later `tpm config set workers N` would
+  // flip it on without restart).
+  assert.ok(tick >= 2, "supervisor should keep ticking with an empty pool");
+});
+
+test("runPool: a bad config value (clamped to 1) reconciles to a single worker", async () => {
+  // Verifies the end-to-end behavior of clampWorkers + planReconcile via
+  // runPool: when readDesired returns the clamped value 1 (callers are
+  // expected to apply clampWorkers before passing it through), the pool
+  // converges to one worker regardless of the raw bad input.
+  const fake = makeFakePool();
+  let now = 1000;
+  let tick = 0;
+  const realNow = Date.now;
+  Date.now = () => now;
+  try {
+    const deadlineMs = now + 60_000;
+    await runPool({
+      initialDesired: 1,
+      deadlineMs,
+      reconcileIntervalMs: 10,
+      // Simulate config.workers = -5 → clampWorkers(-5).value = 1.
+      readDesired: () => clampWorkers(-5).value,
+      spawnWorker: (id, shouldDrain) => fake.spawnWorker(id, shouldDrain),
+      log: () => {},
+      sleep: async () => {
+        tick++;
+        if (tick === 1) {
+          fake.resolveAll();
+          now = deadlineMs + 1;
+        }
+      },
+    });
+  } finally {
+    Date.now = realNow;
+  }
+  assert.deepEqual(fake.spawned, [1], "bad value clamped to 1 should still spawn worker-1");
 });
