@@ -32,6 +32,21 @@ const VERSION = readVersion();
 const args = process.argv.slice(2);
 const cmd = args[0];
 
+// Hoisted above the dispatch (not parked next to the other helpers below)
+// because the `help`, `config get`, and `config set` case branches all run
+// during top-level switch evaluation and read these — leaving the const
+// below the switch put them in the TDZ and crashed `tpm help`.
+// Keys exposed via `tpm config get/set`. Kept short on purpose — most callers
+// want `workers` (the only one that benefits from runtime adjustment); the rest
+// of the config has purpose-built verbs (`tpm root`, `tpm now`) or is a one-
+// time bootstrap (`tpm init`). Extending this list is intentional.
+const KNOWN_CONFIG_KEYS = ["workers"] as const;
+type KnownConfigKey = (typeof KNOWN_CONFIG_KEYS)[number];
+
+function isKnownConfigKey(key: string): key is KnownConfigKey {
+  return (KNOWN_CONFIG_KEYS as readonly string[]).includes(key);
+}
+
 try {
   switch (cmd) {
     case "new": {
@@ -802,17 +817,6 @@ try {
 function parseFlag(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
   return i >= 0 ? args[i + 1] : undefined;
-}
-
-// Keys exposed via `tpm config get/set`. Kept short on purpose — most callers
-// want `workers` (the only one that benefits from runtime adjustment); the rest
-// of the config has purpose-built verbs (`tpm root`, `tpm now`) or is a one-
-// time bootstrap (`tpm init`). Extending this list is intentional.
-const KNOWN_CONFIG_KEYS = ["workers"] as const;
-type KnownConfigKey = (typeof KNOWN_CONFIG_KEYS)[number];
-
-function isKnownConfigKey(key: string): key is KnownConfigKey {
-  return (KNOWN_CONFIG_KEYS as readonly string[]).includes(key);
 }
 
 function resolveLiveTask(query: string | undefined, usageMsg: string): Task {
