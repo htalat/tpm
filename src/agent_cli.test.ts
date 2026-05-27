@@ -51,6 +51,8 @@ test("registry: claude entry disallows AskUserQuestion structurally", () => {
   // is non-interactive (`-p`), so the question tool can only ever halt — the
   // structural deny here means a prompt regression can't put it back. If the
   // flag spelling changes upstream, the assertion below is what catches it.
+  // Copilot has no analogous `--disallowed-tools` flag, but its own
+  // `--no-ask-user` (covered by the copilot test below) closes the same gap.
   const args = AGENT_CLIS["claude"].buildArgs("P", "/r");
   const idx = args.indexOf("--disallowed-tools");
   assert.notEqual(idx, -1, "claude args must include --disallowed-tools");
