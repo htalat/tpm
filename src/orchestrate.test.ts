@@ -10,7 +10,6 @@ import {
   checkProjectRepo,
   clampWorkers,
   classifyDisposition,
-  ensureFreshMain,
   evaluateTerminalState,
   fetchFeedbackContexts,
   formatDispositionLine,
@@ -951,163 +950,14 @@ test("repoGuardAction: missing repo on an already-blocked task → skip (idempot
   assert.deepEqual(repoGuardAction("blocked", check), { action: "skip" });
 });
 
-// Fresh-main precondition (task 118). Integration tests against a real
-// local-and-"remote" pair of git repos so we exercise the actual git argument
-// list (mocking would let the shell pass while silently regressing the
-// commands).
-function gitTest(cwd: string, args: string[]): void {
-  execFileSync("git", args, {
-    cwd,
-    stdio: ["ignore", "ignore", "ignore"],
-    env: {
-      ...process.env,
-      GIT_AUTHOR_NAME: "test",
-      GIT_AUTHOR_EMAIL: "test@example.com",
-      GIT_COMMITTER_NAME: "test",
-      GIT_COMMITTER_EMAIL: "test@example.com",
-    },
-  });
-}
-
-function setupOriginAndClone(): { origin: string; local: string; tmp: string } {
-  const tmp = mkdtempSync(resolve(tmpdir(), "tpm-orch-fresh-"));
-  const origin = join(tmp, "origin.git");
-  mkdirSync(origin);
-  gitTest(origin, ["init", "--bare", "--initial-branch=main", "--quiet"]);
-  // Seed a working repo, push to origin, then clone that as the "local".
-  const seed = join(tmp, "seed");
-  mkdirSync(seed);
-  gitTest(seed, ["init", "--initial-branch=main", "--quiet"]);
-  writeFileSync(join(seed, "README.md"), "first\n");
-  gitTest(seed, ["add", "."]);
-  gitTest(seed, ["commit", "-m", "first", "--quiet"]);
-  gitTest(seed, ["remote", "add", "origin", origin]);
-  gitTest(seed, ["push", "-u", "origin", "main", "--quiet"]);
-  const local = join(tmp, "local");
-  gitTest(tmp, ["clone", "--quiet", origin, local]);
-  return { origin, local, tmp };
-}
-
-test("ensureFreshMain: behind main → auto-pulls, leaves working tree on main", () => {
-  const { origin, local, tmp } = setupOriginAndClone();
-  try {
-    // Push a second commit through the origin via the seed clone so `local`
-    // is now one commit behind origin/main.
-    const seed = join(tmp, "seed");
-    writeFileSync(join(seed, "README.md"), "second\n");
-    gitTest(seed, ["commit", "-am", "second", "--quiet"]);
-    gitTest(seed, ["push", "origin", "main", "--quiet"]);
-    // Also check out a leftover feature branch in local so the precondition
-    // has to checkout main (the PR #120 starting state — agent inherits the
-    // last feature branch from the prior run).
-    gitTest(local, ["checkout", "-b", "leftover-feature", "--quiet"]);
-
-    const lines: string[] = [];
-    const result = ensureFreshMain(local, "tpm/118-foo", (level, msg) => {
-      lines.push(`${level} ${msg}`);
-    });
-    assert.equal(result.ok, true, `expected ok; got: ${result.reason}`);
-    // Working tree should be on main, fast-forwarded to the new commit.
-    const branch = execFileSync("git", ["symbolic-ref", "--short", "HEAD"], {
-      cwd: local, encoding: "utf8",
-    }).trim();
-    assert.equal(branch, "main");
-    const readme = readFileSync(join(local, "README.md"), "utf8");
-    assert.equal(readme, "second\n");
-    // The pull log line names the commit count so post-mortems can see the
-    // size of the gap. (Avoid the touchy global `origin` var in this scope.)
-    assert.ok(
-      lines.some(l => /pulled main fast-forward/.test(l)),
-      `expected a pulled-main log line; saw: ${JSON.stringify(lines)}`,
-    );
-    void origin;
-  } finally {
-    rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("ensureFreshMain: dirty working tree → block, doesn't touch git state", () => {
-  const { local, tmp } = setupOriginAndClone();
-  try {
-    // Make the working tree dirty (a tracked-file edit plus an untracked file).
-    writeFileSync(join(local, "README.md"), "scratched\n");
-    writeFileSync(join(local, "scratch.txt"), "ad-hoc\n");
-
-    const result = ensureFreshMain(local, "tpm/118-foo", () => {});
-    assert.equal(result.ok, false);
-    assert.match(result.reason ?? "", /dirty checkout/);
-    assert.match(result.reason ?? "", /tpm ready tpm\/118-foo/);
-    // Files still on disk untouched (the shell mustn't reset/stash).
-    assert.equal(readFileSync(join(local, "README.md"), "utf8"), "scratched\n");
-    assert.equal(readFileSync(join(local, "scratch.txt"), "utf8"), "ad-hoc\n");
-  } finally {
-    rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("ensureFreshMain: clean and up-to-date → ok, no pull log line", () => {
-  // Common case: nothing to do. The precondition should be quiet (no log spam
-  // every spawn) but still leave the tree on main.
-  const { local, tmp } = setupOriginAndClone();
-  try {
-    const lines: string[] = [];
-    const result = ensureFreshMain(local, "tpm/118-foo", (level, msg) => {
-      lines.push(`${level} ${msg}`);
-    });
-    assert.equal(result.ok, true, `expected ok; got: ${result.reason}`);
-    const branch = execFileSync("git", ["symbolic-ref", "--short", "HEAD"], {
-      cwd: local, encoding: "utf8",
-    }).trim();
-    assert.equal(branch, "main");
-    assert.equal(
-      lines.filter(l => /pulled main fast-forward/.test(l)).length,
-      0,
-      `did not expect a pulled-main log line; saw: ${JSON.stringify(lines)}`,
-    );
-  } finally {
-    rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("ensureFreshMain: diverged main (local + origin both moved) → block, surfaces git's pull error", () => {
-  // Non-FF: local main has commits the remote doesn't AND origin has commits
-  // local doesn't. `git pull --ff-only` refuses; we don't classify with
-  // rev-list ourselves — git's own error message is the diagnostic.
-  const { local, tmp } = setupOriginAndClone();
-  try {
-    // Origin moves forward via the seed clone.
-    const seed = join(tmp, "seed");
-    writeFileSync(join(seed, "README.md"), "second\n");
-    gitTest(seed, ["commit", "-am", "second", "--quiet"]);
-    gitTest(seed, ["push", "origin", "main", "--quiet"]);
-    // Local main commits something different on top of the original base.
-    writeFileSync(join(local, "local-only.txt"), "local commit\n");
-    gitTest(local, ["add", "."]);
-    gitTest(local, ["commit", "-m", "local-only", "--quiet"]);
-
-    const result = ensureFreshMain(local, "tpm/118-foo", () => {});
-    assert.equal(result.ok, false);
-    assert.match(result.reason ?? "", /git pull --ff-only failed/);
-    assert.match(result.reason ?? "", /tpm ready tpm\/118-foo/);
-  } finally {
-    rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("buildExecutionPrompt: freshMain opt injects the orchestrator-staged note", () => {
-  // Task 118 prompt prelude. With freshMain: true, the prompt tells the agent
-  // it's already on a fresh main so it doesn't habit-spend a turn re-pulling.
-  const prompt = buildExecutionPrompt("BRIEFING", { freshMain: true });
-  assert.match(prompt, /fresh `main`/);
-  assert.match(prompt, /Cut your feature branch off the current `main`/);
-});
-
-test("buildExecutionPrompt: no opts → no fresh-main note (back-compat)", () => {
-  // Default form (the manual `/tpm <slug>` invocation path) doesn't get the
-  // fresh-main note — the manual flow's freshness is the doc rule in
-  // AGENTS.md, not an orchestrator action.
+test("buildExecutionPrompt: includes the refresh-main-before-branching rule (task 118)", () => {
+  // PR #120 failure mode: agent inherits a stale checkout, branches off stale
+  // main, conflicts at merge time. The rule lives in the agent prompt so both
+  // orchestrator and manual `/tpm <slug>` runs land on a fresh main.
   const prompt = buildExecutionPrompt("BRIEFING");
-  assert.doesNotMatch(prompt, /fresh `main`/);
+  assert.match(prompt, /Before cutting your feature branch, refresh `main`/);
+  assert.match(prompt, /git checkout main && git pull --ff-only/);
+  assert.match(prompt, /tpm block <slug> "stale checkout — needs human reconcile"/);
 });
 
 // runWithTimeout integration: spawn a real (short-lived) child and verify the

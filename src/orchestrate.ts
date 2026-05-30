@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { hostname } from "node:os";
@@ -222,25 +222,14 @@ export function shouldAutoRevert(input: AutoRevertInput): boolean {
 //
 // `<slug>` / `<url>` / `<reason>` are left as placeholders; the briefing names
 // the qualified slug, and SKILL.md uses the same placeholder convention.
-export interface ExecutionPromptOpts {
-  // Set when the orchestrator's fresh-main precondition ran successfully
-  // (task 118): tells the agent it's already on a fresh `main`, so it can
-  // skip the habitual `git checkout main && git pull --ff-only` and branch
-  // directly. Omitted (the common manual-CLI test path) leaves the prompt
-  // unchanged.
-  freshMain?: boolean;
-}
-
-export function buildExecutionPrompt(briefing: string, opts: ExecutionPromptOpts = {}): string {
-  const freshMainNote = opts.freshMain
-    ? `\n\nThe orchestrator put you on a fresh \`main\` (fetched + fast-forwarded) before this dispatch. Cut your feature branch off the current \`main\` rather than re-pulling.`
-    : "";
+export function buildExecutionPrompt(briefing: string): string {
   return `You're running in non-interactive mode. No one will see or respond to questions in your output. If you face a choice between asking and acting, always act — take the smaller / safer path (\`tpm block\`, \`tpm revert\`, log a Log line) and exit. The user reads the per-run log and the task state, not your final message.
 
-${briefing}${freshMainNote}
+${briefing}
 
 You are executing this task. Rules:
 - If \`prs:\` is non-empty and any linked PR is OPEN, fetch its comments and reviews via the host CLI (dispatch on \`Host:\` in the briefing) before any other discovery. Unaddressed comments are almost certainly why you're seeing this task — address them first.
+- Before cutting your feature branch, refresh \`main\`: \`git checkout main && git pull --ff-only\`. If the working tree is dirty or the pull doesn't fast-forward, run \`tpm block <slug> "stale checkout — needs human reconcile"\` and exit — don't rebase, stash, or push through. (PR #120 failure mode: branched off stale main, conflicted at merge.)
 - Follow the Plan above.
 - If type=pr: after opening a PR, run \`tpm pr <slug> <url>\` (CLI auto-flips to needs-review). Stop.
 - If type=investigation: your deliverable is a **report**, not a PR. Run \`tpm report <slug>\` to fold the task into a folder and scaffold \`<project>/tasks/<slug>/report.md\` from the template. Write findings into that file. When done, re-run \`tpm report <slug>\` — the CLI auto-flips to needs-review. Don't run \`tpm pr\`.
@@ -399,84 +388,6 @@ export function repoGuardAction(currentStatus: string, check: RepoCheck): RepoGu
   if (check.ok) return { action: "spawn", cwd: check.cwd };
   if (currentStatus === "blocked") return { action: "skip" };
   return { action: "block", reason: check.reason };
-}
-
-// Make sure the local clone is on a fast-forwarded `main` before the agent
-// branches off (task 118). PR #120's failure mode: agent inherits a stale
-// checkout, branches off stale main, conflicts at merge with upstream commits
-// it never saw. We refuse to dispatch on a dirty tree, then checkout main and
-// `pull --ff-only`. On any git failure, surface git's own message — the
-// operator's recovery is "read the error, fix, then `tpm ready <slug>`".
-export interface FreshMainResult {
-  ok: boolean;
-  reason?: string;
-}
-
-interface GitRunResult { code: number; stdout: string; stderr: string; }
-
-function runGit(cwd: string, args: string[]): GitRunResult {
-  try {
-    const stdout = execFileSync("git", args, {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    return { code: 0, stdout, stderr: "" };
-  } catch (e) {
-    const err = e as NodeJS.ErrnoException & {
-      status?: number | null;
-      stdout?: Buffer | string | null;
-      stderr?: Buffer | string | null;
-    };
-    return {
-      code: typeof err.status === "number" ? err.status : 1,
-      stdout: err.stdout == null ? "" : typeof err.stdout === "string" ? err.stdout : err.stdout.toString(),
-      stderr: err.stderr == null ? "" : typeof err.stderr === "string" ? err.stderr : err.stderr.toString(),
-    };
-  }
-}
-
-function oneLine(s: string): string {
-  return s.replace(/\s+/g, " ").trim().slice(0, 200);
-}
-
-export function ensureFreshMain(
-  cwd: string,
-  slug: string,
-  log: (level: LogLevel, message: string) => void,
-): FreshMainResult {
-  // Dirty check first: a clean-but-not-FF case would otherwise produce a
-  // confusing "your local changes would be overwritten" pull error when the
-  // real problem is uncommitted work.
-  const status = runGit(cwd, ["status", "--porcelain"]);
-  if (status.code !== 0) {
-    return { ok: false, reason: `git status failed: ${oneLine(status.stderr || status.stdout)}` };
-  }
-  if (status.stdout.trim().length > 0) {
-    return {
-      ok: false,
-      reason: `dirty checkout: ${oneLine(status.stdout)} — commit/stash, then \`tpm ready ${slug}\``,
-    };
-  }
-  // Always switch to main — handles the leftover-feature-branch case from PR
-  // #120 where the agent would inherit the prior run's branch.
-  const checkout = runGit(cwd, ["checkout", "main"]);
-  if (checkout.code !== 0) {
-    return { ok: false, reason: `git checkout main failed: ${oneLine(checkout.stderr || checkout.stdout)}` };
-  }
-  // `pull --ff-only` fetches + fast-forwards in one step. A non-FF pull errors
-  // with git's own message — no need to rev-list and re-classify ourselves.
-  const pull = runGit(cwd, ["pull", "--ff-only"]);
-  if (pull.code !== 0) {
-    return {
-      ok: false,
-      reason: `git pull --ff-only failed: ${oneLine(pull.stderr || pull.stdout)} — reconcile, then \`tpm ready ${slug}\``,
-    };
-  }
-  if (!/already up to date/i.test(pull.stdout)) {
-    log("INFO", `${slug}: pulled main fast-forward`);
-  }
-  return { ok: true };
 }
 
 export interface OrchestrateOpts {
@@ -1052,44 +963,10 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
     return { exitCode: 1 };
   }
 
-  // Decide prompt mode now so we can skip the fresh-main precondition on
-  // feedback rounds — those re-enter an existing PR branch (the agent runs
-  // `gh pr checkout` and rebases against origin/main from there) rather than
-  // cutting a fresh branch off main, so the precondition would force a
-  // pointless checkout away from the PR branch.
   const beforeStatus = String(pick.task.data.status ?? "");
   const before = snapshotTask(pick.task);
   const prUrls = parsePrUrls(pick.task);
   const useFeedbackPrompt = beforeStatus === "needs-feedback" && prUrls.length > 0;
-
-  // Fresh-main precondition (task 118). PR #120 hit the canonical failure:
-  // agent cd'd into a stale checkout, branched off stale main, then conflicted
-  // at merge time with upstream commits it never saw. Enforce a fast-forwarded
-  // main before any execution-prompt dispatch; block-and-skip on dirty / non-FF
-  // so the operator reconciles rather than the agent guessing.
-  let freshMainEnforced = false;
-  if (!useFeedbackPrompt) {
-    const fresh = ensureFreshMain(guard.cwd, slug, log);
-    if (!fresh.ok) {
-      const reason = fresh.reason ?? "fresh-main precondition failed";
-      try {
-        mutate.block(pick.task, reason);
-        log("WARN", `${slug}: blocked — ${reason}`);
-      } catch (e) {
-        log("ERROR", `block ${slug} failed: ${(e as Error).message}`);
-      }
-      try { lock.releaseTask(root, slug, agentId); } catch (e) {
-        log("ERROR", `lock release failed for ${slug}: ${(e as Error).message}`);
-      }
-      if (resolveSameRepoStrategy(pick.project) === "serialize") {
-        try { lock.releaseRepo(root, pick.project.slug, agentId); } catch (e) {
-          log("ERROR", `repo lock release failed for ${pick.project.slug}: ${(e as Error).message}`);
-        }
-      }
-      return { exitCode: 1 };
-    }
-    freshMainEnforced = true;
-  }
 
   // Per-run log: capture the agent's session output so `tpm serve` can show
   // what the agent is doing live, and so a post-mortem after a failed run has
@@ -1134,10 +1011,6 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
   // code Edit, not a `gh pr view`. Falls back to the execution prompt if the
   // PR list is empty or the fetch errors out — we'd rather ship a less-rich
   // prompt than skip the dispatch.
-  // beforeStatus / before / prUrls were captured earlier (before the fresh-main
-  // precondition fired) so the snapshot reflects the task's real entry status,
-  // not the post-eager-flip `in-progress`. The disposition log still reads
-  // `status=ready->needs-review` etc. even after the orchestrator pre-claims.
   const briefing = buildBriefing(root, slug);
   let prompt: string;
   if (useFeedbackPrompt) {
@@ -1145,7 +1018,7 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
     prompt = buildFeedbackPrompt(briefing, prContext);
     log("INFO", `${slug}: feedback-mode prompt with ${prUrls.length} PR(s)`);
   } else {
-    prompt = buildExecutionPrompt(briefing, { freshMain: freshMainEnforced });
+    prompt = buildExecutionPrompt(briefing);
   }
 
   // Eager flip: claim the task on-disk *before* the spawn. The agent's own
