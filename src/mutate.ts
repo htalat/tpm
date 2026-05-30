@@ -95,6 +95,27 @@ export function setStatus(task: Task, newStatus: string, verb?: string): MutateR
   return transition(task, newStatus, verb ?? `status -> ${newStatus}`, { refusal: [] });
 }
 
+// Symmetric inverse of the inbox play-button promote: pull a queued task back
+// into the human pile. Status-aware:
+//   - ready          -> open          (operator wants to pause / reshape the Plan)
+//   - needs-feedback -> needs-review  (escalate ambiguous agent signal to the human)
+// Other statuses are refused — the caller (web or CLI) should hide / gate the
+// button so a refusal only fires on a stale form replay.
+export function pullFromQueue(task: Task): MutateResult {
+  guardArchived(task);
+  const { data } = readParsed(task);
+  const current = String(data.status ?? "");
+  const target = current === "ready"
+    ? "open"
+    : current === "needs-feedback"
+      ? "needs-review"
+      : null;
+  if (!target) {
+    throw new Error(`${task.slug}: pull only applies to ready / needs-feedback (status=${current || "?"})`);
+  }
+  return transition(task, target, `pulled from queue (${current} -> ${target})`, { refusal: [] });
+}
+
 export function logEntry(task: Task, message: string): MutateResult {
   if (!message || !message.trim()) {
     throw new Error("tpm log requires a message");

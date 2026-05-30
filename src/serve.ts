@@ -108,7 +108,7 @@ export interface ServeOpts {
 // `buildCliArgs`. Kept narrow so a stray POST can't shell out to any tpm verb.
 const MUTATION_ACTIONS = new Set([
   "ready", "block", "reopen", "complete", "log", "pr", "status", "allow-orchestrator",
-  "lgtm", "request-changes", "archive",
+  "lgtm", "request-changes", "archive", "pull",
 ]);
 
 const CLI_PATH = fileURLToPath(new URL("./cli.ts", import.meta.url));
@@ -682,6 +682,7 @@ function buildCliArgs(slug: string, action: string, body: URLSearchParams): stri
     }
     case "lgtm": return ["lgtm", slug];
     case "archive": return ["archive", slug];
+    case "pull": return ["pull", slug];
     case "request-changes": {
       const comment = body.get("comment")?.trim();
       if (!comment) return null;
@@ -771,7 +772,7 @@ ${flashBanner}
 </section>
 <section class="queue">
   <h2>Agent queue <span class="meta">(${agentItems.length})</span></h2>
-  ${agentItems.length === 0 ? `<p class="queue-empty">Nothing ready, needing feedback, or awaiting close.</p>` : agentItems.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks)).join("")}
+  ${agentItems.length === 0 ? `<p class="queue-empty">Nothing ready, needing feedback, or awaiting close.</p>` : agentItems.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPull: true, pullRedirect: "/" })).join("")}
 </section>
 <section class="queue">
   <h2>In flight <span class="meta">(${inFlight.length})</span></h2>
@@ -801,7 +802,7 @@ function renderProject(project: Project, allProjects: Project[], showArchived: b
       if (s === "done" || s === "dropped") {
         group.sort((a, b) => String(b.data.closed ?? "").localeCompare(String(a.data.closed ?? "")));
       }
-      const rows = group.map(t => taskRow(project, t, s, prCache, taskLocks)).join("");
+      const rows = group.map(t => taskRow(project, t, s, prCache, taskLocks, { showPull: true, pullRedirect: `/p/${project.slug}` })).join("");
       return `<section class="queue"><h2>${esc(s)} <span class="meta">(${group.length})</span></h2>${rows}</section>`;
     })
     .join("");
@@ -1745,8 +1746,8 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       forms.push(dropForm(href));
       break;
     case "ready":
+      forms.push(pullForm(href, "ready"));
       forms.push(blockForm(href));
-      forms.push(simpleForm(href, "reopen", "Move back to open"));
       forms.push(completeForm(href));
       forms.push(dropForm(href));
       break;
@@ -1757,6 +1758,7 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       forms.push(prForm(href));
       break;
     case "needs-feedback":
+      forms.push(pullForm(href, "needs-feedback"));
       forms.push(logForm(href));
       forms.push(completeForm(href));
       forms.push(blockForm(href));
@@ -1911,6 +1913,18 @@ function statusForm(href: string, value: string, label: string): string {
   </form>`;
 }
 
+// "Pull from queue" — symmetric inverse of the inbox play button. The label
+// names the destination so the operator sees the intended landing slot before
+// clicking (ready -> open is a re-shape moment; needs-feedback -> needs-review
+// is an escalation to the human queue). Server-side `tpm pull` is the only
+// thing that enforces the status -> target mapping; the form text just labels.
+function pullForm(href: string, status: string): string {
+  const dest = status === "ready" ? "open" : "needs-review";
+  return `<form method="POST" action="${href}/pull" class="action-form">
+    <button type="submit">Pull from queue (→ ${esc(dest)})</button>
+  </form>`;
+}
+
 function allowForm(href: string, currentlyOn: boolean): string {
   const next = currentlyOn ? "false" : "true";
   const label = currentlyOn ? "Disable autonomous (allow_orchestrator: false)" : "Enable autonomous (allow_orchestrator: true)";
@@ -1936,6 +1950,17 @@ interface TaskRowOpts {
   // and a one-click promote-to-ready would silently mis-route a review bounce
   // through the wrong queue.
   showPromote?: boolean;
+  // Render an inline "pull from queue" button for ready / needs-feedback rows
+  // (symmetric inverse of the promote button — task 117). Callers in the
+  // agent-queue contexts (index page agent queue, project page queues, task
+  // page rail) opt in; the button is self-gating on status so other contexts
+  // stay clean even if the flag leaks in.
+  showPull?: boolean;
+  // Where to land the operator after the pull mutation. The inbox / index
+  // page passes "/" so the dashboard stays put; the project page passes its
+  // own URL. Defaults to the task page (the form omits the redirect input
+  // entirely, so `routeMutation` falls through to the task-page default).
+  pullRedirect?: string;
 }
 
 function taskRow(project: Project, task: Task, status: string, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, opts: TaskRowOpts = {}): string {
@@ -1958,8 +1983,9 @@ function taskRow(project: Project, task: Task, status: string, prCache: PrCacheR
     ? `<span class="title-cell"><a class="parent-crumb" href="/t/${esc(project.slug)}/${esc(task.parent)}">${esc(task.parent)}</a><a class="title" href="${href}">${esc(title)}</a></span>`
     : `<a class="title" href="${href}">${esc(title)}</a>`;
   const promote = promoteButton(href, task, status, opts);
+  const pull = pullButton(href, task, status, opts);
   return `<div class="${classes.join(" ")}">
-    ${promote}
+    ${promote}${pull}
     <span class="badge s-${cls(status)}${task.archived ? " s-archived" : ""}">${esc(status)}</span>
     ${lockChip(task, status, taskLocks.has(slug))}
     ${titleCell}
@@ -1989,6 +2015,27 @@ function promoteButton(href: string, task: Task, status: string, opts: TaskRowOp
   return `<form method="POST" action="${href}/ready" class="${cls}">
     <input type="hidden" name="redirect" value="/">
     <button type="submit" title="${esc(label)}" aria-label="${esc(label)}">▶</button>
+  </form>`;
+}
+
+// Inline "pull from queue" affordance (task 117) — symmetric inverse of the
+// promote button. Self-gating on status (ready / needs-feedback only) so the
+// button can't escape into unsafe contexts even if a caller opts in without
+// per-row filtering. The destination differs by source: ready -> open is a
+// pause/re-shape; needs-feedback -> needs-review escalates ambiguous agent
+// signal to the human queue.
+function pullButton(href: string, task: Task, status: string, opts: TaskRowOpts): string {
+  if (!opts.showPull) return "";
+  if (task.archived) return "";
+  if (isParent(task)) return "";
+  if (status !== "ready" && status !== "needs-feedback") return "";
+  const dest = status === "ready" ? "open" : "needs-review";
+  const label = `Pull from queue (→ ${dest})`;
+  const redirectInput = opts.pullRedirect
+    ? `<input type="hidden" name="redirect" value="${escAttr(opts.pullRedirect)}">`
+    : "";
+  return `<form method="POST" action="${href}/pull" class="pull-form">
+    ${redirectInput}<button type="submit" title="${esc(label)}" aria-label="${esc(label)}">⏸</button>
   </form>`;
 }
 

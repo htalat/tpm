@@ -1091,6 +1091,114 @@ test("flash banner: no banner, no script, when flash is absent", () => {
   assert.doesNotMatch(r.body, /history\.replaceState/);
 });
 
+// ---- pull-from-queue button (task 117) ------------------------------------
+
+test("routeMutation: /t/<slug>/pull dispatches `tpm pull <slug>`", () => {
+  const { runner, calls } = captureRunner();
+  const r = routeMutation("/t/alpha/001-a/pull", new URLSearchParams(), runner);
+  assert.equal(r.status, 303);
+  assert.deepEqual(calls, [["pull", "alpha/001-a"]]);
+});
+
+test("routeMutation: /t/<slug>/pull honors form `redirect=/` so the inbox stays put", () => {
+  // Inline pull button (agent queue + project page) lets the operator pull a
+  // row from the dashboard without bouncing to the task page.
+  const { runner } = captureRunner();
+  const r = routeMutation("/t/alpha/001-a/pull", new URLSearchParams("redirect=/"), runner);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/\?flash=/);
+});
+
+test("renderTask: ready task surfaces a Pull-from-queue action (→ open)", () => {
+  const t = task("001-r", "ready");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-r", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /action="\/t\/alpha\/001-r\/pull"/);
+  assert.match(r.body, /Pull from queue \(→ open\)/);
+});
+
+test("renderTask: needs-feedback task surfaces a Pull-from-queue action (→ needs-review)", () => {
+  const t = task("001-nf", "needs-feedback");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-nf", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /action="\/t\/alpha\/001-nf\/pull"/);
+  assert.match(r.body, /Pull from queue \(→ needs-review\)/);
+});
+
+test("renderTask: non-pullable statuses don't surface a Pull-from-queue action", () => {
+  // Other statuses: hide the button (Plan step 2). Open/blocked already are in
+  // the human pile; in-progress / needs-close / needs-review have their own
+  // exit paths (complete, log, request-changes).
+  for (const status of ["open", "in-progress", "needs-close", "needs-review", "blocked"]) {
+    const t = task("001-a", status);
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+    assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/pull"/, `expected no pull form for status=${status}`);
+  }
+});
+
+test("renderIndex: agent-queue ready and needs-feedback rows render the inline pull button (redirect=/)", () => {
+  const p = project("alpha", [
+    task("001-r", "ready"),
+    task("002-nf", "needs-feedback"),
+  ]);
+  const r = route("/", new URLSearchParams(), [p]);
+  assert.match(
+    r.body,
+    /<form[^>]*method="POST"[^>]*action="\/t\/alpha\/001-r\/pull"[^>]*class="pull-form"[\s\S]*?name="redirect"[^>]*value="\/"/,
+  );
+  assert.match(
+    r.body,
+    /<form[^>]*action="\/t\/alpha\/002-nf\/pull"[^>]*class="pull-form"/,
+  );
+});
+
+test("renderIndex: in-flight rows (in-progress) do NOT render the pull button", () => {
+  // pullButton is self-gating: only ready / needs-feedback. The in-flight
+  // section doesn't even pass showPull, so this is a defense-in-depth check.
+  const p = project("alpha", [task("003-ip", "in-progress")]);
+  const r = route("/", new URLSearchParams(), [p]);
+  assert.doesNotMatch(r.body, /class="pull-form"/);
+});
+
+test("renderIndex: inbox rows (needs-review / blocked / open) do NOT render the pull button", () => {
+  // Inbox status set never overlaps with the pullable set; the showPromote
+  // call site doesn't pass showPull either. Defensive double-check.
+  const p = project("alpha", [
+    task("001-nr", "needs-review"),
+    task("002-b", "blocked"),
+    task("003-o", "open"),
+  ]);
+  const r = route("/", new URLSearchParams(), [p]);
+  assert.doesNotMatch(r.body, /class="pull-form"/);
+});
+
+test("renderProject: project-page ready / needs-feedback rows render the inline pull button (redirect=/p/<slug>)", () => {
+  const p = project("alpha", [
+    task("001-r", "ready"),
+    task("002-nf", "needs-feedback"),
+  ]);
+  const r = route("/p/alpha", new URLSearchParams(), [p]);
+  assert.match(
+    r.body,
+    /<form[^>]*action="\/t\/alpha\/001-r\/pull"[^>]*class="pull-form"[\s\S]*?name="redirect"[^>]*value="\/p\/alpha"/,
+  );
+  assert.match(
+    r.body,
+    /<form[^>]*action="\/t\/alpha\/002-nf\/pull"[^>]*class="pull-form"/,
+  );
+});
+
+test("renderProject: project-page rows in non-pullable statuses don't render the pull button", () => {
+  const p = project("alpha", [
+    task("001-o", "open"),
+    task("002-ip", "in-progress"),
+    task("003-d", "done", { closed: "2026-04-01 12:00 PDT" }),
+  ]);
+  const r = route("/p/alpha", new URLSearchParams("archived=1"), [p]);
+  assert.doesNotMatch(r.body, /class="pull-form"/);
+});
+
 // ---- report flow (investigation deliverable) ------------------------------
 
 test("renderTask: rail surfaces a Report panel when report.md exists in the task folder", () => {
