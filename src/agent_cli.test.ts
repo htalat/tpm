@@ -37,13 +37,33 @@ test("registry: claude entry has the canonical claude stream-json shape", () => 
   assert.equal(claude.envVar, "CLAUDE_BIN");
   const args = claude.buildArgs("PROMPT", "/path/to/repo");
   assert.deepEqual(args, [
-    "-p",
+    "-p", "PROMPT",
     "--add-dir", "/path/to/repo",
     "--output-format", "stream-json",
     "--verbose",
     "--disallowed-tools", "AskUserQuestion",
-    "PROMPT",
   ]);
+});
+
+// Regression: claude's `--disallowed-tools` is variadic-greedy — it consumes
+// subsequent positional-shaped tokens as additional disallowed-tool names.
+// If `prompt` is placed trailing, it gets eaten as a tool name and claude
+// exits with "Input must be provided either through stdin or as a prompt
+// argument when using --print." Lock the prompt to the slot immediately after
+// `-p` so this can't regress (task 116).
+test("registry: claude prompt is anchored to -p, not trailing after --disallowed-tools", () => {
+  const args = AGENT_CLIS["claude"].buildArgs("THE-PROMPT", "/r");
+  const pIdx = args.indexOf("-p");
+  assert.notEqual(pIdx, -1, "claude args must include -p");
+  assert.equal(args[pIdx + 1], "THE-PROMPT", "prompt must immediately follow -p");
+  const disIdx = args.indexOf("--disallowed-tools");
+  assert.notEqual(disIdx, -1);
+  assert.ok(pIdx < disIdx, "-p (with prompt) must precede --disallowed-tools");
+  assert.equal(
+    args[args.length - 1],
+    "AskUserQuestion",
+    "the trailing arg must be the disallowed tool name, not the prompt — otherwise --disallowed-tools eats the prompt",
+  );
 });
 
 test("registry: claude entry disallows AskUserQuestion structurally", () => {

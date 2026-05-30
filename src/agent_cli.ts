@@ -37,13 +37,16 @@ export const AGENT_CLIS: Record<string, AgentCli> = {
     // 085's prompt-side rule: an orchestrator run has no human on the other
     // end, so the question tool is dead weight — deny it at the CLI surface
     // so a prompt regression can't reintroduce the halt.
+    // Prompt is anchored as `-p`'s value (not trailing) because
+    // `--disallowed-tools` is variadic-greedy in claude's CLI — a trailing
+    // positional gets eaten as another tool name and claude exits with
+    // "Input must be provided either through stdin or as a prompt argument."
     buildArgs: (prompt, repoLocal) => [
-      "-p",
+      "-p", prompt,
       "--add-dir", repoLocal,
       "--output-format", "stream-json",
       "--verbose",
       "--disallowed-tools", "AskUserQuestion",
-      prompt,
     ],
   },
   copilot: {
