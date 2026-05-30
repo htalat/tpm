@@ -179,6 +179,19 @@ body { max-width: 1600px; }
 @media (prefers-color-scheme: dark) {
   .new-task-form { background: #161b22; border-color: #30363d; }
 }
+.task-body-section { margin: 1rem 0; }
+.task-body-section .section-header { display: flex; align-items: baseline; gap: .5rem; }
+.task-body-section .section-header h2 { margin: 1rem 0 .25rem; }
+.section-edit-link, .title-edit-link { font-size: .8em; color: #57606a; text-decoration: none; }
+.section-edit-link:hover, .title-edit-link:hover { text-decoration: underline; }
+.section-empty { margin: .25rem 0 .75rem; }
+.section-edit-form .section-edit-textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-height: 8rem; white-space: pre-wrap; }
+.section-edit-buttons { display: flex; gap: .6rem; align-items: center; margin-top: .35rem; }
+.action-cancel { color: #57606a; font-size: .85em; }
+.title-edit-form .title-edit-input { font-size: 1.4em; font-weight: 600; }
+@media (prefers-color-scheme: dark) {
+  .section-edit-link, .title-edit-link, .action-cancel { color: #8d96a0; }
+}
 .report-actions-bar { position: sticky; top: 0; z-index: 10; display: flex; gap: .6rem; flex-wrap: wrap; align-items: flex-start; margin: 0 0 1rem; padding: .6rem .85rem; background: #fff; border: 1px solid #d0d7de; border-radius: 6px; box-shadow: 0 2px 6px rgba(31, 35, 40, .06); }
 .report-actions-bar .action-form { margin: 0; padding: .35rem .55rem; flex: 0 1 auto; min-width: 0; }
 .report-actions-bar .action-form button { white-space: nowrap; }

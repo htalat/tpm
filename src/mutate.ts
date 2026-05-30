@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, unlinkSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, statSync, unlinkSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse, stringify } from "./frontmatter.ts";
 import { now } from "./time.ts";
@@ -527,6 +527,77 @@ export function reparent(task: Task, newParent: Task | null): ReparentResult {
     newPath,
     newSlug,
   };
+}
+
+// Inline-editor write path for `tpm serve` (task 121). Edits the title
+// (frontmatter) or one of the prose body sections — Context / Plan /
+// Outcome. `## Log` is intentionally not editable: it is append-only via
+// `tpm log` so the audit trail can't be rewritten through the UI. Other
+// frontmatter fields (status, type, parent, prs, allow_orchestrator, tags)
+// stay managed by the existing verbs / buttons; this verb is for human
+// prose only, not status mutation.
+//
+// Concurrency: when `expectMtimeMs` is provided, refuses the write if the
+// file's mtime has moved since the operator loaded the editor. The form
+// embeds the render-time mtime; a mismatch means a concurrent edit (or an
+// orchestrator-spawn log line) landed between view and save — the operator
+// reloads, sees the fresh content, re-edits. Skips the write and the Log
+// line entirely when the proposed body is byte-identical to the current
+// one, so an accidental Save on an unchanged value doesn't churn mtime.
+export interface EditOptions {
+  expectMtimeMs?: number;
+}
+
+const EDIT_SECTION_CANON: Record<string, string> = {
+  title: "title",
+  context: "Context",
+  plan: "Plan",
+  outcome: "Outcome",
+};
+
+export function editTaskSection(
+  task: Task,
+  section: string,
+  value: string,
+  opts: EditOptions = {},
+): MutateResult {
+  guardArchived(task);
+  const canonical = EDIT_SECTION_CANON[section.toLowerCase()];
+  if (!canonical) {
+    throw new Error(
+      `Unknown editable section: "${section}". Choose one of: title, Context, Plan, Outcome.`,
+    );
+  }
+  if (opts.expectMtimeMs !== undefined) {
+    const current = statSync(task.path).mtimeMs;
+    // Sub-ms epsilon: some filesystems quantize mtime to the second across
+    // a stat round-trip, but a real concurrent edit moves it by many ms.
+    if (Math.abs(current - opts.expectMtimeMs) > 5) {
+      throw new Error(
+        `${task.slug}: file changed since the editor was loaded (concurrent edit). Reload and try again.`,
+      );
+    }
+  }
+  const { data, body } = readParsed(task);
+  if (canonical === "title") {
+    const oldTitle = typeof data.title === "string" ? data.title : "";
+    if (oldTitle === value) {
+      return { message: `${task.slug}: title unchanged` };
+    }
+    data.title = value;
+    const newBody = appendLog(body, `${now()}: edited title (via serve)`);
+    writeFileSync(task.path, stringify(data, newBody));
+    syncInMemory(task, data, newBody);
+    return { message: `${task.slug}: edited title` };
+  }
+  const proposedBody = setSection(body, canonical, value);
+  if (proposedBody === body) {
+    return { message: `${task.slug}: ${canonical} unchanged` };
+  }
+  const newBody = appendLog(proposedBody, `${now()}: edited ${canonical} (via serve)`);
+  writeFileSync(task.path, stringify(data, newBody));
+  syncInMemory(task, data, newBody);
+  return { message: `${task.slug}: edited ${canonical}` };
 }
 
 // ---- internals ------------------------------------------------------------
