@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjects, flatTasks, isParent, rollupStatus, taskHasReport, taskReportPath } from "./tree.ts";
+import { KNOWN_TASK_TYPES } from "./new.ts";
 import type { Project, Task } from "./tree.ts";
 import { findRoot } from "./root.ts";
 import { findTask } from "./resolve.ts";
@@ -359,7 +360,7 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const project = projects.find(p => p.slug === slug);
     if (!project) return notFound(`No project: ${slug}`);
     const showArchived = params.get("archived") === "1";
-    return ok("text/html; charset=utf-8", renderProject(project, projects, showArchived, prCache, taskLocks));
+    return ok("text/html; charset=utf-8", renderProject(project, projects, showArchived, prCache, taskLocks, opts));
   }
   const taskLogMatch = pathname.match(/^\/t\/(.+)\/log\/?$/);
   if (taskLogMatch) {
@@ -545,6 +546,13 @@ export type CliRunner = (args: string[]) => { ok: boolean; stdout: string; stder
 // Pure dispatch for POST mutations. Tests pass a stub runner; production passes
 // the real `runCli` that shells out to the local tpm binary.
 export function routeMutation(pathname: string, body: URLSearchParams, runner: CliRunner): MutationResult {
+  // Project-scoped: /p/<project>/new-task. The only mutation today that
+  // creates a task rather than transitioning one, so it lives outside the
+  // task-scoped /t/<slug>/<action> dispatch below (no slug to scope to yet).
+  const newTaskMatch = pathname.match(/^\/p\/([^/]+)\/new-task\/?$/);
+  if (newTaskMatch) {
+    return routeNewTask(decodeURIComponent(newTaskMatch[1]), body, runner);
+  }
   // Match /t/<slugPath>/<action>. slugPath is greedy so it captures any
   // intermediate parent segments; action is the last path segment.
   const m = pathname.match(/^\/t\/(.+)\/([a-z][a-z0-9-]*)\/?$/);
@@ -567,6 +575,46 @@ export function routeMutation(pathname: string, body: URLSearchParams, runner: C
     ? (result.stdout || `${action}: ok`)
     : (result.stderr || `${action}: failed`);
   return flashRedirect(slugPath, flash, override);
+}
+
+// Project-scoped `new task` dispatch. On success: redirect to the new task's
+// page so the operator can edit Context/Plan immediately. On failure: redirect
+// back to the project page with the CLI error in the flash banner (so a slug
+// collision or unknown parent is visible, not silently swallowed).
+function routeNewTask(projectSlug: string, body: URLSearchParams, runner: CliRunner): MutationResult {
+  const projectHref = `/p/${encodeURIComponent(projectSlug)}`;
+  const slug = body.get("slug")?.trim();
+  if (!slug) {
+    return flashTo(projectHref, "new-task: slug is required");
+  }
+  const title = body.get("title")?.trim();
+  const parent = body.get("parent")?.trim();
+  const type = body.get("type")?.trim();
+  const args = ["new", "task", projectSlug, slug];
+  if (title) args.push("--title", title);
+  if (parent) args.push("--parent", parent);
+  if (type) args.push("--type", type);
+  const result = runner(args);
+  if (!result.ok) {
+    const flash = result.stderr || result.stdout || "new-task: failed";
+    return flashTo(projectHref, flash);
+  }
+  // Build the new task's URL from form data — CLI stdout is "Created <path>",
+  // but project + slug + parent fully determine the route, so we don't have
+  // to parse it.
+  const parts = [projectSlug];
+  if (parent) parts.push(parent);
+  parts.push(slug);
+  const taskHref = "/t/" + parts.map(encodeURIComponent).join("/");
+  const flash = result.stdout || `new-task: created ${parts.join("/")}`;
+  return flashTo(taskHref, flash);
+}
+
+function flashTo(target: string, flash: string): MutationResult {
+  return {
+    status: 303,
+    location: `${target}?flash=${encodeURIComponent(flash)}`,
+  };
 }
 
 function flashRedirect(slugPath: string, flash: string, override?: string | null): MutationResult {
@@ -733,7 +781,7 @@ ${flashBanner}
   return layout("tpm", body, { autoRefresh: 30 });
 }
 
-function renderProject(project: Project, allProjects: Project[], showArchived: boolean, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>): string {
+function renderProject(project: Project, allProjects: Project[], showArchived: boolean, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, opts: RouteOpts = {}): string {
   const repo = resolveRepo(project);
   const tasks = flatTasks(project.tasks).filter(t => !isParent(t) && (showArchived || !t.archived));
   const byStatus = new Map<string, Task[]>();
@@ -775,9 +823,13 @@ function renderProject(project: Project, allProjects: Project[], showArchived: b
   const hostBlock = host ? `<dt>Host</dt><dd>${esc(host)}</dd>` : "";
   const createdBlock = created ? `<dt>Created</dt><dd>${esc(created)}</dd>` : "";
 
+  const flashBanner = renderFlashBanner(opts.flash, `/p/${esc(project.slug)}${showArchived ? "?archived=1" : ""}`);
+  const newTaskForm = renderNewTaskForm(project, opts);
+
   const body = `
 ${projectChips(allProjects, project.slug)}
 <nav class="crumbs"><a href="/p/${esc(project.slug)}">${esc(project.slug)}</a></nav>
+${flashBanner}
 <header>
   <h1>${esc(projectName)} <span class="badge s-${cls(status)}">${esc(status)}</span></h1>
   <p class="meta"><code>${esc(project.slug)}</code>  ·  ${repoLink}  ·  ${tasks.length} task${tasks.length === 1 ? "" : "s"}${showArchived ? " (incl. archived)" : ""}</p>
@@ -795,11 +847,59 @@ ${projectChips(allProjects, project.slug)}
   </aside>
   <main>
     <div class="body">${renderMarkdown(extractProjectBody(project.body))}</div>
+    ${newTaskForm}
     ${sectionsHtml || `<p class="queue-empty">No active tasks.</p>`}
   </main>
 </div>
 `;
   return layout(`tpm · ${projectName}`, body);
+}
+
+// "New task" form on the project page. The project is implied by scope so the
+// form doesn't ask for it. Wrapped in <details> so it stays one line by
+// default and doesn't push the queues down. Hidden entirely when mutations
+// are disabled (non-loopback bind) — the disabled-notice on the task page
+// already explains the constraint; surfacing a dead form here would just be
+// noise.
+function renderNewTaskForm(project: Project, opts: RouteOpts): string {
+  if (opts.mutationsEnabled === false) return "";
+  const action = `/p/${esc(project.slug)}/new-task`;
+  // Parent candidates: top-level, non-archived tasks in this project. Children
+  // can't host grandchildren (one-level-of-nesting rule enforced in newTask),
+  // so we don't offer them. The dropdown value is the on-disk task slug
+  // (e.g. "001-big-thing") — findTask in newTask matches either bare or
+  // prefixed form.
+  const parentOptions = project.tasks
+    .filter(t => !t.archived && !t.parent)
+    .map(t => {
+      const label = strOr(t.data.title, t.slug);
+      return `<option value="${escAttr(t.slug)}">${esc(t.slug)} — ${esc(label)}</option>`;
+    })
+    .join("");
+  const typeOptions = KNOWN_TASK_TYPES
+    .map(t => `<option value="${escAttr(t)}"${t === "pr" ? " selected" : ""}>${esc(t)}</option>`)
+    .join("");
+  return `<details class="new-task-form">
+  <summary>+ New task</summary>
+  <form method="POST" action="${action}" class="action-form new-task">
+    <label>Slug <span class="meta">(required)</span>
+      <input type="text" name="slug" required pattern="[a-z0-9][a-z0-9-]*" title="lowercase letters, digits, hyphens; no leading hyphen" placeholder="add-ratelimit-to-foo">
+    </label>
+    <label>Title <span class="meta">(optional)</span>
+      <input type="text" name="title" placeholder="defaults to humanized slug">
+    </label>
+    <label>Parent <span class="meta">(optional)</span>
+      <select name="parent">
+        <option value="">(top-level)</option>
+        ${parentOptions}
+      </select>
+    </label>
+    <label>Type
+      <select name="type">${typeOptions}</select>
+    </label>
+    <button type="submit">Create task</button>
+  </form>
+</details>`;
 }
 
 // ---- /p/<proj>/artifacts --------------------------------------------------

@@ -159,7 +159,7 @@ body { max-width: 1600px; }
 .task-actions.disabled p.meta { font-style: italic; }
 .action-form { display: flex; flex-direction: column; gap: .35rem; margin: .75rem 0; padding: .75rem .9rem; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; }
 .action-form label { display: flex; flex-direction: column; gap: .25rem; font-size: .85em; color: #57606a; }
-.action-form textarea, .action-form input[type="text"], .action-form input[type="url"] { width: 100%; padding: .35rem .5rem; border: 1px solid #d0d7de; border-radius: 4px; font: inherit; background: #fff; color: inherit; }
+.action-form textarea, .action-form input[type="text"], .action-form input[type="url"], .action-form select { width: 100%; padding: .35rem .5rem; border: 1px solid #d0d7de; border-radius: 4px; font: inherit; background: #fff; color: inherit; }
 .action-form button { align-self: flex-start; padding: .35rem .85rem; background: #0969da; color: #fff; border: 1px solid #0969da; border-radius: 6px; cursor: pointer; font: inherit; }
 .action-form button:hover { background: #0860c4; }
 @media (prefers-color-scheme: dark) {
@@ -167,9 +167,15 @@ body { max-width: 1600px; }
   .flash a.flash-dismiss { color: #8d96a0; }
   .task-actions { border-color: #30363d; }
   .action-form { background: #161b22; border-color: #30363d; }
-  .action-form textarea, .action-form input[type="text"], .action-form input[type="url"] { background: #0d1117; border-color: #30363d; color: #e6edf3; }
+  .action-form textarea, .action-form input[type="text"], .action-form input[type="url"], .action-form select { background: #0d1117; border-color: #30363d; color: #e6edf3; }
   .action-form button { background: #1f6feb; border-color: #1f6feb; }
   .action-form button:hover { background: #388bfd; }
+}
+.new-task-form { margin: 1rem 0 1.5rem; padding: .5rem .85rem; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; }
+.new-task-form > summary { cursor: pointer; font-weight: 600; padding: .25rem 0; }
+.new-task-form .action-form { margin: .6rem 0 0; background: transparent; border: 0; padding: 0; }
+@media (prefers-color-scheme: dark) {
+  .new-task-form { background: #161b22; border-color: #30363d; }
 }
 .report-actions-bar { position: sticky; top: 0; z-index: 10; display: flex; gap: .6rem; flex-wrap: wrap; align-items: flex-start; margin: 0 0 1rem; padding: .6rem .85rem; background: #fff; border: 1px solid #d0d7de; border-radius: 6px; box-shadow: 0 2px 6px rgba(31, 35, 40, .06); }
 .report-actions-bar .action-form { margin: 0; padding: .35rem .55rem; flex: 0 1 auto; min-width: 0; }

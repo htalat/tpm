@@ -276,6 +276,43 @@ test("newTask: top-level numbering counts folder-form siblings, not just .md fil
   }
 });
 
+test("newTask --type: overrides the template's default `type: pr`", () => {
+  const root = mkTempDir();
+  try {
+    setupProject(root, "alpha");
+    const path = newTask(root, "alpha", "look-into", { type: "investigation" });
+    const { data } = parse(readFileSync(path, "utf8"));
+    assert.equal(data.type, "investigation");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("newTask --type: rejects unknown types", () => {
+  const root = mkTempDir();
+  try {
+    setupProject(root, "alpha");
+    assert.throws(
+      () => newTask(root, "alpha", "x", { type: "epic" }),
+      /Invalid type/,
+    );
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("newTask --type: default (no opt) keeps the template's `type: pr`", () => {
+  const root = mkTempDir();
+  try {
+    setupProject(root, "alpha");
+    const path = newTask(root, "alpha", "ship-it");
+    const { data } = parse(readFileSync(path, "utf8"));
+    assert.equal(data.type, "pr");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 test("newTask --parent: rejects nesting under a child (no grandchildren)", () => {
   const root = mkTempDir();
   try {

@@ -64,10 +64,11 @@ try {
       } else if (what === "task") {
         const project = args[2];
         const slug = args[3];
-        if (!project || !slug) usage("tpm new task <project> <slug> [--title 'Title'] [--parent <parent-slug>]");
+        if (!project || !slug) usage("tpm new task <project> <slug> [--title 'Title'] [--parent <parent-slug>] [--type pr|investigation|spike|chore]");
         const path = newTask(root, project, slug, {
           title: parseFlag(args, "--title"),
           parent: parseFlag(args, "--parent"),
+          type: parseFlag(args, "--type"),
         });
         console.log(`Created ${path}`);
       } else {
@@ -945,7 +946,7 @@ function help(): void {
 Usage:
   tpm init [<dir>]                          bootstrap a tree (default: ~/tpm)
   tpm new project <slug> [--name "Name"] [--repo <url>] [--path <dir>]
-  tpm new task <project> <slug> [--title "Title"] [--parent <parent-slug>]
+  tpm new task <project> <slug> [--title "Title"] [--parent <parent-slug>] [--type pr|investigation|spike|chore]
   tpm ls [--all] [--archived] [--flat] [--status open] [--project <slug>]
   tpm context <task | project/task | parent/child>
   tpm start <task>                           set status: in-progress, log started

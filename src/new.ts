@@ -42,11 +42,19 @@ export function newProject(root: string, slug: string, opts: NewProjectOpts = {}
 export interface NewTaskOpts {
   title?: string;
   parent?: string;
+  type?: string;
 }
+
+// Allowed values for the `type:` frontmatter field. Kept narrow so a typo on
+// the CLI (or in the serve form) doesn't seed a task with an unrecognized
+// type that later silently misroutes through queue / close-out logic.
+export const KNOWN_TASK_TYPES = ["pr", "investigation", "spike", "chore"] as const;
+export type KnownTaskType = (typeof KNOWN_TASK_TYPES)[number];
 
 export function newTask(root: string, projectSlug: string, taskSlug: string, opts: NewTaskOpts = {}): string {
   validateSlug(taskSlug);
   rejectNumericPrefix(taskSlug);
+  if (opts.type !== undefined) validateType(opts.type);
   const projectDir = join(root, projectSlug);
   if (!existsSync(join(projectDir, "project.md"))) {
     throw new Error(`Unknown project: ${projectSlug}`);
@@ -103,7 +111,9 @@ export function newTask(root: string, projectSlug: string, taskSlug: string, opt
     project: projectSlug,
     date: now(),
   });
-  const content = parentSlug ? injectParent(rendered, parentSlug) : rendered;
+  let content = rendered;
+  if (parentSlug) content = injectParent(content, parentSlug);
+  if (opts.type && opts.type !== "pr") content = injectType(content, opts.type);
   writeFileSync(path, content);
   return path;
 }
@@ -133,6 +143,16 @@ function injectParent(rendered: string, parentSlug: string): string {
   return stringify(out, body);
 }
 
+// Override the template's default `type: pr` with another known value when
+// the caller explicitly requested one. Parses/restringifies so we touch only
+// the frontmatter and don't accidentally rewrite literal `type: pr` text in
+// the body.
+function injectType(rendered: string, type: string): string {
+  const { data, body } = parse(rendered);
+  data.type = type;
+  return stringify(data, body);
+}
+
 function numberedEntries(dir: string): string[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir).filter(name => /^\d{3,}-/.test(name));
@@ -145,6 +165,14 @@ function render(tmpl: string, vars: Record<string, string>): string {
 function validateSlug(slug: string): void {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
     throw new Error(`Invalid slug "${slug}". Use lowercase letters, digits, and hyphens (no leading hyphen).`);
+  }
+}
+
+function validateType(type: string): void {
+  if (!(KNOWN_TASK_TYPES as readonly string[]).includes(type)) {
+    throw new Error(
+      `Invalid type "${type}". Known types: ${KNOWN_TASK_TYPES.join(", ")}.`,
+    );
   }
 }
 
