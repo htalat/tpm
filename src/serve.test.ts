@@ -1282,6 +1282,122 @@ test("routeMutation: /t/<slug>/archive surfaces a server-side refusal in the fla
   assert.match(decodeURIComponent(r.location ?? ""), /it has live children/);
 });
 
+// ---- new task form (project page) -----------------------------------------
+
+test("renderProject: renders a New task <details> form with slug/title/parent/type fields", () => {
+  const p = project("alpha", [
+    task("001-foo", "open"),
+    task("002-bar", "in-progress"),
+  ]);
+  const r = route("/p/alpha", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.equal(r.status, 200);
+  assert.match(r.body, /class="new-task-form"/);
+  assert.match(r.body, /<form[^>]*method="POST"[^>]*action="\/p\/alpha\/new-task"/);
+  // Slug field is required and constrained to the same regex `validateSlug` uses.
+  assert.match(r.body, /<input[^>]*name="slug"[^>]*required[^>]*pattern="\[a-z0-9\]\[a-z0-9-\]\*"/);
+  // Optional title field.
+  assert.match(r.body, /<input[^>]*name="title"/);
+  // Parent dropdown lists top-level non-archived tasks and a top-level option.
+  assert.match(r.body, /<select[^>]*name="parent">[\s\S]*<option[^>]*value="">\(top-level\)<\/option>[\s\S]*<option[^>]*value="001-foo"/);
+  assert.match(r.body, /<option[^>]*value="002-bar"/);
+  // Type dropdown has all four known types, with `pr` selected by default.
+  for (const t of ["pr", "investigation", "spike", "chore"]) {
+    assert.match(r.body, new RegExp(`<option[^>]*value="${t}"`));
+  }
+  assert.match(r.body, /<option[^>]*value="pr"[^>]*selected/);
+});
+
+test("renderProject: New task form omits child tasks from the parent dropdown", () => {
+  // Children can't host grandchildren (newTask rejects nesting). The dropdown
+  // should mirror that constraint so the operator doesn't pick a dead-end
+  // option and then bounce off a CLI error.
+  const child = task("002-child", "ready", { parent: "001-parent" });
+  child.parent = "001-parent";
+  const parent = task("001-parent", "in-progress");
+  parent.children = [child];
+  const p = project("alpha", [parent]);
+  const r = route("/p/alpha", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /<option[^>]*value="001-parent"/);
+  assert.doesNotMatch(r.body, /<option[^>]*value="002-child"/);
+});
+
+test("renderProject: New task form is hidden when mutations are disabled (non-loopback)", () => {
+  const p = project("alpha", [task("001-foo", "open")]);
+  const r = route("/p/alpha", new URLSearchParams(), [p], { mutationsEnabled: false });
+  assert.doesNotMatch(r.body, /class="new-task-form"/);
+  assert.doesNotMatch(r.body, /action="\/p\/alpha\/new-task"/);
+});
+
+// ---- new-task mutation (project-scoped POST) ------------------------------
+
+test("routeMutation: /p/<project>/new-task forwards slug to `tpm new task`", () => {
+  const { runner, calls } = captureRunner();
+  const r = routeMutation("/p/alpha/new-task", new URLSearchParams("slug=add-thing"), runner);
+  assert.equal(r.status, 303);
+  // Default redirect: the brand-new task's page.
+  assert.match(r.location ?? "", /^\/t\/alpha\/add-thing\?flash=/);
+  assert.deepEqual(calls, [["new", "task", "alpha", "add-thing"]]);
+});
+
+test("routeMutation: /p/<project>/new-task passes --title and --parent and --type when provided", () => {
+  const { runner, calls } = captureRunner();
+  const params = new URLSearchParams();
+  params.set("slug", "child-thing");
+  params.set("title", "Child thing");
+  params.set("parent", "001-parent");
+  params.set("type", "investigation");
+  const r = routeMutation("/p/alpha/new-task", params, runner);
+  assert.equal(r.status, 303);
+  // Child redirect threads the parent slug into the URL path.
+  assert.match(r.location ?? "", /^\/t\/alpha\/001-parent\/child-thing\?flash=/);
+  assert.deepEqual(calls, [[
+    "new", "task", "alpha", "child-thing",
+    "--title", "Child thing",
+    "--parent", "001-parent",
+    "--type", "investigation",
+  ]]);
+});
+
+test("routeMutation: /p/<project>/new-task skips empty optional fields", () => {
+  // Empty form fields shouldn't materialize as empty `--title ""` etc. on the
+  // command line. The CLI would accept them, but rendering would humanize an
+  // empty slug to "" which is the silent-misroute the strip avoids.
+  const { runner, calls } = captureRunner();
+  const params = new URLSearchParams();
+  params.set("slug", "do-thing");
+  params.set("title", "  ");
+  params.set("parent", "");
+  params.set("type", "");
+  routeMutation("/p/alpha/new-task", params, runner);
+  assert.deepEqual(calls, [["new", "task", "alpha", "do-thing"]]);
+});
+
+test("routeMutation: /p/<project>/new-task with missing slug redirects to project page with flash", () => {
+  const { runner, calls } = captureRunner();
+  const r = routeMutation("/p/alpha/new-task", new URLSearchParams(), runner);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/p\/alpha\?flash=/);
+  assert.match(decodeURIComponent(r.location ?? ""), /slug is required/);
+  assert.deepEqual(calls, []);
+});
+
+test("routeMutation: /p/<project>/new-task CLI failure flashes back to project page", () => {
+  // A slug collision / invalid slug / unknown parent surfaces via CLI stderr.
+  // The 303 lands on the project page so the operator can immediately retry,
+  // not on a non-existent task URL.
+  const runner: CliRunner = () => ({ ok: false, stdout: "", stderr: "Invalid slug \"Bad-Slug\"." });
+  const r = routeMutation("/p/alpha/new-task", new URLSearchParams("slug=Bad-Slug"), runner);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/p\/alpha\?flash=/);
+  assert.match(decodeURIComponent(r.location ?? ""), /Invalid slug/);
+});
+
+test("routeMutation: /p/<project>/new-task surfaces CLI stdout in success flash", () => {
+  const runner: CliRunner = () => ({ ok: true, stdout: "Created /tree/alpha/tasks/003-add-thing/task.md", stderr: "" });
+  const r = routeMutation("/p/alpha/new-task", new URLSearchParams("slug=add-thing"), runner);
+  assert.match(decodeURIComponent(r.location ?? ""), /Created \/tree\/alpha\/tasks\/003-add-thing\/task\.md/);
+});
+
 // ---- safety guards --------------------------------------------------------
 
 test("isLoopback: accepts 127.0.0.1, localhost, ::1", () => {
