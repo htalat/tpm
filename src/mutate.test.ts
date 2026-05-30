@@ -7,7 +7,7 @@ import { loadProjects } from "./tree.ts";
 import {
   start, ready, block, reopen, revert, logEntry, addPr, setStatus, complete,
   setAllowOrchestrator, reparent, addReport, requestReportChanges,
-  appendLog, setSection, sectionHasContent,
+  pullFromQueue, appendLog, setSection, sectionHasContent,
 } from "./mutate.ts";
 import { parse } from "./frontmatter.ts";
 
@@ -443,6 +443,75 @@ test("reopen: done -> open, clears closed stamp, logs reopened", () => {
     assert.match(text, /status: open/);
     assert.match(text, /^closed:\s*$/m);
     assert.match(text, /: reopened$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+// ---- pullFromQueue --------------------------------------------------------
+
+test("pull: ready -> open, logs pulled-from-queue with src+dst", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "ready");
+    const t = loadTask(root, "alpha", "001-a");
+    const r = pullFromQueue(t);
+    assert.match(r.message, /-> open/);
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: open/);
+    assert.match(text, /: pulled from queue \(ready -> open\)$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("pull: needs-feedback -> needs-review, logs pulled-from-queue", () => {
+  // Escalation to the human queue: feedback flow already routes ambiguous
+  // signal there, so the demote target stays consistent (task 117 plan, step 2).
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "needs-feedback");
+    const t = loadTask(root, "alpha", "001-a");
+    pullFromQueue(t);
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: needs-review/);
+    assert.match(text, /: pulled from queue \(needs-feedback -> needs-review\)$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("pull: leaves allow_orchestrator: true alone when pulling a ready task back to open", () => {
+  // Operators can keep autonomous opt-in across the open/ready bounce without
+  // re-toggling — see Plan step 4.
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "open");
+    const t0 = loadTask(root, "alpha", "001-a");
+    ready(t0); // ready also sets allow_orchestrator: true
+    const t1 = loadTask(root, "alpha", "001-a");
+    pullFromQueue(t1);
+    const text = readFileSync(t1.path, "utf8");
+    const { data } = parse(text);
+    assert.equal(data.status, "open");
+    assert.equal(data.allow_orchestrator, true);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("pull: refuses statuses outside ready / needs-feedback", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    for (const s of ["open", "in-progress", "needs-review", "needs-close", "blocked", "done", "dropped"]) {
+      writeTask(dir, `001-${s}.md`, s);
+      const t = loadTask(root, "alpha", `001-${s}`);
+      assert.throws(() => pullFromQueue(t), /pull only applies to ready/, `expected refusal on ${s}`);
+    }
   } finally {
     rmTempDir(root);
   }

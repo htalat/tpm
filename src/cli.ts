@@ -292,6 +292,11 @@ try {
       console.log(r.message);
       break;
     }
+    case "pull": {
+      const r = mutate.pullFromQueue(resolveLiveTask(args[1], "tpm pull <task>"));
+      console.log(r.message);
+      break;
+    }
     case "revert": {
       const reason = args[2];
       const r = mutate.revert(resolveLiveTask(args[1], 'tpm revert <task> ["<reason>"]'), reason);
@@ -954,6 +959,7 @@ Usage:
                                              set status: done, stamp closed, log; archives by type
   tpm block <task> "<reason>"                set status: blocked, log the reason
   tpm reopen <task>                          set status: open, log it
+  tpm pull <task>                            pull a queued task back into the human pile: ready -> open, needs-feedback -> needs-review
   tpm revert <task> ["<reason>"]             flip in-progress -> ready, log a timeout/revert (no-op otherwise)
   tpm status <task> <new-status>             generic status setter (validated)
   tpm log <task> "<message>"                 append a single timestamped Log line
