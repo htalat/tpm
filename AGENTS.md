@@ -114,6 +114,7 @@ This is the primary action.
    - `open` or `ready` → run `tpm start <slug>` to flip to `in-progress` and stamp a `started` Log entry. (Idempotent: already-`in-progress` is a no-op.)
    - anything else (`in-progress`, `needs-review`, `blocked`, terminal) → leave status alone and proceed.
 4. `cd "$(tpm path <slug>)"` — that's where the work happens. If `tpm path` errors because no local path is set, ask the user for the path and offer to populate `repo.local` in the project (or task) file.
+   - **Before cutting a feature branch, refresh `main`.** Run `git checkout main && git pull --ff-only`. If the working tree has uncommitted changes or the pull doesn't fast-forward (you'll see `Aborting` / `Not possible to fast-forward`), run `tpm block <slug> "stale checkout — needs human reconcile"` and exit — don't try to rebase, stash-and-pray, or push through. PR #120 hit the canonical failure (branched off stale local main → conflict at merge); the orchestrator-spawned execution prompt repeats this rule so unattended runs can't reach review from a stale checkout either.
 5. **Resolve the workflow doc.** This tells you how to validate, how to ship, and when to close.
    - If the briefing has a `Workflow:` line, read that file (path is relative to the repo root).
    - Else look for `AGENTS.md`, then `CLAUDE.md`, in the repo root.

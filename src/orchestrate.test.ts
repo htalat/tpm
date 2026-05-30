@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   buildExecutionPrompt,
   buildFeedbackPrompt,
@@ -947,6 +948,16 @@ test("repoGuardAction: missing repo on an already-blocked task → skip (idempot
   // re-log — the skip branch is the idempotency backstop.
   const check = checkProjectRepo("tpm/002-foo", { remote: null, local: "/never/cloned" }, () => false);
   assert.deepEqual(repoGuardAction("blocked", check), { action: "skip" });
+});
+
+test("buildExecutionPrompt: includes the refresh-main-before-branching rule (task 118)", () => {
+  // PR #120 failure mode: agent inherits a stale checkout, branches off stale
+  // main, conflicts at merge time. The rule lives in the agent prompt so both
+  // orchestrator and manual `/tpm <slug>` runs land on a fresh main.
+  const prompt = buildExecutionPrompt("BRIEFING");
+  assert.match(prompt, /Before cutting your feature branch, refresh `main`/);
+  assert.match(prompt, /git checkout main && git pull --ff-only/);
+  assert.match(prompt, /tpm block <slug> "stale checkout — needs human reconcile"/);
 });
 
 // runWithTimeout integration: spawn a real (short-lived) child and verify the

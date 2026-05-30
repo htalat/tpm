@@ -229,6 +229,7 @@ ${briefing}
 
 You are executing this task. Rules:
 - If \`prs:\` is non-empty and any linked PR is OPEN, fetch its comments and reviews via the host CLI (dispatch on \`Host:\` in the briefing) before any other discovery. Unaddressed comments are almost certainly why you're seeing this task — address them first.
+- Before cutting your feature branch, refresh \`main\`: \`git checkout main && git pull --ff-only\`. If the working tree is dirty or the pull doesn't fast-forward, run \`tpm block <slug> "stale checkout — needs human reconcile"\` and exit — don't rebase, stash, or push through. (PR #120 failure mode: branched off stale main, conflicted at merge.)
 - Follow the Plan above.
 - If type=pr: after opening a PR, run \`tpm pr <slug> <url>\` (CLI auto-flips to needs-review). Stop.
 - If type=investigation: your deliverable is a **report**, not a PR. Run \`tpm report <slug>\` to fold the task into a folder and scaffold \`<project>/tasks/<slug>/report.md\` from the template. Write findings into that file. When done, re-run \`tpm report <slug>\` — the CLI auto-flips to needs-review. Don't run \`tpm pr\`.
@@ -962,6 +963,11 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
     return { exitCode: 1 };
   }
 
+  const beforeStatus = String(pick.task.data.status ?? "");
+  const before = snapshotTask(pick.task);
+  const prUrls = parsePrUrls(pick.task);
+  const useFeedbackPrompt = beforeStatus === "needs-feedback" && prUrls.length > 0;
+
   // Per-run log: capture the agent's session output so `tpm serve` can show
   // what the agent is doing live, and so a post-mortem after a failed run has
   // more than just the start/finish envelope to work from. The orchestrator's
@@ -1006,15 +1012,8 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
   // PR list is empty or the fetch errors out — we'd rather ship a less-rich
   // prompt than skip the dispatch.
   const briefing = buildBriefing(root, slug);
-  // Pre-flip snapshot: classifyDisposition / shouldAutoRevert need to see the
-  // task's real entry status, not the post-eager-flip `in-progress`. Capture
-  // here so the disposition log still reads `status=ready->needs-review` etc.
-  // even after the orchestrator pre-claims on disk.
-  const beforeStatus = String(pick.task.data.status ?? "");
-  const before = snapshotTask(pick.task);
-  const prUrls = parsePrUrls(pick.task);
   let prompt: string;
-  if (beforeStatus === "needs-feedback" && prUrls.length > 0) {
+  if (useFeedbackPrompt) {
     const prContext = await fetchFeedbackContexts(prUrls);
     prompt = buildFeedbackPrompt(briefing, prContext);
     log("INFO", `${slug}: feedback-mode prompt with ${prUrls.length} PR(s)`);

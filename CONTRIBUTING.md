@@ -9,6 +9,8 @@ This file is the workflow doc for tasks run **inside this repo** — building tp
 ## Ship via PR
 Every change — behavior, docs, tests, comment edits — goes via PR. Branch off `main`, push, `gh pr create`. Append the PR URL to the task's `prs:` frontmatter list.
 
+**Before cutting the feature branch, refresh `main`** (`git checkout main && git pull --ff-only`); on a dirty tree or non-fast-forward, `tpm block` the task instead of pushing through. The agent-neutral long form is in [`AGENTS.md`](AGENTS.md#start-a-task) step 4 — same rule, same reason: PR #120 hit the "branched off stale local main → conflict at merge time" failure mode, and the only clean way to avoid it is to never let it start.
+
 ## Wait for CI green before merge (humans only)
 After pushing the PR, the `test` workflow runs against the branch. **Don't merge until it's green.** If it fails, fix the underlying issue (don't disable the check, don't merge anyway). `gh pr checks <PR>` polls the status from the terminal; the PR page surfaces it too.
 
