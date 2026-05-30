@@ -14,11 +14,9 @@ import {
   evaluateTerminalState,
   fetchFeedbackContexts,
   formatDispositionLine,
-  freshMainAction,
   noPickLogEntry,
   ORCHESTRATOR_CLAIM_VERB,
   parsePrUrls,
-  parseRevListCounts,
   planReconcile,
   repoGuardAction,
   resolvePoolShape,
@@ -26,7 +24,6 @@ import {
   runPool,
   runWithTimeout,
   shouldAutoRevert,
-  summarizeDirtyPaths,
 } from "./orchestrate.ts";
 import * as mutate from "./mutate.ts";
 import type { Project, Task } from "./tree.ts";
@@ -954,97 +951,10 @@ test("repoGuardAction: missing repo on an already-blocked task → skip (idempot
   assert.deepEqual(repoGuardAction("blocked", check), { action: "skip" });
 });
 
-// Fresh-main precondition (task 118). The four scenarios named in the task
-// plan — dirty / behind / clean / non-FF — all decided by freshMainAction.
-// The imperative shell (ensureFreshMain) just runs git and threads the result.
-test("freshMainAction: dirty working tree → block with the offending paths", () => {
-  // (a) dirty tree → block + skip spawn. The reason names the files so a
-  // human reading `tpm inbox` knows what to commit/stash.
-  const action = freshMainAction(
-    { dirty: true, dirtyPaths: "src/foo.ts, README.md", ahead: 0, behind: 0 },
-    "tpm/118-foo",
-  );
-  assert.equal(action.action, "block");
-  if (action.action !== "block") return;
-  assert.match(action.reason, /dirty checkout/);
-  assert.match(action.reason, /src\/foo\.ts/);
-  assert.match(action.reason, /tpm ready tpm\/118-foo/);
-});
-
-test("freshMainAction: clean tree behind origin → pull (auto-fast-forward then spawn)", () => {
-  // (b) behind main → auto-pull then spawn. The shell runs `git pull --ff-only`
-  // on this branch; on success, freshMainEnforced flips and the agent is told
-  // it's on a fresh main.
-  const action = freshMainAction(
-    { dirty: false, dirtyPaths: "", ahead: 0, behind: 3 },
-    "tpm/118-foo",
-  );
-  assert.deepEqual(action, { action: "pull", behind: 3 });
-});
-
-test("freshMainAction: clean tree up-to-date → proceed (no pull needed)", () => {
-  // (c) clean & up-to-date → spawn directly. The shell still does `git checkout
-  // main` (in case a leftover feature branch is checked out from a prior run)
-  // but skips the pull.
-  const action = freshMainAction(
-    { dirty: false, dirtyPaths: "", ahead: 0, behind: 0 },
-    "tpm/118-foo",
-  );
-  assert.deepEqual(action, { action: "proceed" });
-});
-
-test("freshMainAction: local main ahead of origin → block (pull would not fast-forward)", () => {
-  // (d) non-FF pull → block + skip spawn. Ahead > 0 means local main has
-  // commits the remote doesn't; `git pull --ff-only` would fail. Don't try to
-  // rebase main automatically — surface to the operator.
-  const action = freshMainAction(
-    { dirty: false, dirtyPaths: "", ahead: 2, behind: 5 },
-    "tpm/118-foo",
-  );
-  assert.equal(action.action, "block");
-  if (action.action !== "block") return;
-  assert.match(action.reason, /local main has 2 commit\(s\) not on origin\/main/);
-  assert.match(action.reason, /not fast-forward/);
-  assert.match(action.reason, /tpm ready tpm\/118-foo/);
-});
-
-test("freshMainAction: dirty + non-FF → dirty wins (operator fixes one thing at a time)", () => {
-  // Both signals set: surface dirty first. A dirty checkout makes the ahead
-  // diagnosis meaningless (you'd lose the dirty work to a reset), and the
-  // operator's first move has to be commit/stash anyway.
-  const action = freshMainAction(
-    { dirty: true, dirtyPaths: "src/foo.ts", ahead: 2, behind: 0 },
-    "tpm/118-foo",
-  );
-  assert.equal(action.action, "block");
-  if (action.action !== "block") return;
-  assert.match(action.reason, /dirty checkout/);
-});
-
-test("summarizeDirtyPaths: trims status glyphs, caps at three with overflow count", () => {
-  // The block reason needs to be readable in `tpm inbox`; full porcelain
-  // output is noisy. Strip the leading `XY ` prefix, comma-join, count the
-  // rest.
-  const porcelain =
-    " M src/foo.ts\n?? new-file.txt\n M README.md\n M docs/intro.md\n M docs/usage.md\n";
-  const summary = summarizeDirtyPaths(porcelain);
-  assert.equal(summary, "src/foo.ts, new-file.txt, README.md (+2 more)");
-});
-
-test("parseRevListCounts: tab-separated left/right (behind, ahead)", () => {
-  // `git rev-list --left-right --count origin/main...main` output. Left is
-  // commits in origin/main not in main (we're behind); right is commits in
-  // main not in origin/main (we're ahead, non-FF if >0).
-  assert.deepEqual(parseRevListCounts("3\t1\n"), { behind: 3, ahead: 1 });
-  assert.deepEqual(parseRevListCounts("0\t0"), { behind: 0, ahead: 0 });
-  // Defensive on malformed output (shouldn't happen, but don't crash the run).
-  assert.deepEqual(parseRevListCounts("garbage"), { behind: 0, ahead: 0 });
-});
-
-// Integration: spin up a real local-and-"remote" pair of git repos, run
-// ensureFreshMain, and verify the imperative shell wires up the fetch → pull
-// flow. Mocking git would let the shell pass while silently regressing the
-// argument list; an actual git tells us the commands work end-to-end.
+// Fresh-main precondition (task 118). Integration tests against a real
+// local-and-"remote" pair of git repos so we exercise the actual git argument
+// list (mocking would let the shell pass while silently regressing the
+// commands).
 function gitTest(cwd: string, args: string[]): void {
   execFileSync("git", args, {
     cwd,
@@ -1126,9 +1036,59 @@ test("ensureFreshMain: dirty working tree → block, doesn't touch git state", (
     const result = ensureFreshMain(local, "tpm/118-foo", () => {});
     assert.equal(result.ok, false);
     assert.match(result.reason ?? "", /dirty checkout/);
+    assert.match(result.reason ?? "", /tpm ready tpm\/118-foo/);
     // Files still on disk untouched (the shell mustn't reset/stash).
     assert.equal(readFileSync(join(local, "README.md"), "utf8"), "scratched\n");
     assert.equal(readFileSync(join(local, "scratch.txt"), "utf8"), "ad-hoc\n");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ensureFreshMain: clean and up-to-date → ok, no pull log line", () => {
+  // Common case: nothing to do. The precondition should be quiet (no log spam
+  // every spawn) but still leave the tree on main.
+  const { local, tmp } = setupOriginAndClone();
+  try {
+    const lines: string[] = [];
+    const result = ensureFreshMain(local, "tpm/118-foo", (level, msg) => {
+      lines.push(`${level} ${msg}`);
+    });
+    assert.equal(result.ok, true, `expected ok; got: ${result.reason}`);
+    const branch = execFileSync("git", ["symbolic-ref", "--short", "HEAD"], {
+      cwd: local, encoding: "utf8",
+    }).trim();
+    assert.equal(branch, "main");
+    assert.equal(
+      lines.filter(l => /pulled main fast-forward/.test(l)).length,
+      0,
+      `did not expect a pulled-main log line; saw: ${JSON.stringify(lines)}`,
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ensureFreshMain: diverged main (local + origin both moved) → block, surfaces git's pull error", () => {
+  // Non-FF: local main has commits the remote doesn't AND origin has commits
+  // local doesn't. `git pull --ff-only` refuses; we don't classify with
+  // rev-list ourselves — git's own error message is the diagnostic.
+  const { local, tmp } = setupOriginAndClone();
+  try {
+    // Origin moves forward via the seed clone.
+    const seed = join(tmp, "seed");
+    writeFileSync(join(seed, "README.md"), "second\n");
+    gitTest(seed, ["commit", "-am", "second", "--quiet"]);
+    gitTest(seed, ["push", "origin", "main", "--quiet"]);
+    // Local main commits something different on top of the original base.
+    writeFileSync(join(local, "local-only.txt"), "local commit\n");
+    gitTest(local, ["add", "."]);
+    gitTest(local, ["commit", "-m", "local-only", "--quiet"]);
+
+    const result = ensureFreshMain(local, "tpm/118-foo", () => {});
+    assert.equal(result.ok, false);
+    assert.match(result.reason ?? "", /git pull --ff-only failed/);
+    assert.match(result.reason ?? "", /tpm ready tpm\/118-foo/);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

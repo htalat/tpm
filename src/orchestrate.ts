@@ -401,65 +401,12 @@ export function repoGuardAction(currentStatus: string, check: RepoCheck): RepoGu
   return { action: "block", reason: check.reason };
 }
 
-// Decide what to do about local `main` before dispatching an agent that will
-// cut a feature branch (task 118). The orchestrator's enforcement layer for
-// PR #120's "branched off stale local main" failure: a worker inheriting a
-// stale checkout silently builds on missing upstream commits, then the PR
-// conflicts at merge time and needs a manual rebase.
-//
-// Pure so the four scenarios — clean, behind, dirty, non-FF — are unit-testable
-// without spawning git. The imperative shell (`ensureFreshMain`) gathers
-// `git status --porcelain` + `git rev-list --left-right --count origin/main...main`,
-// calls this, then runs `git pull --ff-only` on the `pull` branch.
-//
-//   dirty       — `git status --porcelain` non-empty (any change, any branch)
-//   dirtyPaths  — short summary of the first few paths, for the block reason
-//   ahead       — local main commits not on origin/main; >0 means pull won't
-//                 fast-forward (block — agent shouldn't try to rebase main)
-//   behind      — origin/main commits not on local main; >0 means a pull is
-//                 needed to bring local main fresh
-export interface MainFreshness {
-  dirty: boolean;
-  dirtyPaths: string;
-  ahead: number;
-  behind: number;
-}
-
-export type FreshMainAction =
-  | { action: "proceed" }
-  | { action: "pull"; behind: number }
-  | { action: "block"; reason: string };
-
-export function freshMainAction(state: MainFreshness, slug: string): FreshMainAction {
-  if (state.dirty) {
-    return {
-      action: "block",
-      reason: `dirty checkout: ${state.dirtyPaths} — commit/stash, then \`tpm ready ${slug}\` to re-enter the queue`,
-    };
-  }
-  if (state.ahead > 0) {
-    return {
-      action: "block",
-      reason: `local main has ${state.ahead} commit(s) not on origin/main; pull would not fast-forward — reconcile, then \`tpm ready ${slug}\` to re-enter the queue`,
-    };
-  }
-  if (state.behind > 0) return { action: "pull", behind: state.behind };
-  return { action: "proceed" };
-}
-
-// Imperative half of the fresh-main precondition. Runs git in `cwd`, threads
-// the observed state through `freshMainAction`, and on success leaves the
-// working tree checked out on a fast-forwarded `main`. The downstream agent's
-// `git checkout -b <feature>` then branches off the correct commit.
-//
-// Hard-codes `main` as the default branch name — matches what AGENTS.md /
-// CONTRIBUTING.md tell agents to branch off. A repo that uses a different
-// default (e.g. `master`, `develop`) will fail the rev-list step and block the
-// task; the block reason names the git error so the operator can see what to
-// fix.
-//
-// Returns a uniform `{ ok, reason? }`: callers don't care which step failed,
-// only that the task should be flipped to `blocked` with the reason.
+// Make sure the local clone is on a fast-forwarded `main` before the agent
+// branches off (task 118). PR #120's failure mode: agent inherits a stale
+// checkout, branches off stale main, conflicts at merge with upstream commits
+// it never saw. We refuse to dispatch on a dirty tree, then checkout main and
+// `pull --ff-only`. On any git failure, surface git's own message — the
+// operator's recovery is "read the error, fix, then `tpm ready <slug>`".
 export interface FreshMainResult {
   ok: boolean;
   reason?: string;
@@ -489,25 +436,6 @@ function runGit(cwd: string, args: string[]): GitRunResult {
   }
 }
 
-export function summarizeDirtyPaths(porcelain: string, max = 3): string {
-  const lines = porcelain.split("\n").map(l => l.trim()).filter(Boolean);
-  // `git status --porcelain` lines start with `XY <path>` (two status chars,
-  // a space, then the path; rename lines have ` -> ` we keep). Strip the
-  // leading status code so the block reason names files, not glyphs.
-  const paths = lines.slice(0, max).map(l => l.replace(/^.{1,3}\s+/, ""));
-  const overflow = lines.length > max ? ` (+${lines.length - max} more)` : "";
-  return paths.join(", ") + overflow;
-}
-
-export function parseRevListCounts(out: string): { behind: number; ahead: number } {
-  // `git rev-list --left-right --count A...B` emits "<left>\t<right>\n".
-  // With `origin/main...main`: left = origin/main commits not in main (behind),
-  // right = main commits not in origin/main (ahead).
-  const m = out.trim().match(/^(\d+)\s+(\d+)$/);
-  if (!m) return { behind: 0, ahead: 0 };
-  return { behind: parseInt(m[1], 10), ahead: parseInt(m[2], 10) };
-}
-
 function oneLine(s: string): string {
   return s.replace(/\s+/g, " ").trim().slice(0, 200);
 }
@@ -517,40 +445,36 @@ export function ensureFreshMain(
   slug: string,
   log: (level: LogLevel, message: string) => void,
 ): FreshMainResult {
-  const fetch = runGit(cwd, ["fetch", "origin", "main"]);
-  if (fetch.code !== 0) {
-    return { ok: false, reason: `git fetch origin main failed: ${oneLine(fetch.stderr || fetch.stdout)}` };
-  }
+  // Dirty check first: a clean-but-not-FF case would otherwise produce a
+  // confusing "your local changes would be overwritten" pull error when the
+  // real problem is uncommitted work.
   const status = runGit(cwd, ["status", "--porcelain"]);
   if (status.code !== 0) {
     return { ok: false, reason: `git status failed: ${oneLine(status.stderr || status.stdout)}` };
   }
-  const dirty = status.stdout.trim().length > 0;
-  const dirtyPaths = dirty ? summarizeDirtyPaths(status.stdout) : "";
-  const counts = runGit(cwd, ["rev-list", "--left-right", "--count", "origin/main...main"]);
-  if (counts.code !== 0) {
+  if (status.stdout.trim().length > 0) {
     return {
       ok: false,
-      reason: `git rev-list origin/main...main failed: ${oneLine(counts.stderr || counts.stdout)}`,
+      reason: `dirty checkout: ${oneLine(status.stdout)} — commit/stash, then \`tpm ready ${slug}\``,
     };
   }
-  const { ahead, behind } = parseRevListCounts(counts.stdout);
-  const action = freshMainAction({ dirty, dirtyPaths, ahead, behind }, slug);
-  if (action.action === "block") {
-    return { ok: false, reason: action.reason };
-  }
-  // Always end up on main so the agent's branch-off starts from the right ref.
-  // A leftover feature branch from a prior run is the canonical PR #120 trap.
+  // Always switch to main — handles the leftover-feature-branch case from PR
+  // #120 where the agent would inherit the prior run's branch.
   const checkout = runGit(cwd, ["checkout", "main"]);
   if (checkout.code !== 0) {
     return { ok: false, reason: `git checkout main failed: ${oneLine(checkout.stderr || checkout.stdout)}` };
   }
-  if (action.action === "pull") {
-    const pull = runGit(cwd, ["pull", "--ff-only"]);
-    if (pull.code !== 0) {
-      return { ok: false, reason: `git pull --ff-only failed: ${oneLine(pull.stderr || pull.stdout)}` };
-    }
-    log("INFO", `${slug}: pulled main fast-forward (${action.behind} commit(s))`);
+  // `pull --ff-only` fetches + fast-forwards in one step. A non-FF pull errors
+  // with git's own message — no need to rev-list and re-classify ourselves.
+  const pull = runGit(cwd, ["pull", "--ff-only"]);
+  if (pull.code !== 0) {
+    return {
+      ok: false,
+      reason: `git pull --ff-only failed: ${oneLine(pull.stderr || pull.stdout)} — reconcile, then \`tpm ready ${slug}\``,
+    };
+  }
+  if (!/already up to date/i.test(pull.stdout)) {
+    log("INFO", `${slug}: pulled main fast-forward`);
   }
   return { ok: true };
 }
