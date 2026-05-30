@@ -65,22 +65,29 @@ printf 'release: running tests...\n'
 npm test --silent
 
 # ---- bump -----------------------------------------------------------------
-# `npm version --no-git-tag-version` updates package.json without git side effects.
+# `npm version --no-git-tag-version` updates package.json (and package-lock.json
+# when present) without git side effects.
 NEW_TAG="$(npm version "$BUMP" --no-git-tag-version)"   # prints e.g. "v0.2.0"
 NEW_VERSION="${NEW_TAG#v}"
 
-if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
-  # Restore package.json before bailing so the tree stays clean.
+# Restore both files on abort so the tree stays clean.
+restore_bump() {
   git checkout -- package.json
+  if [ -f package-lock.json ]; then git checkout -- package-lock.json; fi
+}
+
+if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+  restore_bump
   die "tag $NEW_TAG already exists locally"
 fi
 if git ls-remote --tags origin "$NEW_TAG" | grep -q "$NEW_TAG"; then
-  git checkout -- package.json
+  restore_bump
   die "tag $NEW_TAG already exists on origin"
 fi
 
 # ---- commit + tag + push --------------------------------------------------
 git add package.json
+if [ -f package-lock.json ]; then git add package-lock.json; fi
 git commit --quiet -m "Release $NEW_TAG"
 
 if [ -n "$NOTES_FILE" ]; then
@@ -100,3 +107,8 @@ else
 fi
 
 printf 'release: shipped %s -> %s\n' "$NEW_TAG" "$URL"
+
+# ---- post-release sanity --------------------------------------------------
+# Belt against the "release commit forgot to stage a sibling file" class of
+# bug — if anything is dirty here, the next release will inherit drift.
+git diff-index --quiet HEAD -- || die "post-release: working tree dirty; investigate before next release"
