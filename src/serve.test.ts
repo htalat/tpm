@@ -1415,6 +1415,17 @@ test("renderProject: renders a New task <details> form with slug/title/parent/ty
   assert.match(r.body, /<option[^>]*value="pr"[^>]*selected/);
 });
 
+test("renderProject: New task form renders above the project body", () => {
+  // The create-task form sits at the top of the main column so it's the first
+  // thing in reach on the project page, ahead of the prose body and queues.
+  const p = project("alpha", [task("001-foo", "open")]);
+  const r = route("/p/alpha", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.ok(
+    r.body.indexOf('class="new-task-form"') < r.body.indexOf('class="body"'),
+    "new-task form should appear before the project body",
+  );
+});
+
 test("renderProject: New task form omits child tasks from the parent dropdown", () => {
   // Children can't host grandchildren (newTask rejects nesting). The dropdown
   // should mirror that constraint so the operator doesn't pick a dead-end
