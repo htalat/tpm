@@ -868,8 +868,8 @@ ${flashBanner}
     </dl>
   </aside>
   <main>
-    <div class="body">${renderMarkdown(extractProjectBody(project.body))}</div>
     ${newTaskForm}
+    <div class="body">${renderMarkdown(extractProjectBody(project.body))}</div>
     ${sectionsHtml || `<p class="queue-empty">No active tasks.</p>`}
   </main>
 </div>
