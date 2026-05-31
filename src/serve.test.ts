@@ -2385,6 +2385,41 @@ test("route: /logs and the per-source pages all auto-refresh every 5s for live t
   }
 });
 
+// ---- in-place soft-poll (task 123) ----------------------------------------
+
+test("layout: live pages soft-poll in place via JS, with meta-refresh demoted to a <noscript> fallback", () => {
+  // The index sets autoRefresh: 30. The primary refresh mechanism is now a JS
+  // poller that swaps the #poll-root container — no full-page reload, so the
+  // operator keeps scroll position and doesn't see the page flash white.
+  const p = project("alpha", [task("001", "ready")]);
+  const r = route("/", new URLSearchParams(), [p]);
+  // Content lives in a swappable container the poller targets.
+  assert.match(r.body, /<div id="poll-root">/);
+  // The poller fetches the page and replaces #poll-root rather than reloading.
+  assert.match(r.body, /getElementById\('poll-root'\)/);
+  assert.match(r.body, /new DOMParser\(\)/);
+  assert.match(r.body, /var ms=30000;/);
+  assert.match(r.body, /setInterval\(tick,ms\)/);
+  // Meta-refresh survives only as the no-JS fallback, on the same interval.
+  assert.match(r.body, /<noscript><meta http-equiv="refresh" content="30"><\/noscript>/);
+});
+
+test("layout: the soft-poll interval matches each page's cadence (logs: 5s)", () => {
+  const reader: HarnessLogReader = () => [];
+  const r = route("/logs", new URLSearchParams(), [], { harnessLog: reader });
+  assert.match(r.body, /var ms=5000;/);
+  assert.match(r.body, /<noscript><meta http-equiv="refresh" content="5"><\/noscript>/);
+});
+
+test("layout: non-live pages ship neither the poller nor any meta-refresh", () => {
+  // The task detail page never auto-refreshes (rail edits would be clobbered),
+  // so it must carry no poller script and no meta-refresh at all.
+  const p = project("alpha", [task("001", "ready")]);
+  const r = route("/t/alpha/001", new URLSearchParams(), [p]);
+  assert.doesNotMatch(r.body, /http-equiv="refresh"/);
+  assert.doesNotMatch(r.body, /getElementById\('poll-root'\)/);
+});
+
 test("route: /logs?task=<slug> 302-redirects to /t/<proj>/<slug>/log", () => {
   // Per-task logs moved from a query-param branch of /logs to a sub-resource
   // of the task. Old bookmarks redirect for one release window before the

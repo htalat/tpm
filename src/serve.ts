@@ -2446,21 +2446,41 @@ function renderFlashBanner(message: string | undefined, dismissHref: string): st
 <script>${FLASH_AUTO_DISMISS_SCRIPT}</script>`;
 }
 
+// In-place poller for the live pages (queues, log tails, run viewer). Replaces
+// the jarring full-page `<meta http-equiv="refresh">` reload: every N seconds
+// it re-fetches the current URL in the background and swaps the `#poll-root`
+// container's innerHTML, so the operator sees fresh status without losing
+// scroll position, text selection, or the page flashing white. Skips the swap
+// when the tab is hidden, when a form field is focused (don't yank text out
+// from under a typist), and when the markup is byte-identical (no needless DOM
+// churn). The matching `<noscript>` meta-refresh in `layout` keeps no-JS
+// browsers working. Plain ES5 / built-in `fetch` + `DOMParser` — zero deps,
+// same style as FLASH_AUTO_DISMISS_SCRIPT.
+function pollScript(seconds: number): string {
+  return `(function(){var ms=${seconds * 1000};var root=document.getElementById('poll-root');if(!root)return;var busy=false;function editing(){var a=document.activeElement;return!!a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.tagName==='SELECT');}function tick(){if(busy||document.hidden||editing())return;busy=true;fetch(location.href,{headers:{'X-Tpm-Poll':'1'}}).then(function(r){return r.ok?r.text():null;}).then(function(html){if(html){var next=new DOMParser().parseFromString(html,'text/html').getElementById('poll-root');if(next&&next.innerHTML!==root.innerHTML)root.innerHTML=next.innerHTML;}}).catch(function(){}).then(function(){busy=false;});}setInterval(tick,ms);})();`;
+}
+
 function layout(title: string, body: string, opts: { autoRefresh?: number } = {}): string {
-  const refresh = opts.autoRefresh
-    ? `<meta http-equiv="refresh" content="${opts.autoRefresh}">`
+  // Live pages soft-poll via JS (see pollScript) and keep a `<noscript>`
+  // meta-refresh as the no-JS fallback. Both fire on the same interval.
+  const fallback = opts.autoRefresh
+    ? `<noscript><meta http-equiv="refresh" content="${opts.autoRefresh}"></noscript>`
+    : "";
+  const poller = opts.autoRefresh
+    ? `\n<script>${pollScript(opts.autoRefresh)}</script>`
     : "";
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <title>${esc(title)}</title>
-${refresh}
+${fallback}
 <style>${BASE_CSS}${SERVE_CSS}</style>
 </head>
 <body>
 <header class="site-header"><a class="home" href="/">tpm</a></header>
-${body}</body>
+<div id="poll-root">${body}</div>${poller}
+</body>
 </html>`;
 }
 
