@@ -2726,3 +2726,180 @@ test("renderProject: ad-hoc crumb opens on the project segment, no home crumb", 
   assert.doesNotMatch(r.body, /<nav class="crumbs"><a href="\/"/);
 });
 
+// ---- inline editor (task 121) ---------------------------------------------
+
+test("renderTask: read view renders an `edit` link in each editable section header", () => {
+  // Mutations enabled + non-archived task: Context / Plan / Outcome each carry
+  // an inline edit affordance pointing back at the page with ?edit=<section>.
+  const root = mkTempDir();
+  try {
+    const t = folderTask(root, "001-a", "in-progress");
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+    assert.equal(r.status, 200);
+    assert.match(r.body, /id="section-context"[\s\S]*?<a class="section-edit-link" href="\/t\/alpha\/001-a\?edit=context/);
+    assert.match(r.body, /id="section-plan"[\s\S]*?<a class="section-edit-link" href="\/t\/alpha\/001-a\?edit=plan/);
+    // Log is intentionally not editable — append-only via tpm log.
+    assert.doesNotMatch(r.body, /href="\/t\/alpha\/001-a\?edit=log"/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("renderTask: title header carries an `edit` link beside the status badge", () => {
+  const root = mkTempDir();
+  try {
+    const t = folderTask(root, "001-a", "in-progress");
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+    assert.match(r.body, /<a class="title-edit-link" href="\/t\/alpha\/001-a\?edit=title">edit<\/a>/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("renderTask: ?edit=context swaps the Context section to a textarea form with mtime stamp", () => {
+  const root = mkTempDir();
+  try {
+    const t = folderTask(root, "001-a", "in-progress");
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a", new URLSearchParams("edit=context"), [p], { mutationsEnabled: true });
+    assert.match(r.body, /<form[^>]*method="POST"[^>]*action="\/t\/alpha\/001-a\/edit"[^>]*class="action-form section-edit-form"/);
+    assert.match(r.body, /name="section" value="Context"/);
+    assert.match(r.body, /name="mtime" value="\d+(?:\.\d+)?"/);
+    assert.match(r.body, /<textarea[^>]*name="value"[^>]*>/);
+    // Cancel link returns to the task page (no edit param).
+    assert.match(r.body, /<a class="action-cancel" href="\/t\/alpha\/001-a">Cancel<\/a>/);
+    // Other editable sections stay in read view with edit links.
+    assert.match(r.body, /<a class="section-edit-link" href="\/t\/alpha\/001-a\?edit=plan/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("renderTask: ?edit=title swaps the header h1 to a text input form", () => {
+  const root = mkTempDir();
+  try {
+    const t = folderTask(root, "001-a", "in-progress");
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a", new URLSearchParams("edit=title"), [p], { mutationsEnabled: true });
+    assert.match(r.body, /<form[^>]*action="\/t\/alpha\/001-a\/edit"[^>]*class="action-form title-edit-form"/);
+    assert.match(r.body, /name="section" value="title"/);
+    assert.match(r.body, /<input[^>]*type="text"[^>]*name="value"[^>]*value="Task 001-a"/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("renderTask: ?edit=<unknown> falls back to read view (no form)", () => {
+  // Defensive: the route validates `?edit` against the whitelist so a stray
+  // query param can't sneak past into the rendered form's hidden section
+  // field. Unknown values render the page as if no edit was requested.
+  const root = mkTempDir();
+  try {
+    const t = folderTask(root, "001-a", "in-progress");
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a", new URLSearchParams("edit=log"), [p], { mutationsEnabled: true });
+    assert.doesNotMatch(r.body, /class="action-form section-edit-form"/);
+    assert.doesNotMatch(r.body, /class="action-form title-edit-form"/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("renderTask: mutations disabled hides every inline edit affordance", () => {
+  const root = mkTempDir();
+  try {
+    const t = folderTask(root, "001-a", "in-progress");
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: false });
+    assert.doesNotMatch(r.body, /class="section-edit-link"/);
+    assert.doesNotMatch(r.body, /class="title-edit-link"/);
+    // ?edit=context still falls back to read view when mutations are off —
+    // can't open the editor without write access.
+    const r2 = route("/t/alpha/001-a", new URLSearchParams("edit=context"), [p], { mutationsEnabled: false });
+    assert.doesNotMatch(r2.body, /class="action-form section-edit-form"/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("renderTask: archived task hides edit affordances even with mutations enabled", () => {
+  const root = mkTempDir();
+  try {
+    const t = folderTask(root, "001-a", "done");
+    t.archived = true;
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+    assert.doesNotMatch(r.body, /class="section-edit-link"/);
+    assert.doesNotMatch(r.body, /class="title-edit-link"/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("routeMutation: /t/<slug>/edit forwards section + value + mtime to `tpm edit`", () => {
+  const { runner, calls } = captureRunner();
+  const params = new URLSearchParams();
+  params.set("section", "Context");
+  params.set("value", "New context body.\nSecond line.");
+  params.set("mtime", "1700000000000");
+  const r = routeMutation("/t/alpha/001-a/edit", params, runner);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/t\/alpha\/001-a\?flash=/);
+  assert.deepEqual(calls, [
+    ["edit", "alpha/001-a", "Context", "New context body.\nSecond line.", "--expect-mtime", "1700000000000"],
+  ]);
+});
+
+test("routeMutation: /t/<slug>/edit omits --expect-mtime when mtime field is absent", () => {
+  // `tpm edit` from the CLI doesn't require a mtime stamp; only the serve
+  // form passes one. Missing or empty `mtime` should not produce an empty
+  // --expect-mtime arg that would parse to NaN downstream.
+  const { runner, calls } = captureRunner();
+  const params = new URLSearchParams();
+  params.set("section", "Plan");
+  params.set("value", "New plan body.");
+  routeMutation("/t/alpha/001-a/edit", params, runner);
+  assert.deepEqual(calls, [
+    ["edit", "alpha/001-a", "Plan", "New plan body."],
+  ]);
+});
+
+test("routeMutation: /t/<slug>/edit requires section + value (bad-request flash)", () => {
+  const { runner, calls } = captureRunner();
+  const r1 = routeMutation("/t/alpha/001-a/edit", new URLSearchParams("section=Context"), runner);
+  // Missing value -> bad request, no CLI call.
+  assert.match(decodeURIComponent(r1.location ?? ""), /bad request: missing required field for edit/);
+  const r2 = routeMutation("/t/alpha/001-a/edit", new URLSearchParams("value=foo"), runner);
+  assert.match(decodeURIComponent(r2.location ?? ""), /bad request: missing required field for edit/);
+  assert.equal(calls.length, 0);
+});
+
+test("routeMutation: /t/<slug>/edit allows empty value (clearing a section is valid)", () => {
+  // Outcome legitimately starts empty; the editor must allow clearing a
+  // section back to empty. Only `section` is strictly required.
+  const { runner, calls } = captureRunner();
+  const params = new URLSearchParams();
+  params.set("section", "Outcome");
+  params.set("value", "");
+  routeMutation("/t/alpha/001-a/edit", params, runner);
+  assert.deepEqual(calls, [
+    ["edit", "alpha/001-a", "Outcome", ""],
+  ]);
+});
+
+test("routeMutation: /t/<slug>/edit surfaces a CLI conflict in the flash", () => {
+  // mutate.editTaskSection throws on mtime mismatch; the CLI exits non-zero
+  // and the message lands in stderr. Serve's flashRedirect should surface
+  // it so the operator knows to reload.
+  const runner: CliRunner = () => ({
+    ok: false,
+    stdout: "",
+    stderr: "alpha/001-a: file changed since the editor was loaded (concurrent edit). Reload and try again.",
+  });
+  const r = routeMutation("/t/alpha/001-a/edit", new URLSearchParams("section=Context&value=x&mtime=1"), runner);
+  assert.equal(r.status, 303);
+  assert.match(decodeURIComponent(r.location ?? ""), /file changed since the editor was loaded/);
+});
+

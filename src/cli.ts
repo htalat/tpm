@@ -376,6 +376,30 @@ try {
       console.log(r.message);
       break;
     }
+    case "edit": {
+      const section = args[2];
+      const value = args[3];
+      if (!args[1] || !section || value === undefined) {
+        usage('tpm edit <task> <title|context|plan|outcome> "<value>" [--expect-mtime <ms>]');
+      }
+      const mtimeRaw = parseFlag(args, "--expect-mtime");
+      let expectMtimeMs: number | undefined;
+      if (mtimeRaw !== undefined) {
+        const n = Number(mtimeRaw);
+        if (!Number.isFinite(n)) {
+          throw new Error(`tpm edit: --expect-mtime must be a number, got "${mtimeRaw}"`);
+        }
+        expectMtimeMs = n;
+      }
+      const r = mutate.editTaskSection(
+        resolveLiveTask(args[1], 'tpm edit <task> <section> "<value>"'),
+        section,
+        value,
+        { expectMtimeMs },
+      );
+      console.log(r.message);
+      break;
+    }
     case "lock": {
       const sub = args[1];
       const root = findRoot();
@@ -964,6 +988,8 @@ Usage:
   tpm revert <task> ["<reason>"]             flip in-progress -> ready, log a timeout/revert (no-op otherwise)
   tpm status <task> <new-status>             generic status setter (validated)
   tpm log <task> "<message>"                 append a single timestamped Log line
+  tpm edit <task> <title|context|plan|outcome> "<value>" [--expect-mtime <ms>]
+                                             rewrite the title (frontmatter) or one prose section; back-end for tpm serve's inline editor
   tpm pr <task> <url>                        add URL to prs:, log opened PR
   tpm report <task>                          attach a report artifact at <project>/tasks/<slug>/report.md (auto-folds file-form tasks);
                                              auto-flips in-progress -> needs-review (investigation analogue of tpm pr)

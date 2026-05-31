@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
 import { loadProjects } from "./tree.ts";
 import {
   start, ready, block, reopen, revert, logEntry, addPr, setStatus, complete,
   setAllowOrchestrator, reparent, addReport, requestReportChanges,
-  pullFromQueue, appendLog, setSection, sectionHasContent,
+  pullFromQueue, appendLog, setSection, sectionHasContent, editTaskSection,
 } from "./mutate.ts";
 import { parse } from "./frontmatter.ts";
 
@@ -1641,6 +1641,206 @@ test("reparent: parent: field is inserted right after project: (preserves key or
     const text = readFileSync(r.newPath, "utf8");
     // project: ... newline, then parent: ...
     assert.match(text, /project: alpha\nparent: 001-parent\n/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+// ---- editTaskSection (inline-editor write path for tpm serve) -------------
+
+test("editTaskSection: title rewrites frontmatter title, preserves key order + body", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    const r = editTaskSection(t, "title", "New Title — with punctuation");
+    assert.match(r.message, /edited title/);
+    const text = readFileSync(t.path, "utf8");
+    // title still appears as the first frontmatter key.
+    assert.match(text, /^---\ntitle: /);
+    const { data, body } = parse(text);
+    assert.equal(data.title, "New Title — with punctuation");
+    // Sibling sections in the body are untouched.
+    assert.match(body, /## Context\nsome context/);
+    assert.match(body, /## Plan\n1\. do the thing/);
+    // Log line written.
+    assert.match(body, /: edited title \(via serve\)$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("editTaskSection: title no-op when value unchanged (no write, no Log line)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    const before = readFileSync(t.path, "utf8");
+    const beforeMtime = statSync(t.path).mtimeMs;
+    const r = editTaskSection(t, "title", "Task 001-a");
+    assert.match(r.message, /title unchanged/);
+    assert.equal(readFileSync(t.path, "utf8"), before);
+    assert.equal(statSync(t.path).mtimeMs, beforeMtime);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("editTaskSection: Context rewrites named body section, preserves siblings + Log", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    const r = editTaskSection(t, "Context", "Reframed context with three lines.\nLine two.\nLine three.");
+    assert.match(r.message, /edited Context/);
+    const text = readFileSync(t.path, "utf8");
+    const { data, body } = parse(text);
+    // Frontmatter intact.
+    assert.equal(data.title, "Task 001-a");
+    assert.equal(data.status, "in-progress");
+    // Context replaced.
+    assert.match(body, /## Context\nReframed context with three lines\.\nLine two\.\nLine three\.\n\n## Plan/);
+    // Plan and Log unchanged.
+    assert.match(body, /## Plan\n1\. do the thing\n\n## Log/);
+    assert.match(body, /- 2026-01-01 00:00 PDT: created/);
+    // Log line for the edit appended.
+    assert.match(body, /: edited Context \(via serve\)$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("editTaskSection: lowercase section names canonicalize to the on-disk heading", () => {
+  // Serve form passes section=context | plan | outcome (lowercase); helper
+  // maps to the canonical heading so log lines and setSection() find the
+  // right slot.
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    editTaskSection(t, "plan", "Step A\nStep B");
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /## Plan\nStep A\nStep B\n\n## Log/);
+    assert.match(text, /: edited Plan \(via serve\)$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("editTaskSection: Outcome rewrites the outcome section without touching Log", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    editTaskSection(t, "Outcome", "Shipped via PR #42.");
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /## Outcome\nShipped via PR #42\./);
+    // Log header still intact (no orphaned content, no comment placeholder).
+    assert.match(text, /## Log\n- 2026-01-01 00:00 PDT: created\n- .*: edited Outcome \(via serve\)/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("editTaskSection: byte-identical section value is a no-op (no write, no Log line)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    const before = readFileSync(t.path, "utf8");
+    const beforeMtime = statSync(t.path).mtimeMs;
+    const r = editTaskSection(t, "Context", "some context");
+    assert.match(r.message, /Context unchanged/);
+    assert.equal(readFileSync(t.path, "utf8"), before);
+    assert.equal(statSync(t.path).mtimeMs, beforeMtime);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("editTaskSection: refuses on archived tasks (guardArchived)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "done");
+    const t = loadTask(root, "alpha", "001-a");
+    t.archived = true;
+    assert.throws(() => editTaskSection(t, "Context", "anything"), /Cannot mutate archived task/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("editTaskSection: refuses on mtime mismatch (concurrent edit detected)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    const renderTimeMtime = statSync(t.path).mtimeMs;
+    // Simulate a concurrent write between page render and form save: a log
+    // line lands, bumping the mtime by ~2s.
+    utimesSync(t.path, new Date(), new Date(renderTimeMtime + 2000));
+    assert.throws(
+      () => editTaskSection(t, "Context", "doesn't matter", { expectMtimeMs: renderTimeMtime }),
+      /file changed since the editor was loaded/,
+    );
+    // File body untouched by the refused save.
+    const { body } = parse(readFileSync(t.path, "utf8"));
+    assert.match(body, /## Context\nsome context/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("editTaskSection: accepts a matching mtime (no-op concurrency check on a fresh form)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    const mtimeMs = statSync(t.path).mtimeMs;
+    const r = editTaskSection(t, "Plan", "Step 1\nStep 2", { expectMtimeMs: mtimeMs });
+    assert.match(r.message, /edited Plan/);
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /## Plan\nStep 1\nStep 2/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("editTaskSection: refuses an unknown section name", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    assert.throws(() => editTaskSection(t, "Log", "rewritten"), /Unknown editable section/);
+    assert.throws(() => editTaskSection(t, "status", "ready"), /Unknown editable section/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("editTaskSection: title with colons / em-dash round-trips through stringify+parse", () => {
+  // Real tpm titles commonly carry colons and em-dashes ("tpm serve: inline
+  // editor — task body sections"). These chars are inside the formatScalar
+  // safe-set and should land in the file unquoted but parse back identically.
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    const realistic = "tpm serve: inline editor for title and body sections";
+    editTaskSection(t, "title", realistic);
+    const { data } = parse(readFileSync(t.path, "utf8"));
+    assert.equal(data.title, realistic);
   } finally {
     rmTempDir(root);
   }

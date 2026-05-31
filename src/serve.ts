@@ -108,7 +108,7 @@ export interface ServeOpts {
 // `buildCliArgs`. Kept narrow so a stray POST can't shell out to any tpm verb.
 const MUTATION_ACTIONS = new Set([
   "ready", "block", "reopen", "complete", "log", "pr", "status", "allow-orchestrator",
-  "lgtm", "request-changes", "archive", "pull",
+  "lgtm", "request-changes", "archive", "pull", "edit",
 ]);
 
 const CLI_PATH = fileURLToPath(new URL("./cli.ts", import.meta.url));
@@ -424,7 +424,15 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const query = decodeURIComponent(taskMatch[1]);
     const match = findTask(projects, query);
     if (!match) return notFound(`No task: ${query}`);
-    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, projects, opts, prCache, taskLocks));
+    // `?edit=<section>` flips one section (title / context / plan / outcome)
+    // from read view to inline edit form. Validated here against the same
+    // whitelist the mutate helper enforces so a stray param can't escape
+    // into the rendered form's hidden `section` field.
+    const editRaw = params.get("edit")?.toLowerCase();
+    const editingSection = editRaw && ["title", "context", "plan", "outcome"].includes(editRaw)
+      ? editRaw
+      : null;
+    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, projects, opts, prCache, taskLocks, editingSection));
   }
   return notFound(pathname);
 }
@@ -687,6 +695,19 @@ function buildCliArgs(slug: string, action: string, body: URLSearchParams): stri
       const comment = body.get("comment")?.trim();
       if (!comment) return null;
       return ["request-changes", slug, comment];
+    }
+    case "edit": {
+      const section = body.get("section")?.trim();
+      // `value` may be intentionally empty (clearing a section is a valid edit
+      // — Outcome starts empty); we only require the field be present.
+      const value = body.get("value");
+      if (!section || value === null) return null;
+      const args = ["edit", slug, section, value];
+      const mtime = body.get("mtime")?.trim();
+      if (mtime) {
+        args.push("--expect-mtime", mtime);
+      }
+      return args;
     }
     default: return null;
   }
@@ -1025,10 +1046,23 @@ function renderTask(
   opts: RouteOpts = {},
   prCache: PrCacheReader = (url) => readPrCache(url),
   taskLocks: Map<string, TaskLockSnapshotEntry> = new Map(),
+  editingSection: string | null = null,
 ): string {
   const repo = resolveRepo(project, task);
   const status = rollupStatus(task);
   const title = strOr(task.data.title, task.slug);
+  // Inline-editor gates: hide all edit affordances when mutations are
+  // disabled (non-loopback bind) or the task is archived (terminal — drop
+  // to shell). Mirrors the gates in renderActions / renderSettings.
+  const canEdit = opts.mutationsEnabled !== false && !task.archived && !isParent(task);
+  // Stamp the form with the file's mtimeMs at render time so an
+  // optimistic-concurrency check on save can refuse stale writes. statSync
+  // failures (file gone between load and render) shouldn't break the page —
+  // 0 stamps the form with a value that any real save will mismatch on.
+  let mtimeMs = 0;
+  if (canEdit) {
+    try { mtimeMs = statSync(task.path).mtimeMs; } catch { mtimeMs = 0; }
+  }
   const prs = (Array.isArray(task.data.prs) ? task.data.prs : []).map(String);
   const prList = prs.length
     ? `<ul>${prs.map(u => `<li>${extLink(u, esc(u))}</li>`).join("")}</ul>`
@@ -1077,15 +1111,24 @@ function renderTask(
   const railContent = `${logLink}${runsLink}${reportPanel}${prPanel}${actionsSection}${archiveSection}${settingsSection}`;
   const hasRail = railContent.length > 0;
 
+  const titleEditLink = canEdit
+    ? ` <a class="title-edit-link" href="${taskUrl}?edit=title">edit</a>`
+    : "";
+  const headerBlock = canEdit && editingSection === "title"
+    ? renderTitleEditForm(taskUrl, title, mtimeMs, status, headerLockChip, task, project, lockHolderMeta)
+    : `<header>
+  <h1>${esc(title)} <span class="badge s-${cls(status)}">${esc(status)}</span> ${headerLockChip}${titleEditLink}</h1>
+  <p class="meta"><code>${esc(task.slug)}</code>  ·  type: ${esc(strOr(task.data.type, "?"))}  ·  project: <a href="/p/${esc(project.slug)}">${esc(project.slug)}</a></p>
+  ${lockHolderMeta}
+</header>`;
+
+  const bodyHtml = renderTaskBodyWithEditors(taskUrl, task.body, editingSection, mtimeMs, canEdit);
+
   const body = `
 ${projectChips(allProjects, project.slug)}
 ${breadcrumbFor(project, task)}
 ${flashBanner}
-<header>
-  <h1>${esc(title)} <span class="badge s-${cls(status)}">${esc(status)}</span> ${headerLockChip}</h1>
-  <p class="meta"><code>${esc(task.slug)}</code>  ·  type: ${esc(strOr(task.data.type, "?"))}  ·  project: <a href="/p/${esc(project.slug)}">${esc(project.slug)}</a></p>
-  ${lockHolderMeta}
-</header>
+${headerBlock}
 <div class="layout${hasRail ? "" : " no-rail"}">
   <aside class="sidebar">
     <dl>
@@ -1102,12 +1145,135 @@ ${flashBanner}
     </dl>
   </aside>
   <main>
-    <div class="body">${renderMarkdown(task.body)}</div>
+    <div class="body">${bodyHtml}</div>
   </main>
   ${hasRail ? `<div class="task-rail">${railContent}</div>` : ""}
 </div>
 `;
   return layout(`tpm · ${title}`, body);
+}
+
+// Splits a task body at `## X` headings. The first item may be a preamble
+// chunk (heading === null) containing the body's leading content — for tpm
+// tasks this is the `# Task title` h1 line that the body fixture writes
+// before the first `##` section. Used by `renderTaskBodyWithEditors` so the
+// section-by-section render can splice in edit forms for the editable
+// sections without touching the preamble or non-editable sections.
+function splitBodyAtH2(body: string): Array<{ heading: string | null; content: string }> {
+  const lines = body.split("\n");
+  const sections: Array<{ heading: string | null; content: string }> = [];
+  let cur: { heading: string | null; lines: string[] } = { heading: null, lines: [] };
+  for (const line of lines) {
+    const m = line.match(/^##\s+(.+?)\s*$/);
+    if (m) {
+      if (cur.heading !== null || cur.lines.some(l => l.length > 0)) {
+        sections.push({ heading: cur.heading, content: cur.lines.join("\n") });
+      }
+      cur = { heading: m[1].trim(), lines: [] };
+    } else {
+      cur.lines.push(line);
+    }
+  }
+  if (cur.heading !== null || cur.lines.some(l => l.length > 0)) {
+    sections.push({ heading: cur.heading, content: cur.lines.join("\n") });
+  }
+  return sections;
+}
+
+// Renders the task body for the detail page. When `canEdit` is true, walks
+// section-by-section and injects an inline edit affordance (`edit` link or
+// textarea form) for Context / Plan / Outcome — the prose sections the
+// operator might want to update without dropping to a shell. `## Log` is
+// rendered read-only (append-only via `tpm log`). When `canEdit` is false
+// (archived task or non-loopback bind), falls back to the existing
+// whole-body markdown render so the UI stays simple.
+function renderTaskBodyWithEditors(
+  taskUrl: string,
+  body: string,
+  editingSection: string | null,
+  mtimeMs: number,
+  canEdit: boolean,
+): string {
+  if (!canEdit) {
+    return renderMarkdown(body);
+  }
+  const sections = splitBodyAtH2(body);
+  const editable = new Set(["context", "plan", "outcome"]);
+  const parts: string[] = [];
+  for (const s of sections) {
+    if (s.heading === null) {
+      const trimmed = s.content.replace(/^\s+|\s+$/g, "");
+      if (trimmed) parts.push(renderMarkdown(s.content));
+      continue;
+    }
+    const key = s.heading.toLowerCase();
+    if (editable.has(key) && editingSection === key) {
+      parts.push(renderSectionEditForm(taskUrl, s.heading, s.content, mtimeMs));
+    } else if (editable.has(key)) {
+      parts.push(renderEditableSectionView(taskUrl, s.heading, s.content));
+    } else {
+      parts.push(`<h2>${esc(s.heading)}</h2>\n${renderMarkdown(s.content)}`);
+    }
+  }
+  return parts.join("\n");
+}
+
+function renderEditableSectionView(taskUrl: string, name: string, content: string): string {
+  const key = name.toLowerCase();
+  const editHref = `${taskUrl}?edit=${encodeURIComponent(key)}#section-${esc(key)}`;
+  const trimmed = content.replace(/^\s+|\s+$/g, "");
+  const rendered = trimmed
+    ? renderMarkdown(content)
+    : `<p class="section-empty meta"><em>empty</em></p>`;
+  return `<section class="task-body-section" id="section-${esc(key)}">
+  <div class="section-header"><h2>${esc(name)}</h2> <a class="section-edit-link" href="${editHref}">edit</a></div>
+  ${rendered}
+</section>`;
+}
+
+function renderSectionEditForm(taskUrl: string, name: string, content: string, mtimeMs: number): string {
+  const key = name.toLowerCase();
+  const trimmed = content.replace(/\s+$/, "");
+  return `<section class="task-body-section editing" id="section-${esc(key)}">
+  <div class="section-header"><h2>Edit ${esc(name)}</h2></div>
+  <form method="POST" action="${taskUrl}/edit" class="action-form section-edit-form">
+    <input type="hidden" name="section" value="${escAttr(name)}">
+    <input type="hidden" name="mtime" value="${escAttr(String(mtimeMs))}">
+    <textarea name="value" rows="12" class="section-edit-textarea">${esc(trimmed)}</textarea>
+    <div class="section-edit-buttons">
+      <button type="submit">Save</button>
+      <a class="action-cancel" href="${taskUrl}">Cancel</a>
+    </div>
+  </form>
+</section>`;
+}
+
+function renderTitleEditForm(
+  taskUrl: string,
+  title: string,
+  mtimeMs: number,
+  status: string,
+  headerLockChip: string,
+  task: Task,
+  project: Project,
+  lockHolderMeta: string,
+): string {
+  return `<header>
+  <form method="POST" action="${taskUrl}/edit" class="action-form title-edit-form">
+    <input type="hidden" name="section" value="title">
+    <input type="hidden" name="mtime" value="${escAttr(String(mtimeMs))}">
+    <label class="title-edit-label">Title
+      <input type="text" name="value" value="${escAttr(title)}" required class="title-edit-input">
+    </label>
+    <div class="section-edit-buttons">
+      <span class="badge s-${cls(status)}">${esc(status)}</span> ${headerLockChip}
+      <button type="submit">Save</button>
+      <a class="action-cancel" href="${taskUrl}">Cancel</a>
+    </div>
+  </form>
+  <p class="meta"><code>${esc(task.slug)}</code>  ·  type: ${esc(strOr(task.data.type, "?"))}  ·  project: <a href="/p/${esc(project.slug)}">${esc(project.slug)}</a></p>
+  ${lockHolderMeta}
+</header>`;
 }
 
 // ---- breadcrumbs ----------------------------------------------------------
