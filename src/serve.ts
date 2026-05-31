@@ -360,7 +360,15 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const project = projects.find(p => p.slug === slug);
     if (!project) return notFound(`No project: ${slug}`);
     const showArchived = params.get("archived") === "1";
-    return ok("text/html; charset=utf-8", renderProject(project, projects, showArchived, prCache, taskLocks, opts));
+    // `?edit=<section>` flips one section (name / goal / context / notes) from
+    // read view to inline edit form. Validated here against the same whitelist
+    // the mutate helper enforces so a stray param can't escape into the form's
+    // hidden `section` field.
+    const editRaw = params.get("edit")?.toLowerCase();
+    const editingSection = editRaw && ["name", "goal", "context", "notes"].includes(editRaw)
+      ? editRaw
+      : null;
+    return ok("text/html; charset=utf-8", renderProject(project, projects, showArchived, prCache, taskLocks, opts, editingSection));
   }
   const taskLogMatch = pathname.match(/^\/t\/(.+)\/log\/?$/);
   if (taskLogMatch) {
@@ -561,6 +569,12 @@ export function routeMutation(pathname: string, body: URLSearchParams, runner: C
   if (newTaskMatch) {
     return routeNewTask(decodeURIComponent(newTaskMatch[1]), body, runner);
   }
+  // Project-scoped inline edit: /p/<project>/edit. Shells out to
+  // `tpm edit-project`; the project analogue of the task /t/<slug>/edit path.
+  const projectEditMatch = pathname.match(/^\/p\/([^/]+)\/edit\/?$/);
+  if (projectEditMatch) {
+    return routeProjectEdit(decodeURIComponent(projectEditMatch[1]), body, runner);
+  }
   // Match /t/<slugPath>/<action>. slugPath is greedy so it captures any
   // intermediate parent segments; action is the last path segment.
   const m = pathname.match(/^\/t\/(.+)\/([a-z][a-z0-9-]*)\/?$/);
@@ -616,6 +630,29 @@ function routeNewTask(projectSlug: string, body: URLSearchParams, runner: CliRun
   const taskHref = "/t/" + parts.map(encodeURIComponent).join("/");
   const flash = result.stdout || `new-task: created ${parts.join("/")}`;
   return flashTo(taskHref, flash);
+}
+
+// Project-scoped inline-edit dispatch. Forwards section + value (+ optional
+// mtime stamp) to `tpm edit-project` and flashes the result back onto the
+// project page. On success the redirect drops the `?edit=` param so the page
+// returns to read view. Mirrors `buildCliArgs`'s task `edit` case.
+function routeProjectEdit(projectSlug: string, body: URLSearchParams, runner: CliRunner): MutationResult {
+  const projectHref = `/p/${encodeURIComponent(projectSlug)}`;
+  const section = body.get("section")?.trim();
+  // `value` may be intentionally empty (clearing a section is valid); only
+  // require the field be present.
+  const value = body.get("value");
+  if (!section || value === null) {
+    return flashTo(projectHref, "edit: missing section or value");
+  }
+  const args = ["edit-project", projectSlug, section, value];
+  const mtime = body.get("mtime")?.trim();
+  if (mtime) args.push("--expect-mtime", mtime);
+  const result = runner(args);
+  const flash = result.ok
+    ? (result.stdout || "edit: ok")
+    : (result.stderr || "edit: failed");
+  return flashTo(projectHref, flash);
 }
 
 function flashTo(target: string, flash: string): MutationResult {
@@ -803,7 +840,7 @@ ${flashBanner}
   return layout("tpm", body, { autoRefresh: 30 });
 }
 
-function renderProject(project: Project, allProjects: Project[], showArchived: boolean, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, opts: RouteOpts = {}): string {
+function renderProject(project: Project, allProjects: Project[], showArchived: boolean, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, opts: RouteOpts = {}, editingSection: string | null = null): string {
   const repo = resolveRepo(project);
   const tasks = flatTasks(project.tasks).filter(t => !isParent(t) && (showArchived || !t.archived));
   const byStatus = new Map<string, Task[]>();
@@ -848,12 +885,31 @@ function renderProject(project: Project, allProjects: Project[], showArchived: b
   const flashBanner = renderFlashBanner(opts.flash, `/p/${esc(project.slug)}${showArchived ? "?archived=1" : ""}`);
   const newTaskForm = renderNewTaskForm(project, opts);
 
+  // Inline-editor gate: edit affordances need a loopback bind (mutations
+  // enabled). Projects aren't archived, so unlike the task editor there's no
+  // terminal-state gate here.
+  const canEdit = opts.mutationsEnabled !== false;
+  const projectUrl = `/p/${esc(project.slug)}`;
+  // Stamp the form with the file's mtimeMs at render time so a save can refuse
+  // a stale write (concurrent edit between view and save). statSync failures
+  // (file gone) leave 0, which any real save mismatches on.
+  let mtimeMs = 0;
+  if (canEdit) {
+    try { mtimeMs = statSync(project.path).mtimeMs; } catch { mtimeMs = 0; }
+  }
+  const nameEditLink = canEdit
+    ? ` <a class="title-edit-link" href="${projectUrl}?edit=name">edit</a>`
+    : "";
+  const headerH1 = canEdit && editingSection === "name"
+    ? renderProjectNameEditForm(projectUrl, projectName, mtimeMs, status)
+    : `<h1>${esc(projectName)} <span class="badge s-${cls(status)}">${esc(status)}</span>${nameEditLink}</h1>`;
+
   const body = `
 ${projectChips(allProjects, project.slug)}
 <nav class="crumbs"><a href="/p/${esc(project.slug)}">${esc(project.slug)}</a></nav>
 ${flashBanner}
 <header>
-  <h1>${esc(projectName)} <span class="badge s-${cls(status)}">${esc(status)}</span></h1>
+  ${headerH1}
   <p class="meta"><code>${esc(project.slug)}</code>  ·  ${repoLink}  ·  ${tasks.length} task${tasks.length === 1 ? "" : "s"}${showArchived ? " (incl. archived)" : ""}</p>
   <p class="archive-toggle"><a href="${toggleHref}">${showArchived ? "[x]" : "[ ]"} ${toggleLabel}</a>  ·  <a href="/p/${esc(project.slug)}/artifacts">Artifacts →</a></p>
 </header>
@@ -869,7 +925,7 @@ ${flashBanner}
   </aside>
   <main>
     ${newTaskForm}
-    <div class="body">${renderMarkdown(extractProjectBody(project.body))}</div>
+    <div class="body">${renderProjectBodyWithEditors(projectUrl, project.body, editingSection, mtimeMs, canEdit)}</div>
     ${sectionsHtml || `<p class="queue-empty">No active tasks.</p>`}
   </main>
 </div>
@@ -922,6 +978,57 @@ function renderNewTaskForm(project: Project, opts: RouteOpts): string {
     <button type="submit">Create task</button>
   </form>
 </details>`;
+}
+
+// Renders the project body for the project page. When `canEdit` is true, walks
+// the canonical prose sections (Goal / Context / Notes) and injects the same
+// inline edit affordance the task editor uses — an `edit` link in read view, a
+// textarea form when that section is being edited. `## Log` renders read-only
+// (project-level timeline; append-only). When `canEdit` is false (non-loopback
+// bind) it falls back to the whole-body render via `extractProjectBody`, the
+// pre-editor behavior. Non-canonical sections are dropped in both paths, same
+// as `extractProjectBody`, so the page shape is unchanged.
+function renderProjectBodyWithEditors(
+  projectUrl: string,
+  body: string,
+  editingSection: string | null,
+  mtimeMs: number,
+  canEdit: boolean,
+): string {
+  if (!canEdit) {
+    return renderMarkdown(extractProjectBody(body));
+  }
+  const editable = new Set(["goal", "context", "notes"]);
+  const sections = splitBodyAtH2(body);
+  const parts: string[] = [];
+  for (const s of sections) {
+    if (s.heading === null) continue; // skip the `# name` h1 preamble (shown in the header)
+    const key = s.heading.toLowerCase();
+    if (editable.has(key) && editingSection === key) {
+      parts.push(renderSectionEditForm(projectUrl, s.heading, s.content, mtimeMs));
+    } else if (editable.has(key)) {
+      parts.push(renderEditableSectionView(projectUrl, s.heading, s.content));
+    } else if (key === "log") {
+      parts.push(`<h2>${esc(s.heading)}</h2>\n${renderMarkdown(s.content)}`);
+    }
+    // Non-canonical sections are intentionally dropped (mirror extractProjectBody).
+  }
+  return parts.join("\n");
+}
+
+function renderProjectNameEditForm(projectUrl: string, name: string, mtimeMs: number, status: string): string {
+  return `<form method="POST" action="${projectUrl}/edit" class="action-form title-edit-form">
+    <input type="hidden" name="section" value="name">
+    <input type="hidden" name="mtime" value="${escAttr(String(mtimeMs))}">
+    <label class="title-edit-label">Name
+      <input type="text" name="value" value="${escAttr(name)}" required class="title-edit-input">
+    </label>
+    <div class="section-edit-buttons">
+      <span class="badge s-${cls(status)}">${esc(status)}</span>
+      <button type="submit">Save</button>
+      <a class="action-cancel" href="${projectUrl}">Cancel</a>
+    </div>
+  </form>`;
 }
 
 // ---- /p/<proj>/artifacts --------------------------------------------------

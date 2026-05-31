@@ -8,6 +8,7 @@ import {
   start, ready, block, reopen, revert, logEntry, addPr, setStatus, complete,
   setAllowOrchestrator, reparent, addReport, requestReportChanges,
   pullFromQueue, appendLog, setSection, sectionHasContent, editTaskSection,
+  editProjectSection,
 } from "./mutate.ts";
 import { parse } from "./frontmatter.ts";
 
@@ -1841,6 +1842,177 @@ test("editTaskSection: title with colons / em-dash round-trips through stringify
     editTaskSection(t, "title", realistic);
     const { data } = parse(readFileSync(t.path, "utf8"));
     assert.equal(data.title, realistic);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+// ---- editProjectSection (project inline-editor write path, task 124) -------
+
+function fullProjectMd(slug: string): string {
+  return `---
+name: ${slug}
+slug: ${slug}
+status: active
+created: 2026-01-01 00:00 PDT
+tags: []
+---
+
+# ${slug}
+
+## Goal
+ship it.
+
+## Context
+some background.
+
+## Notes
+living notes.
+
+## Log
+- 2026-01-01 00:00 PDT: created
+`;
+}
+
+function setupFullProject(root: string, slug: string): void {
+  const dir = join(root, slug);
+  mkdirSync(join(dir, "tasks"), { recursive: true });
+  writeFileSync(join(dir, "project.md"), fullProjectMd(slug));
+}
+
+function loadProject(root: string, slug: string) {
+  return loadProjects(root, { archived: true }).find(p => p.slug === slug)!;
+}
+
+test("editProjectSection: name rewrites frontmatter name, preserves key order + body", () => {
+  const root = mkTempDir();
+  try {
+    setupFullProject(root, "alpha");
+    const p = loadProject(root, "alpha");
+    const r = editProjectSection(p, "name", "Alpha — the rename");
+    assert.match(r.message, /edited name/);
+    const text = readFileSync(p.path, "utf8");
+    assert.match(text, /^---\nname: /);
+    const { data, body } = parse(text);
+    assert.equal(data.name, "Alpha — the rename");
+    // Slug + prose sections untouched.
+    assert.equal(data.slug, "alpha");
+    assert.match(body, /## Goal\nship it\./);
+    assert.match(body, /## Notes\nliving notes\./);
+    // Log line written.
+    assert.match(body, /: edited name \(via serve\)$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("editProjectSection: name no-op when value unchanged (no write, no Log line)", () => {
+  const root = mkTempDir();
+  try {
+    setupFullProject(root, "alpha");
+    const p = loadProject(root, "alpha");
+    const before = readFileSync(p.path, "utf8");
+    const beforeMtime = statSync(p.path).mtimeMs;
+    const r = editProjectSection(p, "name", "alpha");
+    assert.match(r.message, /name unchanged/);
+    assert.equal(readFileSync(p.path, "utf8"), before);
+    assert.equal(statSync(p.path).mtimeMs, beforeMtime);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("editProjectSection: Goal rewrites named body section, preserves siblings + Log", () => {
+  const root = mkTempDir();
+  try {
+    setupFullProject(root, "alpha");
+    const p = loadProject(root, "alpha");
+    const r = editProjectSection(p, "Goal", "Reframed goal.\nLine two.");
+    assert.match(r.message, /edited Goal/);
+    const { data, body } = parse(readFileSync(p.path, "utf8"));
+    assert.equal(data.name, "alpha");
+    assert.match(body, /## Goal\nReframed goal\.\nLine two\.\n\n## Context/);
+    // Context, Notes, and Log unchanged.
+    assert.match(body, /## Context\nsome background\.\n\n## Notes/);
+    assert.match(body, /- 2026-01-01 00:00 PDT: created/);
+    assert.match(body, /: edited Goal \(via serve\)$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("editProjectSection: lowercase section names canonicalize to the on-disk heading", () => {
+  const root = mkTempDir();
+  try {
+    setupFullProject(root, "alpha");
+    const p = loadProject(root, "alpha");
+    editProjectSection(p, "notes", "decision: use markdown.");
+    const text = readFileSync(p.path, "utf8");
+    assert.match(text, /## Notes\ndecision: use markdown\.\n\n## Log/);
+    assert.match(text, /: edited Notes \(via serve\)$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("editProjectSection: byte-identical section value is a no-op (no write, no Log line)", () => {
+  const root = mkTempDir();
+  try {
+    setupFullProject(root, "alpha");
+    const p = loadProject(root, "alpha");
+    const before = readFileSync(p.path, "utf8");
+    const beforeMtime = statSync(p.path).mtimeMs;
+    const r = editProjectSection(p, "Context", "some background.");
+    assert.match(r.message, /Context unchanged/);
+    assert.equal(readFileSync(p.path, "utf8"), before);
+    assert.equal(statSync(p.path).mtimeMs, beforeMtime);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("editProjectSection: refuses on mtime mismatch (concurrent edit detected)", () => {
+  const root = mkTempDir();
+  try {
+    setupFullProject(root, "alpha");
+    const p = loadProject(root, "alpha");
+    const renderTimeMtime = statSync(p.path).mtimeMs;
+    utimesSync(p.path, new Date(), new Date(renderTimeMtime + 2000));
+    assert.throws(
+      () => editProjectSection(p, "Goal", "doesn't matter", { expectMtimeMs: renderTimeMtime }),
+      /file changed since the editor was loaded/,
+    );
+    const { body } = parse(readFileSync(p.path, "utf8"));
+    assert.match(body, /## Goal\nship it\./);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("editProjectSection: refuses an unknown section name (Log is append-only)", () => {
+  const root = mkTempDir();
+  try {
+    setupFullProject(root, "alpha");
+    const p = loadProject(root, "alpha");
+    assert.throws(() => editProjectSection(p, "Log", "rewritten"), /Unknown editable project section/);
+    assert.throws(() => editProjectSection(p, "status", "archived"), /Unknown editable project section/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("editProjectSection: seeds a ## Log section when the project has none", () => {
+  // Minimal/hand-rolled project.md files predate the templated ## Log section.
+  // The edit should still land an audit line rather than throwing.
+  const root = mkTempDir();
+  try {
+    setupProject(root, "alpha"); // projectMd() has only ## Goal, no ## Log
+    const p = loadProject(root, "alpha");
+    const r = editProjectSection(p, "Goal", "new goal text.");
+    assert.match(r.message, /edited Goal/);
+    const text = readFileSync(p.path, "utf8");
+    assert.match(text, /## Goal\nnew goal text\./);
+    assert.match(text, /## Log\n- .*: edited Goal \(via serve\)/);
   } finally {
     rmTempDir(root);
   }
