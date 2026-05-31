@@ -6,7 +6,7 @@ import { newProject, newTask } from "./new.ts";
 import { context, repoPath } from "./context.ts";
 import { report } from "./report.ts";
 import { archiveTask, foldTask, loadProjects, flatTasks, rollupStatus, taskHasReport, taskReportPath } from "./tree.ts";
-import type { Task } from "./tree.ts";
+import type { Project, Task } from "./tree.ts";
 import { selectNext, selectCandidates, inboxItems } from "./queue.ts";
 import { resolveSameRepoStrategy } from "./strategy.ts";
 import { findTask, findRepoTarget } from "./resolve.ts";
@@ -393,6 +393,30 @@ try {
       }
       const r = mutate.editTaskSection(
         resolveLiveTask(args[1], 'tpm edit <task> <section> "<value>"'),
+        section,
+        value,
+        { expectMtimeMs },
+      );
+      console.log(r.message);
+      break;
+    }
+    case "edit-project": {
+      const section = args[2];
+      const value = args[3];
+      if (!args[1] || !section || value === undefined) {
+        usage('tpm edit-project <project> <name|goal|context|notes> "<value>" [--expect-mtime <ms>]');
+      }
+      const mtimeRaw = parseFlag(args, "--expect-mtime");
+      let expectMtimeMs: number | undefined;
+      if (mtimeRaw !== undefined) {
+        const n = Number(mtimeRaw);
+        if (!Number.isFinite(n)) {
+          throw new Error(`tpm edit-project: --expect-mtime must be a number, got "${mtimeRaw}"`);
+        }
+        expectMtimeMs = n;
+      }
+      const r = mutate.editProjectSection(
+        resolveProject(args[1], 'tpm edit-project <project> <section> "<value>"'),
         section,
         value,
         { expectMtimeMs },
@@ -858,6 +882,18 @@ function resolveLiveTask(query: string | undefined, usageMsg: string): Task {
   return match.task;
 }
 
+// Resolve a project by slug for project-scoped verbs (`tpm edit-project`).
+// Loads with archived included so the same lookup works regardless of how the
+// tree is filtered elsewhere; projects aren't archived today, but the flag
+// keeps this stable if that changes.
+function resolveProject(query: string | undefined, usageMsg: string): Project {
+  if (!query) usage(usageMsg);
+  const root = findRoot();
+  const project = loadProjects(root, { archived: true }).find(p => p.slug === query);
+  if (!project) throw new Error(`No project matched "${query}". Try \`tpm ls\`.`);
+  return project;
+}
+
 function pad(s: string, n: number): string {
   return s.length >= n ? s : s + " ".repeat(n - s.length);
 }
@@ -990,6 +1026,8 @@ Usage:
   tpm log <task> "<message>"                 append a single timestamped Log line
   tpm edit <task> <title|context|plan|outcome> "<value>" [--expect-mtime <ms>]
                                              rewrite the title (frontmatter) or one prose section; back-end for tpm serve's inline editor
+  tpm edit-project <project> <name|goal|context|notes> "<value>" [--expect-mtime <ms>]
+                                             rewrite the project name (frontmatter) or one prose section (Goal/Context/Notes); back-end for tpm serve's project editor
   tpm pr <task> <url>                        add URL to prs:, log opened PR
   tpm report <task>                          attach a report artifact at <project>/tasks/<slug>/report.md (auto-folds file-form tasks);
                                              auto-flips in-progress -> needs-review (investigation analogue of tpm pr)

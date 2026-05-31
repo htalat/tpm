@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { parse, stringify } from "./frontmatter.ts";
 import { now } from "./time.ts";
 import { archiveTask, foldTask, isParent, taskHasReport, taskReportPath } from "./tree.ts";
-import type { Task } from "./tree.ts";
+import type { Project, Task } from "./tree.ts";
 import { REPORT_TEMPLATE } from "./defaults.ts";
 
 export const VALID_STATUSES = [
@@ -598,6 +598,76 @@ export function editTaskSection(
   writeFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
   return { message: `${task.slug}: edited ${canonical}` };
+}
+
+// Project analogue of `editTaskSection` (task 124). Edits the project name
+// (frontmatter) or one of the prose body sections — Goal / Context / Notes.
+// `## Log` stays append-only (project-level timeline), so it isn't offered as
+// an editable section here. Projects aren't archived the way tasks are, so
+// there's no guardArchived gate; the mtime optimistic-concurrency check is the
+// same as the task editor's (the serve form stamps render-time mtime).
+const EDIT_PROJECT_SECTION_CANON: Record<string, string> = {
+  name: "name",
+  goal: "Goal",
+  context: "Context",
+  notes: "Notes",
+};
+
+export function editProjectSection(
+  project: Project,
+  section: string,
+  value: string,
+  opts: EditOptions = {},
+): MutateResult {
+  const canonical = EDIT_PROJECT_SECTION_CANON[section.toLowerCase()];
+  if (!canonical) {
+    throw new Error(
+      `Unknown editable project section: "${section}". Choose one of: name, Goal, Context, Notes.`,
+    );
+  }
+  if (opts.expectMtimeMs !== undefined) {
+    const current = statSync(project.path).mtimeMs;
+    if (Math.abs(current - opts.expectMtimeMs) > 5) {
+      throw new Error(
+        `${project.slug}: file changed since the editor was loaded (concurrent edit). Reload and try again.`,
+      );
+    }
+  }
+  const { data, body } = parse(readFileSync(project.path, "utf8"));
+  if (canonical === "name") {
+    const oldName = typeof data.name === "string" ? data.name : "";
+    if (oldName === value) {
+      return { message: `${project.slug}: name unchanged` };
+    }
+    data.name = value;
+    const newBody = appendProjectLog(body, `${now()}: edited name (via serve)`);
+    writeFileSync(project.path, stringify(data, newBody));
+    project.data = data;
+    project.body = newBody;
+    return { message: `${project.slug}: edited name` };
+  }
+  const proposedBody = setSection(body, canonical, value);
+  if (proposedBody === body) {
+    return { message: `${project.slug}: ${canonical} unchanged` };
+  }
+  const newBody = appendProjectLog(proposedBody, `${now()}: edited ${canonical} (via serve)`);
+  writeFileSync(project.path, stringify(data, newBody));
+  project.data = data;
+  project.body = newBody;
+  return { message: `${project.slug}: edited ${canonical}` };
+}
+
+// Append a project-level Log line. Projects scaffolded from the template carry
+// a `## Log` section, but older or hand-rolled `project.md` files may not — in
+// that case appendLog would throw on the missing section, so seed an empty Log
+// at the end of the body first. Keeps the edit audit trail intact regardless of
+// how the file was created.
+function appendProjectLog(body: string, line: string): string {
+  if (!/^##\s+Log\s*$/m.test(body)) {
+    const trimmed = body.replace(/\s+$/, "");
+    body = `${trimmed}\n\n## Log\n`;
+  }
+  return appendLog(body, line);
 }
 
 // ---- internals ------------------------------------------------------------

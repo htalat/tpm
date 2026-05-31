@@ -1517,6 +1517,105 @@ test("routeMutation: /p/<project>/new-task surfaces CLI stdout in success flash"
   assert.match(decodeURIComponent(r.location ?? ""), /Created \/tree\/alpha\/tasks\/003-add-thing\/task\.md/);
 });
 
+// ---- project inline editor (task 124) -------------------------------------
+
+// A project with the full set of editable prose sections, for editor tests.
+function editableProject(slug = "alpha"): Project {
+  const p = project(slug, [task("001-foo", "open")]);
+  p.body = "## Goal\nship it.\n\n## Context\nbackground.\n\n## Notes\nnotes here.\n\n## Log\n- 2026-01-01 00:00 PDT: created\n";
+  return p;
+}
+
+test("renderProject: read view renders an `edit` link in each editable prose section", () => {
+  const p = editableProject();
+  const r = route("/p/alpha", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /id="section-goal"[\s\S]*?<a class="section-edit-link" href="\/p\/alpha\?edit=goal/);
+  assert.match(r.body, /id="section-context"[\s\S]*?<a class="section-edit-link" href="\/p\/alpha\?edit=context/);
+  assert.match(r.body, /id="section-notes"[\s\S]*?<a class="section-edit-link" href="\/p\/alpha\?edit=notes/);
+  // Log is append-only — never editable.
+  assert.doesNotMatch(r.body, /href="\/p\/alpha\?edit=log"/);
+});
+
+test("renderProject: name header carries an `edit` link beside the status badge", () => {
+  const p = editableProject();
+  const r = route("/p/alpha", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /<a class="title-edit-link" href="\/p\/alpha\?edit=name">edit<\/a>/);
+});
+
+test("renderProject: ?edit=context swaps the Context section to a textarea form", () => {
+  const p = editableProject();
+  const r = route("/p/alpha", new URLSearchParams("edit=context"), [p], { mutationsEnabled: true });
+  assert.match(r.body, /<form[^>]*method="POST"[^>]*action="\/p\/alpha\/edit"[^>]*class="action-form section-edit-form"/);
+  assert.match(r.body, /<textarea[^>]*name="value"[^>]*>background\.<\/textarea>/);
+  assert.match(r.body, /<input type="hidden" name="section" value="Context">/);
+  // Other editable sections stay in read view with edit links.
+  assert.match(r.body, /<a class="section-edit-link" href="\/p\/alpha\?edit=goal/);
+});
+
+test("renderProject: ?edit=name swaps the header h1 to a text input form", () => {
+  const p = editableProject();
+  const r = route("/p/alpha", new URLSearchParams("edit=name"), [p], { mutationsEnabled: true });
+  assert.match(r.body, /<form[^>]*action="\/p\/alpha\/edit"[^>]*class="action-form title-edit-form"/);
+  assert.match(r.body, /<input type="hidden" name="section" value="name">/);
+  assert.match(r.body, /<input type="text" name="value" value="alpha"/);
+});
+
+test("renderProject: ?edit=<unknown> falls back to read view (no form)", () => {
+  const p = editableProject();
+  const r = route("/p/alpha", new URLSearchParams("edit=log"), [p], { mutationsEnabled: true });
+  assert.doesNotMatch(r.body, /class="action-form section-edit-form"/);
+  assert.doesNotMatch(r.body, /class="action-form title-edit-form"/);
+});
+
+test("renderProject: mutations disabled hides every inline edit affordance", () => {
+  const p = editableProject();
+  const r = route("/p/alpha", new URLSearchParams(), [p], { mutationsEnabled: false });
+  assert.doesNotMatch(r.body, /class="section-edit-link"/);
+  assert.doesNotMatch(r.body, /class="title-edit-link"/);
+  // ?edit=context still falls back to read view when mutations are off.
+  const r2 = route("/p/alpha", new URLSearchParams("edit=context"), [p], { mutationsEnabled: false });
+  assert.doesNotMatch(r2.body, /class="action-form section-edit-form"/);
+});
+
+test("routeMutation: /p/<project>/edit forwards section + value + mtime to `tpm edit-project`", () => {
+  const { runner, calls } = captureRunner();
+  const params = new URLSearchParams();
+  params.set("section", "Goal");
+  params.set("value", "New goal body.\nSecond line.");
+  params.set("mtime", "1700000000000");
+  const r = routeMutation("/p/alpha/edit", params, runner);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/p\/alpha\?flash=/);
+  assert.deepEqual(calls, [
+    ["edit-project", "alpha", "Goal", "New goal body.\nSecond line.", "--expect-mtime", "1700000000000"],
+  ]);
+});
+
+test("routeMutation: /p/<project>/edit omits --expect-mtime when mtime field is absent", () => {
+  const { runner, calls } = captureRunner();
+  const params = new URLSearchParams();
+  params.set("section", "name");
+  params.set("value", "Renamed");
+  routeMutation("/p/alpha/edit", params, runner);
+  assert.deepEqual(calls, [["edit-project", "alpha", "name", "Renamed"]]);
+});
+
+test("routeMutation: /p/<project>/edit with missing section flashes back to project page", () => {
+  const { runner, calls } = captureRunner();
+  const r = routeMutation("/p/alpha/edit", new URLSearchParams("value=x"), runner);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/p\/alpha\?flash=/);
+  assert.match(decodeURIComponent(r.location ?? ""), /missing section or value/);
+  assert.deepEqual(calls, []);
+});
+
+test("routeMutation: /p/<project>/edit surfaces a CLI refusal in the flash", () => {
+  const runner: CliRunner = () => ({ ok: false, stdout: "", stderr: "alpha: file changed since the editor was loaded (concurrent edit). Reload and try again." });
+  const r = routeMutation("/p/alpha/edit", new URLSearchParams("section=Goal&value=x"), runner);
+  assert.equal(r.status, 303);
+  assert.match(decodeURIComponent(r.location ?? ""), /file changed since the editor was loaded/);
+});
+
 // ---- safety guards --------------------------------------------------------
 
 test("isLoopback: accepts 127.0.0.1, localhost, ::1", () => {
