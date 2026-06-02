@@ -927,15 +927,15 @@ ${flashBanner}
 </header>
 <section class="queue">
   <h2>Your inbox <span class="meta">(${inbox.length})</span></h2>
-  ${inbox.length === 0 ? `<p class="queue-empty">Inbox empty.</p>` : inbox.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPromote: true, selectable: mutationsEnabled })).join("")}
+  ${inbox.length === 0 ? `<p class="queue-empty">Inbox empty.</p>` : inbox.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPromote: true, showClose: true, closeRedirect: "/", selectable: mutationsEnabled })).join("")}
 </section>
 <section class="queue">
   <h2>Agent queue <span class="meta">(${agentItems.length})</span></h2>
-  ${agentItems.length === 0 ? `<p class="queue-empty">Nothing ready, needing feedback, or awaiting close.</p>` : agentItems.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPull: true, pullRedirect: "/" })).join("")}
+  ${agentItems.length === 0 ? `<p class="queue-empty">Nothing ready, needing feedback, or awaiting close.</p>` : agentItems.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPull: true, pullRedirect: "/", showClose: true, closeRedirect: "/" })).join("")}
 </section>
 <section class="queue">
   <h2>In flight <span class="meta">(${inFlight.length})</span></h2>
-  ${inFlight.length === 0 ? `<p class="queue-empty">No in-progress tasks.</p>` : inFlight.map(it => taskRow(it.project, it.task, "in-progress", prCache, taskLocks)).join("")}
+  ${inFlight.length === 0 ? `<p class="queue-empty">No in-progress tasks.</p>` : inFlight.map(it => taskRow(it.project, it.task, "in-progress", prCache, taskLocks, { showClose: true, closeRedirect: "/" })).join("")}
 </section>
 `;
   return layout("tpm", body, { autoRefresh: 30, afterRoot: bulkBar("/", mutationsEnabled) });
@@ -961,7 +961,7 @@ function renderProject(project: Project, allProjects: Project[], showArchived: b
       if (s === "done" || s === "dropped") {
         group.sort((a, b) => String(b.data.closed ?? "").localeCompare(String(a.data.closed ?? "")));
       }
-      const rows = group.map(t => taskRow(project, t, s, prCache, taskLocks, { showPull: true, pullRedirect: `/p/${project.slug}`, selectable: opts.mutationsEnabled !== false })).join("");
+      const rows = group.map(t => taskRow(project, t, s, prCache, taskLocks, { showPull: true, pullRedirect: `/p/${project.slug}`, showClose: true, closeRedirect: `/p/${project.slug}`, selectable: opts.mutationsEnabled !== false })).join("");
       return `<section class="queue"><h2>${esc(s)} <span class="meta">(${group.length})</span></h2>${rows}</section>`;
     })
     .join("");
@@ -2341,6 +2341,17 @@ interface TaskRowOpts {
   // The checkbox is still self-gating (no parents, no archived, status must be
   // in BULK_CAPS) so opting in can't surface a useless or unsafe checkbox.
   selectable?: boolean;
+  // Render an inline "close" button (→ done, archived by type) for any
+  // non-terminal non-parent row — task 127. Mirrors the detail-page Complete
+  // button: one click flips the task to done with an empty Outcome (editable
+  // later) so a queue triage pass can drop a row without clicking through.
+  // Self-gating on status/parent so the button can't escape into terminal or
+  // container rows even if a caller opts in without per-row filtering.
+  showClose?: boolean;
+  // Where to land the operator after the close mutation, same contract as
+  // `pullRedirect`: index callers pass "/", the project page passes its own
+  // URL. Defaults to the task page when omitted.
+  closeRedirect?: string;
 }
 
 function taskRow(project: Project, task: Task, status: string, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, opts: TaskRowOpts = {}): string {
@@ -2371,8 +2382,9 @@ function taskRow(project: Project, task: Task, status: string, prCache: PrCacheR
     : `<a class="title" href="${href}">${esc(title)}</a>`;
   const promote = promoteButton(href, task, status, opts);
   const pull = pullButton(href, task, status, opts);
+  const close = closeButton(href, task, status, opts);
   return `<div class="${classes.join(" ")}">
-    ${select}${promote}${pull}
+    ${select}${promote}${pull}${close}
     <span class="badge s-${cls(status)}${task.archived ? " s-archived" : ""}">${esc(status)}</span>
     ${lockChip(task, status, taskLocks.has(slug))}
     ${titleCell}
@@ -2486,6 +2498,27 @@ function bulkBar(redirectPath: string, mutationsEnabled: boolean): string {
 // The `__tpmBulk` guard makes re-running the inline script idempotent. Plain
 // ES5 + built-ins, matching FLASH_AUTO_DISMISS_SCRIPT / pollScript.
 const BULK_SELECT_SCRIPT = `(function(){if(window.__tpmBulk)return;window.__tpmBulk=1;function upd(){var n=document.querySelectorAll('input[name=\\'slug\\']:checked').length;var els=document.querySelectorAll('.bulk-n');for(var i=0;i<els.length;i++)els[i].textContent=n;}document.addEventListener('change',function(e){if(e.target&&e.target.name==='slug')upd();});document.addEventListener('keydown',function(e){if(e.key==='Escape'){var c=document.querySelectorAll('input[name=\\'slug\\']:checked');if(c.length){for(var i=0;i<c.length;i++)c[i].checked=false;upd();}}});upd();})();`;
+
+// Inline "close" affordance (task 127) — the per-row analogue of the
+// detail-page Complete button. Posts to the same `complete` mutation with an
+// empty Outcome (close-now-edit-later), so archive-by-type defaults apply
+// (`pr` / `chore` archive; `investigation` / `spike` stay at the canonical
+// path). Self-gating: hidden on terminal rows (already closed — use Archive)
+// and on parent containers (closing a container isn't meaningful), shown for
+// every other status. No confirm — `tpm reopen` makes it reversible.
+function closeButton(href: string, task: Task, status: string, opts: TaskRowOpts): string {
+  if (!opts.showClose) return "";
+  if (task.archived) return "";
+  if (isParent(task)) return "";
+  if (status === "done" || status === "dropped") return "";
+  const label = "Close (→ done)";
+  const redirectInput = opts.closeRedirect
+    ? `<input type="hidden" name="redirect" value="${escAttr(opts.closeRedirect)}">`
+    : "";
+  return `<form method="POST" action="${href}/complete" class="close-form">
+    ${redirectInput}<button type="submit" title="${esc(label)}" aria-label="${esc(label)}">✓</button>
+  </form>`;
+}
 
 // Renders the per-task lock indicator next to a status badge. Truth comes
 // from the lock dir, not the frontmatter, so the UI catches both stranded

@@ -1199,6 +1199,80 @@ test("renderProject: project-page rows in non-pullable statuses don't render the
   assert.doesNotMatch(r.body, /class="pull-form"/);
 });
 
+// ---- per-row close button (task 127) --------------------------------------
+
+test("renderIndex: inbox / agent-queue / in-flight rows render the inline close button (redirect=/)", () => {
+  // Close is the per-row analogue of the detail-page Complete button — shown on
+  // every non-terminal non-parent row across all three dashboard queues, posting
+  // to the shared `complete` mutation with redirect=/ so the dashboard stays put.
+  const p = project("alpha", [
+    task("001-o", "open"),       // inbox
+    task("002-r", "ready"),      // agent queue
+    task("003-ip", "in-progress"), // in flight
+  ]);
+  const r = route("/", new URLSearchParams(), [p]);
+  for (const slug of ["001-o", "002-r", "003-ip"]) {
+    assert.match(
+      r.body,
+      new RegExp(`<form[^>]*method="POST"[^>]*action="/t/alpha/${slug}/complete"[^>]*class="close-form"[\\s\\S]*?name="redirect"[^>]*value="/"`),
+      `expected close form for ${slug}`,
+    );
+  }
+});
+
+test("renderIndex: terminal rows do NOT render the close button (use Archive instead)", () => {
+  // done / dropped are already closed; closeButton self-gates them out even
+  // though the dashboard queues never surface terminal rows anyway.
+  const p = project("alpha", [
+    task("001-done", "done", { closed: "2026-04-01 12:00 PDT" }),
+    task("002-drop", "dropped", { closed: "2026-04-01 12:00 PDT" }),
+  ]);
+  const r = route("/", new URLSearchParams(), [p]);
+  assert.doesNotMatch(r.body, /class="close-form"/);
+});
+
+test("renderIndex: parent container rows do NOT render the close button", () => {
+  // Closing a container isn't meaningful — closeButton hides on parents.
+  const child = task("003-child", "ready", { parent: "002-parent" });
+  child.parent = "002-parent";
+  const parent = task("002-parent", "in-progress");
+  parent.children = [child];
+  const p = project("alpha", [parent]);
+  const r = route("/", new URLSearchParams(), [p]);
+  // The parent row itself (in-flight) carries no close form; the child row does.
+  assert.match(r.body, /action="\/t\/alpha\/002-parent\/003-child\/complete"[^>]*class="close-form"/);
+  assert.doesNotMatch(r.body, /action="\/t\/alpha\/002-parent\/complete"[^>]*class="close-form"/);
+});
+
+test("renderProject: project-page rows render the inline close button (redirect=/p/<slug>)", () => {
+  const p = project("alpha", [
+    task("001-o", "open"),
+    task("002-nf", "needs-feedback"),
+    task("003-d", "done", { closed: "2026-04-01 12:00 PDT" }),
+  ]);
+  const r = route("/p/alpha", new URLSearchParams("archived=1"), [p]);
+  assert.match(
+    r.body,
+    /<form[^>]*action="\/t\/alpha\/001-o\/complete"[^>]*class="close-form"[\s\S]*?name="redirect"[^>]*value="\/p\/alpha"/,
+  );
+  assert.match(
+    r.body,
+    /<form[^>]*action="\/t\/alpha\/002-nf\/complete"[^>]*class="close-form"/,
+  );
+  // The done row is terminal — no close form for it.
+  assert.doesNotMatch(r.body, /action="\/t\/alpha\/003-d\/complete"[^>]*class="close-form"/);
+});
+
+test("routeMutation: row close posts `complete` and honors redirect=/ so the queue stays put", () => {
+  // No outcome field on the row form — the close-now-edit-later path leaves
+  // Outcome empty (same as the detail-page Complete with a blank textarea).
+  const { runner, calls } = captureRunner();
+  const r = routeMutation("/t/alpha/001-a/complete", new URLSearchParams("redirect=/"), runner);
+  assert.deepEqual(calls, [["complete", "alpha/001-a"]]);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/\?flash=/);
+});
+
 // ---- report flow (investigation deliverable) ------------------------------
 
 test("renderTask: rail surfaces a Report panel when report.md exists in the task folder", () => {
