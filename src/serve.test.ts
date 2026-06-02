@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
-import { route, routeMutation, isSameOrigin, isLoopback } from "./serve.ts";
+import { route, routeMutation, routeBulk, isSameOrigin, isLoopback } from "./serve.ts";
 import type { CliRunner, ConfigSnapshot, PrCacheReader } from "./serve.ts";
 import type { Project, Task } from "./tree.ts";
 
@@ -3046,5 +3046,200 @@ test("routeMutation: /t/<slug>/edit surfaces a CLI conflict in the flash", () =>
   const r = routeMutation("/t/alpha/001-a/edit", new URLSearchParams("section=Context&value=x&mtime=1"), runner);
   assert.equal(r.status, 303);
   assert.match(decodeURIComponent(r.location ?? ""), /file changed since the editor was loaded/);
+});
+
+// ---- bulk multi-select (task 126) -----------------------------------------
+
+test("routeBulk: /bulk/promote dispatches `tpm ready <slug>` once per selected slug", () => {
+  const { runner, calls } = captureRunner();
+  const body = new URLSearchParams();
+  body.append("slug", "alpha/001-a");
+  body.append("slug", "alpha/002-b");
+  body.append("slug", "beta/003-c");
+  const r = routeBulk("promote", body, runner);
+  assert.equal(r.status, 303);
+  assert.deepEqual(calls, [
+    ["ready", "alpha/001-a"],
+    ["ready", "alpha/002-b"],
+    ["ready", "beta/003-c"],
+  ]);
+});
+
+test("routeBulk: each action maps to its CLI verb", () => {
+  const cases: Array<[string, string]> = [
+    ["promote", "ready"],
+    ["pull", "pull"],
+    ["close", "complete"],
+    ["reopen", "reopen"],
+    ["archive", "archive"],
+  ];
+  for (const [action, verb] of cases) {
+    const { runner, calls } = captureRunner();
+    const body = new URLSearchParams();
+    body.append("slug", "alpha/001-a");
+    routeBulk(action, body, runner);
+    assert.deepEqual(calls, [[verb, "alpha/001-a"]], `expected ${action} -> tpm ${verb}`);
+  }
+});
+
+test("routeBulk: partial failure reports per-row ok/refused/error counts without aborting", () => {
+  // First slug ok, second a refused transition, third a not-found error. The
+  // batch runs all three (independent semantics) and folds them into one flash.
+  const seen: string[] = [];
+  const runner: CliRunner = (args) => {
+    const slug = args[1];
+    seen.push(slug);
+    if (slug === "alpha/001-a") return { ok: true, stdout: "alpha/001-a -> ready", stderr: "" };
+    if (slug === "alpha/002-b") return { ok: false, stdout: "", stderr: `Cannot transition alpha/002-b from "done" to "ready".` };
+    return { ok: false, stdout: "", stderr: `No task matched "beta/003-c".` };
+  };
+  const body = new URLSearchParams();
+  body.append("slug", "alpha/001-a");
+  body.append("slug", "alpha/002-b");
+  body.append("slug", "beta/003-c");
+  const r = routeBulk("promote", body, runner);
+  assert.deepEqual(seen, ["alpha/001-a", "alpha/002-b", "beta/003-c"]);
+  const flash = decodeURIComponent(r.location ?? "");
+  assert.match(flash, /Promote: 1 ok, 1 refused/);
+  assert.match(flash, /1 error\b/);
+  // The first refusal reason is surfaced (condensed) so the operator sees why.
+  assert.match(flash, /Cannot transition alpha\/002-b/);
+});
+
+test("routeBulk: all-ok summary still includes a zero error count", () => {
+  const { runner } = captureRunner();
+  const body = new URLSearchParams();
+  body.append("slug", "alpha/001-a");
+  body.append("slug", "alpha/002-b");
+  const r = routeBulk("close", body, runner);
+  assert.match(decodeURIComponent(r.location ?? ""), /Close: 2 ok, 0 errors/);
+});
+
+test("routeBulk: empty selection flashes back without shelling out", () => {
+  const { runner, calls } = captureRunner();
+  const r = routeBulk("promote", new URLSearchParams(), runner);
+  assert.equal(calls.length, 0);
+  assert.equal(r.status, 303);
+  assert.match(decodeURIComponent(r.location ?? ""), /Promote: no rows selected/);
+});
+
+test("routeBulk: block requires a reason and forwards the same reason to every slug", () => {
+  const { runner: r1, calls: c1 } = captureRunner();
+  const noReason = new URLSearchParams();
+  noReason.append("slug", "alpha/001-a");
+  const refused = routeBulk("block", noReason, r1);
+  assert.equal(c1.length, 0);
+  assert.match(decodeURIComponent(refused.location ?? ""), /Block: a reason is required/);
+
+  const { runner: r2, calls: c2 } = captureRunner();
+  const withReason = new URLSearchParams();
+  withReason.append("slug", "alpha/001-a");
+  withReason.append("slug", "alpha/002-b");
+  withReason.append("reason", "waiting on API key");
+  routeBulk("block", withReason, r2);
+  assert.deepEqual(c2, [
+    ["block", "alpha/001-a", "waiting on API key"],
+    ["block", "alpha/002-b", "waiting on API key"],
+  ]);
+});
+
+test("routeBulk: unknown action flashes back instead of 404", () => {
+  const { runner, calls } = captureRunner();
+  const body = new URLSearchParams();
+  body.append("slug", "alpha/001-a");
+  const r = routeBulk("teleport", body, runner);
+  assert.equal(calls.length, 0);
+  assert.equal(r.status, 303);
+  assert.match(decodeURIComponent(r.location ?? ""), /bulk: unknown action "teleport"/);
+});
+
+test("routeBulk: honors a valid redirect and rejects an off-site one", () => {
+  const { runner } = captureRunner();
+  const okParams = new URLSearchParams();
+  okParams.append("slug", "alpha/001-a");
+  okParams.append("redirect", "/p/alpha");
+  const r1 = routeBulk("promote", okParams, runner);
+  assert.match(r1.location ?? "", /^\/p\/alpha\?flash=/);
+
+  const evil = new URLSearchParams();
+  evil.append("slug", "alpha/001-a");
+  evil.append("redirect", "https://evil.example/x");
+  const r2 = routeBulk("promote", evil, runner);
+  // Rejected open-redirect falls back to the dashboard root.
+  assert.match(r2.location ?? "", /^\/\?flash=/);
+});
+
+test("routeMutation: /bulk/<action> is reachable through the POST dispatcher", () => {
+  const { runner, calls } = captureRunner();
+  const body = new URLSearchParams();
+  body.append("slug", "alpha/001-a");
+  const r = routeMutation("/bulk/close", body, runner);
+  assert.equal(r.status, 303);
+  assert.deepEqual(calls, [["complete", "alpha/001-a"]]);
+});
+
+test("route: project queue rows render select checkboxes + a bulk bar when mutations enabled", () => {
+  const p = project("alpha", [task("001-a", "open"), task("002-b", "ready")]);
+  const r = route("/p/alpha", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /type="checkbox" name="slug" form="bulk-form" value="alpha\/001-a"/);
+  assert.match(r.body, /type="checkbox" name="slug" form="bulk-form" value="alpha\/002-b"/);
+  assert.match(r.body, /<form id="bulk-form" class="bulk-bar"/);
+  assert.match(r.body, /formaction="\/bulk\/promote"/);
+  assert.match(r.body, /formaction="\/bulk\/close"/);
+});
+
+test("route: bulk cap-* classes reflect each status so the bar reveals only valid actions", () => {
+  // The which-buttons-show filtering is pure CSS keyed on these classes; assert
+  // the classes themselves rather than computed style. open offers promote/
+  // close/block; ready offers pull/close/block; a terminal done row offers only
+  // archive.
+  const p = project("alpha", [
+    task("001-open", "open"),
+    task("002-ready", "ready"),
+    task("003-done", "done"),
+  ]);
+  const r = route("/p/alpha", new URLSearchParams({ archived: "1" }), [p], { mutationsEnabled: true });
+  const rowClasses = (slug: string): string => {
+    const m = r.body.match(new RegExp(`<div class="(task-row[^"]*)"[^>]*>(?:(?!</div>)[\\s\\S])*?value="alpha/${slug}"`));
+    return m ? m[1] : "";
+  };
+  const open = rowClasses("001-open");
+  assert.match(open, /cap-promote/);
+  assert.match(open, /cap-close/);
+  assert.match(open, /cap-block/);
+  assert.doesNotMatch(open, /cap-archive/);
+  const ready = rowClasses("002-ready");
+  assert.match(ready, /cap-pull/);
+  assert.doesNotMatch(ready, /cap-promote/);
+  const done = rowClasses("003-done");
+  assert.match(done, /cap-archive/);
+  assert.doesNotMatch(done, /cap-(promote|pull|close|block)/);
+});
+
+test("route: per-task page renders no select checkbox or bulk bar (read-only context)", () => {
+  const p = project("alpha", [task("001-a", "open")]);
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.doesNotMatch(r.body, /name="slug" form="bulk-form"/);
+  assert.doesNotMatch(r.body, /class="bulk-bar"/);
+});
+
+test("route: disabling mutations hides both checkboxes and the bulk bar", () => {
+  const p = project("alpha", [task("001-a", "open")]);
+  const r = route("/p/alpha", new URLSearchParams(), [p], { mutationsEnabled: false });
+  assert.doesNotMatch(r.body, /name="slug" form="bulk-form"/);
+  assert.doesNotMatch(r.body, /class="bulk-bar"/);
+});
+
+test("route: index inbox rows are selectable; parent containers render no checkbox", () => {
+  const parent = task("001-parent", "open");
+  const child = task("002-child", "open");
+  (child as unknown as { parent: string }).parent = "001-parent";
+  (parent as unknown as { children: unknown[] }).children = [child];
+  const p = project("alpha", [parent]);
+  const r = route("/", new URLSearchParams(), [p], { mutationsEnabled: true });
+  // The open child surfaces in the inbox with a checkbox; the parent is filtered.
+  assert.match(r.body, /name="slug" form="bulk-form" value="alpha\/001-parent\/002-child"/);
+  assert.doesNotMatch(r.body, /value="alpha\/001-parent" aria-label/);
+  assert.match(r.body, /class="bulk-bar"/);
 });
 

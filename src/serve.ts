@@ -111,6 +111,44 @@ const MUTATION_ACTIONS = new Set([
   "lgtm", "request-changes", "archive", "pull", "edit",
 ]);
 
+// Bulk-action whitelist for the multi-select bar (task 126). Each key is a
+// `/bulk/<action>` segment; the bar fans the selected slugs out to the named
+// CLI verb, one invocation per slug (independent semantics — one row's refusal
+// never aborts the batch, mirroring a shell `for` loop). The verbs here are the
+// no-free-text-per-row transitions; `block` is the lone exception and shares a
+// single reason across the whole selection. Kept narrow for the same reason as
+// MUTATION_ACTIONS: a stray POST can't reach an arbitrary tpm verb.
+const BULK_ACTIONS: Record<string, { verb: string; label: string; needsReason?: boolean }> = {
+  promote: { verb: "ready", label: "Promote" },
+  pull: { verb: "pull", label: "Pull from queue" },
+  close: { verb: "complete", label: "Close" },
+  reopen: { verb: "reopen", label: "Reopen" },
+  block: { verb: "block", label: "Block", needsReason: true },
+  archive: { verb: "archive", label: "Archive" },
+};
+
+// Which bulk actions each status can plausibly accept. Drives UI affordance
+// only — the per-row CLI call is the real enforcer, so a stale-form mismatch
+// just surfaces as a "refused" in the summary rather than corrupting state.
+// Mirrors the single-row action rails (renderActions / promoteButton /
+// renderArchiveAction): every non-terminal status can be closed or blocked;
+// `ready`/`needs-feedback` can be pulled; `open`/`blocked` promoted; `blocked`
+// reopened; terminal (done/dropped) only archived. A row is selectable iff its
+// status appears here (so corrupt/unknown statuses render no checkbox).
+const BULK_CAPS: Record<string, string[]> = {
+  open: ["promote", "close", "block"],
+  ready: ["pull", "close", "block"],
+  blocked: ["promote", "reopen", "close"],
+  "in-progress": ["close", "block"],
+  "needs-feedback": ["pull", "close", "block"],
+  "needs-close": ["close", "block"],
+  "needs-review": ["close", "block"],
+  done: ["archive"],
+  dropped: ["archive"],
+};
+// Order the bar renders its buttons in (stable, independent of which are shown).
+const BULK_ACTION_ORDER = ["promote", "pull", "close", "reopen", "block", "archive"];
+
 const CLI_PATH = fileURLToPath(new URL("./cli.ts", import.meta.url));
 
 // `tpm serve`: localhost dashboard for the queues. POST endpoints shell out to
@@ -290,7 +328,7 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
   const taskLocks: Map<string, TaskLockSnapshotEntry> =
     (opts.taskLocks ?? (() => new Map<string, TaskLockSnapshotEntry>()))();
   if (pathname === "/" || pathname === "") {
-    return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project"), prCache, taskLocks, opts.flash));
+    return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project"), prCache, taskLocks, opts.flash, opts.mutationsEnabled !== false));
   }
   if (pathname === "/api/refresh") {
     return ok("application/json", renderRefresh(projects));
@@ -575,6 +613,11 @@ export function routeMutation(pathname: string, body: URLSearchParams, runner: C
   if (projectEditMatch) {
     return routeProjectEdit(decodeURIComponent(projectEditMatch[1]), body, runner);
   }
+  // Bulk multi-select fan-out: /bulk/<action> with N `slug` form fields.
+  const bulkMatch = pathname.match(/^\/bulk\/([a-z][a-z0-9-]*)\/?$/);
+  if (bulkMatch) {
+    return routeBulk(bulkMatch[1], body, runner);
+  }
   // Match /t/<slugPath>/<action>. slugPath is greedy so it captures any
   // intermediate parent segments; action is the last path segment.
   const m = pathname.match(/^\/t\/(.+)\/([a-z][a-z0-9-]*)\/?$/);
@@ -653,6 +696,64 @@ function routeProjectEdit(projectSlug: string, body: URLSearchParams, runner: Cl
     ? (result.stdout || "edit: ok")
     : (result.stderr || "edit: failed");
   return flashTo(projectHref, flash);
+}
+
+// Bulk fan-out dispatch (task 126). Runs the action's CLI verb once per
+// selected slug, independently — a refusal on one row never aborts the rest,
+// the same blast radius a shell `for slug in ...; do tpm <verb> $slug; done`
+// would have. Collects per-row outcomes into a single flash summary
+// ("Promote: 4 ok, 1 refused (…), 0 errors") and 303s back to the originating
+// page (validated via `redirectOverride`, defaulting to the dashboard root).
+export function routeBulk(action: string, body: URLSearchParams, runner: CliRunner): MutationResult {
+  const spec = BULK_ACTIONS[action];
+  // Land failures back where the operator was, not on a 404 page.
+  const back = redirectOverride(body.get("redirect")) ?? "/";
+  if (!spec) return flashTo(back, `bulk: unknown action "${action}"`);
+
+  const slugs = body.getAll("slug").map(s => s.trim()).filter(Boolean);
+  if (slugs.length === 0) return flashTo(back, `${spec.label}: no rows selected`);
+
+  let reason = "";
+  if (spec.needsReason) {
+    reason = body.get("reason")?.trim() ?? "";
+    if (!reason) return flashTo(back, `${spec.label}: a reason is required`);
+  }
+
+  let ok = 0;
+  let refused = 0;
+  let errors = 0;
+  let firstRefusal = "";
+  for (const slug of slugs) {
+    const args = spec.needsReason ? [spec.verb, slug, reason] : [spec.verb, slug];
+    const r = runner(args);
+    if (r.ok) {
+      ok++;
+      continue;
+    }
+    const msg = (r.stderr || r.stdout || "").trim();
+    // "couldn't find the task" reads as an error (likely a stale render);
+    // anything else the CLI rejected is a refused transition the operator can
+    // act on (wrong status, parent with live children, …).
+    if (/not found|no task|no .*matched|does not exist/i.test(msg)) {
+      errors++;
+    } else {
+      refused++;
+      if (!firstRefusal) firstRefusal = condenseReason(msg);
+    }
+  }
+
+  const parts = [`${ok} ok`];
+  if (refused) parts.push(`${refused} refused${firstRefusal ? ` (${firstRefusal})` : ""}`);
+  parts.push(`${errors} error${errors === 1 ? "" : "s"}`);
+  return flashTo(back, `${spec.label}: ${parts.join(", ")}`);
+}
+
+// Trim a CLI error down to a flash-sized clause: first line, collapsed
+// whitespace, trailing period dropped, capped so one verbose refusal can't
+// blow out the banner.
+function condenseReason(msg: string): string {
+  const first = msg.split("\n")[0].replace(/\s+/g, " ").replace(/\.$/, "").trim();
+  return first.length > 80 ? `${first.slice(0, 77)}…` : first;
 }
 
 function flashTo(target: string, flash: string): MutationResult {
@@ -777,7 +878,7 @@ function notFound(message: string): RouteResult {
 
 // ---- pages ----------------------------------------------------------------
 
-function renderIndex(projects: Project[], projectFilter: string | null, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, flash?: string): string {
+function renderIndex(projects: Project[], projectFilter: string | null, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, flash?: string, mutationsEnabled = false): string {
   const filtered = projectFilter ? projects.filter(p => p.slug === projectFilter) : projects;
 
   // Inbox = needs-review > blocked > open across the filtered set.
@@ -826,7 +927,7 @@ ${flashBanner}
 </header>
 <section class="queue">
   <h2>Your inbox <span class="meta">(${inbox.length})</span></h2>
-  ${inbox.length === 0 ? `<p class="queue-empty">Inbox empty.</p>` : inbox.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPromote: true })).join("")}
+  ${inbox.length === 0 ? `<p class="queue-empty">Inbox empty.</p>` : inbox.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPromote: true, selectable: mutationsEnabled })).join("")}
 </section>
 <section class="queue">
   <h2>Agent queue <span class="meta">(${agentItems.length})</span></h2>
@@ -837,7 +938,7 @@ ${flashBanner}
   ${inFlight.length === 0 ? `<p class="queue-empty">No in-progress tasks.</p>` : inFlight.map(it => taskRow(it.project, it.task, "in-progress", prCache, taskLocks)).join("")}
 </section>
 `;
-  return layout("tpm", body, { autoRefresh: 30 });
+  return layout("tpm", body, { autoRefresh: 30, afterRoot: bulkBar("/", mutationsEnabled) });
 }
 
 function renderProject(project: Project, allProjects: Project[], showArchived: boolean, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, opts: RouteOpts = {}, editingSection: string | null = null): string {
@@ -860,7 +961,7 @@ function renderProject(project: Project, allProjects: Project[], showArchived: b
       if (s === "done" || s === "dropped") {
         group.sort((a, b) => String(b.data.closed ?? "").localeCompare(String(a.data.closed ?? "")));
       }
-      const rows = group.map(t => taskRow(project, t, s, prCache, taskLocks, { showPull: true, pullRedirect: `/p/${project.slug}` })).join("");
+      const rows = group.map(t => taskRow(project, t, s, prCache, taskLocks, { showPull: true, pullRedirect: `/p/${project.slug}`, selectable: opts.mutationsEnabled !== false })).join("");
       return `<section class="queue"><h2>${esc(s)} <span class="meta">(${group.length})</span></h2>${rows}</section>`;
     })
     .join("");
@@ -930,7 +1031,7 @@ ${flashBanner}
   </main>
 </div>
 `;
-  return layout(`tpm · ${projectName}`, body);
+  return layout(`tpm · ${projectName}`, body, { afterRoot: bulkBar(`/p/${project.slug}`, canEdit) });
 }
 
 // "New task" form on the project page. The project is implied by scope so the
@@ -2234,6 +2335,12 @@ interface TaskRowOpts {
   // own URL. Defaults to the task page (the form omits the redirect input
   // entirely, so `routeMutation` falls through to the task-page default).
   pullRedirect?: string;
+  // Render a leading multi-select checkbox (task 126) so the row can join a
+  // bulk-action batch. Callers in mutable contexts (project page queues, the
+  // index inbox) opt in; read-only contexts (the per-task page) leave it off.
+  // The checkbox is still self-gating (no parents, no archived, status must be
+  // in BULK_CAPS) so opting in can't surface a useless or unsafe checkbox.
+  selectable?: boolean;
 }
 
 function taskRow(project: Project, task: Task, status: string, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, opts: TaskRowOpts = {}): string {
@@ -2247,6 +2354,13 @@ function taskRow(project: Project, task: Task, status: string, prCache: PrCacheR
     : strOr(task.data.created, "");
   const classes = ["task-row"];
   if (task.archived) classes.push("archived");
+  // Tag the row with `cap-<action>` classes for every bulk action its status
+  // can accept. CSS `:has()` rules key off these to reveal exactly the bar
+  // buttons that apply to ≥1 selected row — no JS needed for the filtering.
+  const select = selectCheckbox(slug, task, status, opts);
+  if (select) {
+    for (const cap of BULK_CAPS[status] ?? []) classes.push(`cap-${cap}`);
+  }
   const archivedTag = task.archived ? `<span class="archived-tag">archived</span>` : "";
   // Child rows live in status-grouped queues where the parent isn't adjacent,
   // so an indent has nothing to anchor to (task 098). Show the parent slug as a
@@ -2258,7 +2372,7 @@ function taskRow(project: Project, task: Task, status: string, prCache: PrCacheR
   const promote = promoteButton(href, task, status, opts);
   const pull = pullButton(href, task, status, opts);
   return `<div class="${classes.join(" ")}">
-    ${promote}${pull}
+    ${select}${promote}${pull}
     <span class="badge s-${cls(status)}${task.archived ? " s-archived" : ""}">${esc(status)}</span>
     ${lockChip(task, status, taskLocks.has(slug))}
     ${titleCell}
@@ -2311,6 +2425,67 @@ function pullButton(href: string, task: Task, status: string, opts: TaskRowOpts)
     ${redirectInput}<button type="submit" title="${esc(label)}" aria-label="${esc(label)}">⏸</button>
   </form>`;
 }
+
+// Leading multi-select checkbox for a queue row (task 126). Self-gating:
+// parents (containers, not actionable), archived rows (immutable), and rows
+// whose status can't accept any bulk action render nothing — so a caller that
+// opts a queue into `selectable` can't accidentally surface a checkbox that
+// would only ever refuse. The `form="bulk-form"` attribute associates the box
+// with the action bar even though the bar lives outside the row in the DOM,
+// and `value` carries the qualified slug the bulk endpoint fans out over.
+function selectCheckbox(slug: string, task: Task, status: string, opts: TaskRowOpts): string {
+  if (!opts.selectable) return "";
+  if (task.archived) return "";
+  if (isParent(task)) return "";
+  if (!(status in BULK_CAPS)) return "";
+  return `<input class="row-select" type="checkbox" name="slug" form="bulk-form" value="${escAttr(slug)}" aria-label="Select ${escAttr(slug)}">`;
+}
+
+// Selection-aware bulk-action bar (task 126). Rendered once per page (project
+// queues / index inbox) and placed *outside* `#poll-root` via the layout's
+// `afterRoot` slot, for two reasons: (1) the in-place poller only swaps
+// `#poll-root`, so the bar — and the live count its script mutates — survive
+// auto-refresh untouched; (2) checkbox `:checked` state is a runtime property
+// the poller's innerHTML diff can't see, so selecting rows never triggers a
+// swap that would wipe the selection. The bar's visibility and which buttons
+// show are pure CSS (`body:has(#poll-root .cap-X input:checked) …`); the only
+// script is the count + Esc-to-clear. Each button posts the selected slugs to
+// `/bulk/<action>` via `formaction`. Hidden entirely when mutations are
+// disabled (non-loopback bind), same guard as the single-row buttons.
+function bulkBar(redirectPath: string, mutationsEnabled: boolean): string {
+  if (!mutationsEnabled) return "";
+  const buttons = BULK_ACTION_ORDER.map(action => {
+    const spec = BULK_ACTIONS[action];
+    if (!spec) return "";
+    if (action === "block") {
+      // Block shares one reason across the batch; the input rides the same
+      // cap-block reveal as the button so it only appears when relevant.
+      return `<span class="bulk-act bulk-act-block bulk-block-group">`
+        + `<input class="bulk-reason" type="text" name="reason" placeholder="block reason" aria-label="Bulk block reason">`
+        + `<button type="submit" formaction="/bulk/block">Block</button>`
+        + `</span>`;
+    }
+    return `<button class="bulk-act bulk-act-${action}" type="submit" formaction="/bulk/${action}">${esc(spec.label)}</button>`;
+  }).join("");
+  // The form's own `action` is a harmless default — every button overrides it
+  // with `formaction`. `redirect` round-trips the originating page so the
+  // summary flash lands back here (validated server-side by redirectOverride).
+  return `<form id="bulk-form" class="bulk-bar" method="POST" action="/bulk/close">
+    <input type="hidden" name="redirect" value="${escAttr(redirectPath)}">
+    <span class="bulk-count"><span class="bulk-n">0</span> selected</span>
+    ${buttons}
+    <span class="bulk-hint">Esc clears · leaving the page clears</span>
+  </form>
+  <script>${BULK_SELECT_SCRIPT}</script>`;
+}
+
+// Keeps the "<n> selected" count in step with the checkboxes and wires
+// Esc-to-clear. Pure delegation on `document` so a single listener survives the
+// poller's `#poll-root` swaps (the bar itself is outside poll-root, but the
+// row checkboxes inside it get replaced on swap — delegation rides through).
+// The `__tpmBulk` guard makes re-running the inline script idempotent. Plain
+// ES5 + built-ins, matching FLASH_AUTO_DISMISS_SCRIPT / pollScript.
+const BULK_SELECT_SCRIPT = `(function(){if(window.__tpmBulk)return;window.__tpmBulk=1;function upd(){var n=document.querySelectorAll('input[name=\\'slug\\']:checked').length;var els=document.querySelectorAll('.bulk-n');for(var i=0;i<els.length;i++)els[i].textContent=n;}document.addEventListener('change',function(e){if(e.target&&e.target.name==='slug')upd();});document.addEventListener('keydown',function(e){if(e.key==='Escape'){var c=document.querySelectorAll('input[name=\\'slug\\']:checked');if(c.length){for(var i=0;i<c.length;i++)c[i].checked=false;upd();}}});upd();})();`;
 
 // Renders the per-task lock indicator next to a status badge. Truth comes
 // from the lock dir, not the frontmatter, so the UI catches both stranded
@@ -2567,7 +2742,7 @@ function pollScript(seconds: number): string {
   return `(function(){var ms=${seconds * 1000};var root=document.getElementById('poll-root');if(!root)return;var busy=false;function editing(){var a=document.activeElement;return!!a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.tagName==='SELECT');}function tick(){if(busy||document.hidden||editing())return;busy=true;fetch(location.href,{headers:{'X-Tpm-Poll':'1'}}).then(function(r){return r.ok?r.text():null;}).then(function(html){if(html){var next=new DOMParser().parseFromString(html,'text/html').getElementById('poll-root');if(next&&next.innerHTML!==root.innerHTML)root.innerHTML=next.innerHTML;}}).catch(function(){}).then(function(){busy=false;});}setInterval(tick,ms);})();`;
 }
 
-function layout(title: string, body: string, opts: { autoRefresh?: number } = {}): string {
+function layout(title: string, body: string, opts: { autoRefresh?: number; afterRoot?: string } = {}): string {
   // Live pages soft-poll via JS (see pollScript) and keep a `<noscript>`
   // meta-refresh as the no-JS fallback. Both fire on the same interval.
   const fallback = opts.autoRefresh
@@ -2576,6 +2751,10 @@ function layout(title: string, body: string, opts: { autoRefresh?: number } = {}
   const poller = opts.autoRefresh
     ? `\n<script>${pollScript(opts.autoRefresh)}</script>`
     : "";
+  // `afterRoot` content sits outside `#poll-root` so the in-place poller leaves
+  // it (and any selection state it holds) alone — the bulk-action bar lives
+  // here (task 126).
+  const afterRoot = opts.afterRoot ?? "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -2586,7 +2765,7 @@ ${fallback}
 </head>
 <body>
 <header class="site-header"><a class="home" href="/">tpm</a></header>
-<div id="poll-root">${body}</div>${poller}
+<div id="poll-root">${body}</div>${afterRoot}${poller}
 </body>
 </html>`;
 }
