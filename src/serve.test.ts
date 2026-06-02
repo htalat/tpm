@@ -498,6 +498,22 @@ test("renderTask: Complete (Close) form renders for every non-terminal status", 
   }
 });
 
+test("renderTask: action rail uses the canonical UI vocabulary (Close, not Complete)", () => {
+  // The → done transition is labeled "Close" everywhere it surfaces — the CLI
+  // verb stays `complete`, but the operator-facing button never says it. Guards
+  // the Close/complete/done vocabulary unification (task 128) against drift.
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [project("alpha", [task("001-a", "in-progress")])], { mutationsEnabled: true });
+  assert.match(r.body, /<button type="submit">Close \(→ done\)<\/button>/, "detail-page close button should read 'Close (→ done)'");
+  assert.doesNotMatch(r.body, /<button type="submit">Complete<\/button>/, "no button should be labeled 'Complete' — that's the CLI verb, not the UI word");
+});
+
+test("renderTask: open task's promote action reads 'Promote', never 'Play'", () => {
+  // → ready is "Promote" on every surface; "Play" was dropped as a synonym.
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [project("alpha", [task("001-a", "open")])], { mutationsEnabled: true });
+  assert.match(r.body, /Promote to ready/, "detail-page ready button should read 'Promote to ready'");
+  assert.doesNotMatch(r.body, />\s*Play\s*</, "no button should be labeled 'Play'");
+});
+
 test("renderTask: done/dropped tasks render the Archive button but no transition or settings forms", () => {
   // Terminal tasks are view-only for status transitions, but a non-archived
   // done/dropped task can still be retired off the canonical path — the Archive

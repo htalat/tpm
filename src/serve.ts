@@ -104,6 +104,30 @@ export interface ServeOpts {
   port?: number;
 }
 
+// ── Canonical UI action vocabulary ──────────────────────────────────────────
+// One word per lifecycle transition, used on EVERY surface it appears: the
+// detail-page action rail (`renderActions` + the *Form helpers), the inline
+// per-row glyph buttons (`promoteButton` / `pullButton` / `closeButton`), and
+// the bulk-action bar (`BULK_ACTIONS.label`). The CLI verb and the resulting
+// status can differ from the UI word — that's deliberate, not drift:
+//
+//   Transition            CLI verb       Status        Canonical UI label
+//   → done                complete       done          Close
+//   → ready               ready          ready         Promote
+//   → in-progress         start          in-progress   Start   (no button yet)
+//   → blocked             block          blocked       Block
+//   → open (from queue)   pull           open          Pull from queue
+//   → open (from terminal) reopen        open          Reopen
+//   → archived            archive        (archived)    Archive
+//
+// The button names the OPERATOR ACTION (a verb), not the end-state noun, so
+// the rail reads as a row of things-you-can-do. Detail-page buttons may suffix
+// the destination — "Close (→ done)", "Reopen (→ open)" — but the leading word
+// is always the canonical label above. Renaming a CLI verb or status is a
+// separate breaking change (scripts + the agent skill depend on them); this
+// vocabulary governs UI labels only. Adding a button? Reuse the word here; if
+// the action is new, add a row first. `serve.test.ts` asserts the live labels.
+
 // Whitelisted POST action segments. The CLI verbs they map to are built in
 // `buildCliArgs`. Kept narrow so a stray POST can't shell out to any tpm verb.
 const MUTATION_ACTIONS = new Set([
@@ -626,7 +650,7 @@ export function routeMutation(pathname: string, body: URLSearchParams, runner: C
   const action = m[2];
   if (!MUTATION_ACTIONS.has(action)) return { status: 404, body: `Unknown action: ${action}` };
 
-  // Optional `redirect` field: forms (e.g. the inbox play button) can send the
+  // Optional `redirect` field: forms (e.g. the inbox promote button) can send the
   // user back to a queue view instead of the task page. Validated against an
   // open-redirect allowlist before honoring.
   const override = redirectOverride(body.get("redirect"));
@@ -2107,7 +2131,7 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
   const href = taskHref(project, task);
   const forms: string[] = [];
 
-  // Status -> set of action keys. Every non-terminal status offers `Complete`
+  // Status -> set of action keys. Every non-terminal status offers `Close`
   // (terminal/parent already returned above): closing is a first-class UI
   // action so investigations / spikes / chores without a linked PR can be
   // closed without dropping to `tpm complete` in the shell. The Outcome
@@ -2149,7 +2173,7 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       // page itself (see `renderReportActionsBar`) — the reviewer's attention
       // is there, not on the task page. The rail keeps log/block/reopen as
       // escape hatches for both report-shaped and PR-shaped reviews, plus a
-      // direct Complete for closing a review out without going through LGTM
+      // direct Close for closing a review out without going through LGTM
       // (e.g. a PR-shaped review the poller hasn't swept yet).
       forms.push(logForm(href));
       forms.push(completeForm(href));
@@ -2243,7 +2267,7 @@ function completeForm(href: string): string {
     <label>Outcome (optional — fills <code>## Outcome</code>)
       <textarea name="outcome" rows="3" placeholder="what shipped, what changed"></textarea>
     </label>
-    <button type="submit">Complete</button>
+    <button type="submit">Close (→ done)</button>
   </form>`;
 }
 
@@ -2287,7 +2311,7 @@ function statusForm(href: string, value: string, label: string): string {
   </form>`;
 }
 
-// "Pull from queue" — symmetric inverse of the inbox play button. The label
+// "Pull from queue" — symmetric inverse of the inbox promote button. The label
 // names the destination so the operator sees the intended landing slot before
 // clicking (ready -> open is a re-shape moment; needs-feedback -> needs-review
 // is an escalation to the human queue). Server-side `tpm pull` is the only
@@ -2395,7 +2419,7 @@ function taskRow(project: Project, task: Task, status: string, prCache: PrCacheR
   </div>`;
 }
 
-// Inbox "play" affordance — one-click promote-to-ready without leaving the
+// Inbox promote affordance — one-click promote-to-ready without leaving the
 // landing page (task 110). Only rendered when the caller opts in
 // (`showPromote`) and the row is in a status where promote-to-ready makes
 // sense. Defensive guards repeat the inbox's own filter (no archived, no
@@ -2500,7 +2524,7 @@ function bulkBar(redirectPath: string, mutationsEnabled: boolean): string {
 const BULK_SELECT_SCRIPT = `(function(){if(window.__tpmBulk)return;window.__tpmBulk=1;function upd(){var n=document.querySelectorAll('input[name=\\'slug\\']:checked').length;var els=document.querySelectorAll('.bulk-n');for(var i=0;i<els.length;i++)els[i].textContent=n;}document.addEventListener('change',function(e){if(e.target&&e.target.name==='slug')upd();});document.addEventListener('keydown',function(e){if(e.key==='Escape'){var c=document.querySelectorAll('input[name=\\'slug\\']:checked');if(c.length){for(var i=0;i<c.length;i++)c[i].checked=false;upd();}}});upd();})();`;
 
 // Inline "close" affordance (task 127) — the per-row analogue of the
-// detail-page Complete button. Posts to the same `complete` mutation with an
+// detail-page Close button. Posts to the same `complete` mutation with an
 // empty Outcome (close-now-edit-later), so archive-by-type defaults apply
 // (`pr` / `chore` archive; `investigation` / `spike` stay at the canonical
 // path). Self-gating: hidden on terminal rows (already closed — use Archive)
