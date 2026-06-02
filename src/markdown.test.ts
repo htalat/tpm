@@ -105,3 +105,57 @@ test("markdown: nested list (single level)", () => {
   // Matters that nested becomes a child <ul>, not a sibling top-level item.
   assert.match(out, /<li>top<ul><li>nested<\/li><\/ul><\/li><li>next<\/li>/);
 });
+
+test("markdown: canonical table with leading/trailing pipes", () => {
+  const out = renderMarkdown("| a | b |\n| --- | --- |\n| 1 | 2 |");
+  assert.equal(
+    out,
+    "<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table>",
+  );
+});
+
+test("markdown: table without leading/trailing pipes", () => {
+  const out = renderMarkdown("a | b\n--- | ---\n1 | 2");
+  assert.equal(
+    out,
+    "<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table>",
+  );
+});
+
+test("markdown: table honors alignment markers", () => {
+  const out = renderMarkdown("| l | c | r |\n| :--- | :---: | ---: |\n| 1 | 2 | 3 |");
+  assert.match(out, /<th style="text-align:left">l<\/th>/);
+  assert.match(out, /<th style="text-align:center">c<\/th>/);
+  assert.match(out, /<th style="text-align:right">r<\/th>/);
+  assert.match(out, /<td style="text-align:center">2<\/td>/);
+});
+
+test("markdown: table with an empty cell", () => {
+  const out = renderMarkdown("| a | b |\n| --- | --- |\n| 1 |  |");
+  assert.match(out, /<tbody><tr><td>1<\/td><td><\/td><\/tr><\/tbody>/);
+});
+
+test("markdown: table cell renders inline code and links", () => {
+  const out = renderMarkdown("| cmd | doc |\n| --- | --- |\n| `tpm next` | [docs](https://example.com) |");
+  assert.match(out, /<td><code>tpm next<\/code><\/td>/);
+  assert.match(out, /<td><a href="https:\/\/example\.com" target="_blank" rel="noopener noreferrer">docs<\/a><\/td>/);
+});
+
+test("markdown: table cell with escaped pipe keeps a literal pipe", () => {
+  const out = renderMarkdown("| op | meaning |\n| --- | --- |\n| a \\| b | or |");
+  assert.match(out, /<td>a \| b<\/td>/);
+});
+
+test("markdown: header row with no separator is a paragraph, not a table", () => {
+  const out = renderMarkdown("| a | b |\nplain text");
+  assert.doesNotMatch(out, /<table>/);
+  assert.match(out, /^<p>/);
+});
+
+test("markdown: table immediately following a heading (no blank line)", () => {
+  const out = renderMarkdown("## Matrix\n| a | b |\n| --- | --- |\n| 1 | 2 |");
+  assert.equal(
+    out,
+    "<h2>Matrix</h2>\n<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table>",
+  );
+});

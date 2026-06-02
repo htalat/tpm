@@ -7,9 +7,12 @@
 //   - Unordered lists (`-`/`*`/`+`); single-level nesting via 2/4-space indent
 //   - Ordered lists (`N.`)
 //   - Fenced code blocks (```)
+//   - GFM tables (`| a | b |` header + `| --- | :-: |` separator + body rows;
+//     leading/trailing pipes optional, `\|` escapes a literal pipe, `:` markers
+//     set per-column alignment)
 //   - Inline: `code`, [text](url), **bold**, *italic*
 //
-// Not supported: tables, footnotes, blockquotes nested in lists, raw HTML,
+// Not supported: footnotes, blockquotes nested in lists, raw HTML,
 // reference-style links, autolinks. If you find yourself wanting one, write
 // it in HTML in the body or extend this file.
 
@@ -54,6 +57,15 @@ export function renderMarkdown(src: string): string {
       continue;
     }
 
+    // GFM table (header row + separator row + body rows). Checked before the
+    // paragraph fallback so a header-shaped line isn't eaten as prose first.
+    if (isTableStart(lines, i)) {
+      const { html, consumed } = renderTable(lines, i);
+      out.push(html);
+      i += consumed;
+      continue;
+    }
+
     // Blank line → paragraph break / section padding (we just skip).
     if (/^\s*$/.test(line)) {
       i++;
@@ -68,7 +80,8 @@ export function renderMarkdown(src: string): string {
       !/^\s*$/.test(lines[i]) &&
       !/^```/.test(lines[i]) &&
       !/^#{1,6}\s/.test(lines[i]) &&
-      !isListLine(lines[i])
+      !isListLine(lines[i]) &&
+      !isTableStart(lines, i)
     ) {
       buf.push(lines[i]);
       i++;
@@ -116,6 +129,75 @@ function renderList(lines: string[], start: number): { html: string; consumed: n
     return `<li>${renderInline(it.content)}${children}</li>`;
   }).join("");
   return { html: `<${tag}>${itemsHtml}</${tag}>`, consumed: i - start };
+}
+
+// A table starts where a header-shaped line is immediately followed by a
+// separator row (`| --- | :-: |`). Requiring the separator on lookahead keeps
+// a lone `| foo |` line from being misread as a one-row table.
+function isTableStart(lines: string[], i: number): boolean {
+  if (i + 1 >= lines.length) return false;
+  if (!lines[i].includes("|")) return false;
+  return isSeparatorRow(lines[i + 1]);
+}
+
+function isSeparatorRow(line: string): boolean {
+  if (!line.includes("-")) return false;
+  const cells = splitRow(line);
+  return cells.length > 0 && cells.every(c => /^:?-+:?$/.test(c));
+}
+
+// Split a table row into trimmed cells. Leading/trailing pipes are optional;
+// `\|` is an escaped literal pipe and stays inside the cell.
+function splitRow(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
+  const cells: string[] = [];
+  let cur = "";
+  for (let k = 0; k < s.length; k++) {
+    if (s[k] === "\\" && s[k + 1] === "|") {
+      cur += "|";
+      k++;
+      continue;
+    }
+    if (s[k] === "|") {
+      cells.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += s[k];
+  }
+  cells.push(cur);
+  return cells.map(c => c.trim());
+}
+
+function alignAttr(sep: string): string {
+  const left = sep.startsWith(":");
+  const right = sep.endsWith(":");
+  const align = left && right ? "center" : right ? "right" : left ? "left" : "";
+  return align ? ` style="text-align:${align}"` : "";
+}
+
+function renderTable(lines: string[], start: number): { html: string; consumed: number } {
+  const header = splitRow(lines[start]);
+  const aligns = splitRow(lines[start + 1]).map(alignAttr);
+  const cols = header.length;
+  const cell = (tag: string, content: string, c: number): string =>
+    `<${tag}${aligns[c] ?? ""}>${renderInline(content ?? "")}</${tag}>`;
+
+  const thead = `<thead><tr>${header.map((h, c) => cell("th", h, c)).join("")}</tr></thead>`;
+
+  let i = start + 2;
+  const rows: string[] = [];
+  while (i < lines.length && !/^\s*$/.test(lines[i]) && lines[i].includes("|")) {
+    const row = splitRow(lines[i]);
+    const tds = Array.from({ length: cols }, (_v, c) => cell("td", row[c], c)).join("");
+    rows.push(`<tr>${tds}</tr>`);
+    i++;
+  }
+  const tbody = `<tbody>${rows.join("")}</tbody>`;
+
+  return { html: `<table>${thead}${tbody}</table>`, consumed: i - start };
 }
 
 // Inline pass: code spans first (so their contents aren't reprocessed),
