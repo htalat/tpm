@@ -401,7 +401,7 @@ tpm complete <task> [--outcome "..."] [--no-archive] [--archive]
                                           # set status: done, stamp closed, log;
                                           # archives by type (pr/chore yes, investigation/spike no)
 tpm block <task> "<reason>"               # set status: blocked, log the reason
-tpm reopen <task>                         # set status: open, log reopened
+tpm reopen <task> ["<reason>"]            # set status: open, log reopened (optional reason)
 tpm revert <task> ["<reason>"]            # flip in-progress -> ready, log a timeout/revert (no-op otherwise)
 tpm status <task> <new-status>            # generic status setter (validated)
 tpm log <task> "<message>"                # append a single timestamped Log line
