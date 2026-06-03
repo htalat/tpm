@@ -21,16 +21,27 @@ export function escapePsSingleQuoted(s: string): string {
 // dependency-free). Inside the snippet `$ErrorActionPreference = 'SilentlyContinue'`
 // keeps both branches silent on failure; the outer process exit code is the
 // only signal the Node side gets.
-export function buildPowerShellSnippet(title: string, body: string): string {
+// When `url` is set, both branches make a click open it: BurntToast via
+// `-Launch <url> -ActivationType Protocol`, the WinRT fallback by stamping
+// `launch`/`activationType` on the toast's root element. The URL is launched as
+// a protocol so Windows hands it to the default browser. Omit `url` and the
+// snippet is byte-for-byte the display-only toast it was before.
+export function buildPowerShellSnippet(title: string, body: string, url?: string): string {
   const t = escapePsSingleQuoted(title);
   const b = escapePsSingleQuoted(body);
-  return [
+  const u = url !== undefined ? escapePsSingleQuoted(url) : undefined;
+  const lines = [
     `$ErrorActionPreference = 'SilentlyContinue'`,
     `$t = '${t}'`,
     `$b = '${b}'`,
+  ];
+  if (u !== undefined) lines.push(`$u = '${u}'`);
+  lines.push(
     `if (Get-Module -ListAvailable -Name BurntToast) {`,
     ` Import-Module BurntToast;`,
-    ` New-BurntToastNotification -Text @($t, $b)`,
+    u !== undefined
+      ? ` New-BurntToastNotification -Text @($t, $b) -Launch $u -ActivationType Protocol`
+      : ` New-BurntToastNotification -Text @($t, $b)`,
     `} else {`,
     ` [void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime];`,
     ` [void][Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom.XmlDocument,ContentType=WindowsRuntime];`,
@@ -38,14 +49,23 @@ export function buildPowerShellSnippet(title: string, body: string): string {
     ` $nodes = $tpl.GetElementsByTagName('text');`,
     ` [void]$nodes.Item(0).AppendChild($tpl.CreateTextNode($t));`,
     ` [void]$nodes.Item(1).AppendChild($tpl.CreateTextNode($b));`,
+  );
+  if (u !== undefined) {
+    lines.push(
+      ` $tpl.DocumentElement.SetAttribute('launch', $u);`,
+      ` $tpl.DocumentElement.SetAttribute('activationType', 'protocol');`,
+    );
+  }
+  lines.push(
     ` $toast = [Windows.UI.Notifications.ToastNotification]::new($tpl);`,
     ` [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('tpm').Show($toast)`,
     `}`,
-  ].join(" ");
+  );
+  return lines.join(" ");
 }
 
-export function buildPowerShellArgs(title: string, body: string): string[] {
-  return ["-NoProfile", "-NonInteractive", "-Command", buildPowerShellSnippet(title, body)];
+export function buildPowerShellArgs(title: string, body: string, url?: string): string[] {
+  return ["-NoProfile", "-NonInteractive", "-Command", buildPowerShellSnippet(title, body, url)];
 }
 
 export interface PowerShellSpawnResult {
@@ -54,6 +74,9 @@ export interface PowerShellSpawnResult {
 }
 
 export interface PowerShellNotifyOpts {
+  // Deep link opened when the toast is clicked (protocol launch). Omit for a
+  // display-only toast.
+  url?: string;
   // Test seam — replace the real spawnSync call.
   spawn?: (cmd: string, args: string[]) => PowerShellSpawnResult;
   // Test seam — replace the WARN log sink.
@@ -68,7 +91,7 @@ export function firePowerShellNotification(
   body: string,
   opts: PowerShellNotifyOpts = {},
 ): void {
-  const args = buildPowerShellArgs(title, body);
+  const args = buildPowerShellArgs(title, body, opts.url);
   const spawn = opts.spawn ?? defaultSpawn;
   const warn = opts.log ?? defaultWarn;
   try {

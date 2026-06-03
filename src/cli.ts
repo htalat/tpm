@@ -11,7 +11,7 @@ import { selectNext, selectCandidates, inboxItems } from "./queue.ts";
 import { resolveSameRepoStrategy } from "./strategy.ts";
 import { findTask, findRepoTarget } from "./resolve.ts";
 import { init } from "./init.ts";
-import { CONFIG_PATH, readConfig, writeConfig } from "./config.ts";
+import { CONFIG_PATH, readConfig, writeConfig, serveBaseUrl } from "./config.ts";
 import { now } from "./time.ts";
 import * as mutate from "./mutate.ts";
 import * as lock from "./lock.ts";
@@ -21,6 +21,7 @@ import { migrateRunsToTaskFolders } from "./migrate_runs.ts";
 import { runPoll } from "./poll.ts";
 import { runServe } from "./serve.ts";
 import { shouldNotify, fireNotification, NOTIFY_EVENTS } from "./notify.ts";
+import { taskDeepLink } from "./serve_url.ts";
 import type { NotifyEvent } from "./notify.ts";
 import { resolveRepo } from "./context.ts";
 import { checkDrift } from "./drift.ts";
@@ -699,7 +700,8 @@ try {
         const message = notifyAgent
           ? `${notifyAgent} ${verb} ${match.task.slug}`
           : `${match.task.slug}: ${event}`;
-        fireNotification("tpm", message);
+        const url = taskDeepLink(serveBaseUrl(cfg), match.project, match.task);
+        fireNotification("tpm", message, { url });
       }
       // Best-effort — never propagate failure.
       break;

@@ -10,6 +10,10 @@ export interface Config {
   timezone?: string;
   time_bound_minutes?: number;
   notifications?: NotificationsConfig;
+  // Where a running `tpm serve` can be reached, used to build clickable
+  // notification deep links. Hand-edited (no `tpm config set` setter); see
+  // serveBaseUrl below for the default.
+  serve?: ServeConfig;
   // Default agent CLI for `tpm orchestrate` (claude, copilot, …). Per-task
   // and per-project `agent:` frontmatter overrides this; the orchestrator's
   // `--agent <name>` flag wins over both. See src/agent_cli.ts.
@@ -27,6 +31,27 @@ export interface NotificationsConfig {
   start?: boolean;
   finish?: boolean;
   fail?: boolean;
+}
+
+export interface ServeConfig {
+  // Base URL of a running `tpm serve`, e.g. `http://127.0.0.1:7777`. Notification
+  // deep links are built as `<url>/t/<project>/<slug>`. Only meaningful while
+  // serve is running — clicking when it's down lands the browser on a connection
+  // error (acceptable for v0; the user starts serve themselves).
+  url?: string;
+}
+
+// Defaults for `tpm serve` (host/port) — kept here so the serve command and the
+// notification deep-link builder share one source of truth.
+export const DEFAULT_SERVE_HOST = "127.0.0.1";
+export const DEFAULT_SERVE_PORT = 7777;
+export const DEFAULT_SERVE_BASE_URL = `http://${DEFAULT_SERVE_HOST}:${DEFAULT_SERVE_PORT}`;
+
+// Resolve the base URL for notification deep links: the configured `serve.url`
+// when set (trimmed, non-empty), else the default loopback address.
+export function serveBaseUrl(cfg: Config): string {
+  const u = cfg.serve?.url?.trim();
+  return u ? u : DEFAULT_SERVE_BASE_URL;
 }
 
 export const DEFAULT_TIMEZONE = "America/Los_Angeles";
@@ -68,6 +93,9 @@ export function readConfig(): Config {
   if (record.notifications !== undefined) {
     cfg.notifications = expectNotifications(record.notifications);
   }
+  if (record.serve !== undefined) {
+    cfg.serve = expectServe(record.serve);
+  }
   if (record.agent !== undefined) {
     cfg.agent = expectString(record.agent, "agent");
   }
@@ -91,6 +119,19 @@ function expectNotifications(value: unknown): NotificationsConfig {
       }
       out[key] = record[key] as boolean;
     }
+  }
+  return out;
+}
+
+function expectServe(value: unknown): ServeConfig {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    const got = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+    throw new Error(`${CONFIG_PATH}: "serve" must be an object, got ${got}`);
+  }
+  const record = value as Record<string, unknown>;
+  const out: ServeConfig = {};
+  if (record.url !== undefined) {
+    out.url = expectString(record.url, "serve.url");
   }
   return out;
 }

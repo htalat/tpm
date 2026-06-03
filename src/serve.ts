@@ -34,8 +34,11 @@ import {
   DEFAULT_NOTIFICATIONS,
   DEFAULT_TIMEZONE,
   DEFAULT_TIME_BOUND_MINUTES,
+  DEFAULT_SERVE_HOST,
+  DEFAULT_SERVE_PORT,
 } from "./config.ts";
 import type { Config } from "./config.ts";
+import { taskPath } from "./serve_url.ts";
 import { defaultHarnessLogReader, parseTaskLogEntries } from "./harness_log.ts";
 import type { HarnessLogReader, HarnessLogSource, HarnessLogLine } from "./harness_log.ts";
 
@@ -180,8 +183,8 @@ const CLI_PATH = fileURLToPath(new URL("./cli.ts", import.meta.url));
 // lock-aware, no parallel implementation). Mutations only register when bound
 // to loopback — see `mutationsEnabled` below.
 export async function runServe(opts: ServeOpts = {}): Promise<void> {
-  const host = opts.host ?? "127.0.0.1";
-  const port = opts.port ?? 7777;
+  const host = opts.host ?? DEFAULT_SERVE_HOST;
+  const port = opts.port ?? DEFAULT_SERVE_PORT;
   const mutationsEnabled = isLoopback(host);
 
   const server = createServer((req, res) => handleRequest(req, res, { host, mutationsEnabled }));
@@ -2238,10 +2241,11 @@ function renderSettings(project: Project, task: Task, status: string, opts: Rout
 }
 
 function taskHref(project: Project, task: Task): string {
-  const slug = task.parent
-    ? `${project.slug}/${task.parent}/${task.slug}`
-    : `${project.slug}/${task.slug}`;
-  return `/t/${slug.split("/").map(esc).join("/")}`;
+  // Delegate to the shared route builder (serve_url.ts) so the detail-page URL
+  // and the notification deep link can never drift. URL-encoding the `[a-z0-9-]`
+  // slugs tpm generates yields the same HTML-attribute-safe output the old
+  // `esc`-per-segment path did.
+  return taskPath(project, task);
 }
 
 function simpleForm(href: string, action: string, label: string): string {
