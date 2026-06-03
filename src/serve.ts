@@ -817,7 +817,11 @@ function redirectOverride(raw: string | null): string | null {
 function buildCliArgs(slug: string, action: string, body: URLSearchParams): string[] | null {
   switch (action) {
     case "ready":  return ["ready", slug];
-    case "reopen": return ["reopen", slug];
+    case "reopen": {
+      const reason = body.get("reason")?.trim();
+      if (!reason) return ["reopen", slug];
+      return ["reopen", slug, reason];
+    }
     case "block": {
       const reason = body.get("reason")?.trim();
       if (!reason) return null;
@@ -2182,7 +2186,7 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       break;
     }
     case "blocked":
-      forms.push(simpleForm(href, "reopen", "Reopen (→ open)"));
+      forms.push(reopenForm(href));
       forms.push(completeForm(href));
       break;
     default:
@@ -2252,6 +2256,15 @@ function blockForm(href: string): string {
       <textarea name="reason" rows="2" required placeholder="why is this blocked?"></textarea>
     </label>
     <button type="submit">Block</button>
+  </form>`;
+}
+
+function reopenForm(href: string): string {
+  return `<form method="POST" action="${href}/reopen" class="action-form">
+    <label>Reopen reason (optional)
+      <textarea name="reason" rows="2" placeholder="why unblocked? (optional)"></textarea>
+    </label>
+    <button type="submit">Reopen (→ open)</button>
   </form>`;
 }
 

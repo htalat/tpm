@@ -63,8 +63,10 @@ export function block(task: Task, reason: string): MutateResult {
   });
 }
 
-export function reopen(task: Task): MutateResult {
-  return transition(task, "open", "reopened", {
+export function reopen(task: Task, reason?: string): MutateResult {
+  const trimmed = reason?.trim();
+  const verb = trimmed ? `reopened — ${trimmed}` : "reopened";
+  return transition(task, "open", verb, {
     refusal: [],
   });
 }

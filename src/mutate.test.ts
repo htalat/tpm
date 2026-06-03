@@ -449,6 +449,21 @@ test("reopen: done -> open, clears closed stamp, logs reopened", () => {
   }
 });
 
+test("reopen: with reason logs `reopened — <reason>` (dash form, matching block)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "blocked");
+    const t = loadTask(root, "alpha", "001-a");
+    reopen(t, "  upstream fixed  ");
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: open/);
+    assert.match(text, /: reopened — upstream fixed$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 // ---- pullFromQueue --------------------------------------------------------
 
 test("pull: ready -> open, logs pulled-from-queue with src+dst", () => {

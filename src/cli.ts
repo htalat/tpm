@@ -289,7 +289,8 @@ try {
       break;
     }
     case "reopen": {
-      const r = mutate.reopen(resolveLiveTask(args[1], "tpm reopen <task>"));
+      const reason = args[2];
+      const r = mutate.reopen(resolveLiveTask(args[1], 'tpm reopen <task> ["<reason>"]'), reason);
       console.log(r.message);
       break;
     }
@@ -1019,7 +1020,7 @@ Usage:
   tpm complete <task> [--outcome "..."] [--no-archive] [--archive]
                                              set status: done, stamp closed, log; archives by type
   tpm block <task> "<reason>"                set status: blocked, log the reason
-  tpm reopen <task>                          set status: open, log it
+  tpm reopen <task> ["<reason>"]             set status: open, log it (optional reason on the Log)
   tpm pull <task>                            pull a queued task back into the human pile: ready -> open, needs-feedback -> needs-review
   tpm revert <task> ["<reason>"]             flip in-progress -> ready, log a timeout/revert (no-op otherwise)
   tpm status <task> <new-status>             generic status setter (validated)

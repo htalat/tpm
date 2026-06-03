@@ -887,6 +887,18 @@ test("routeMutation: /t/<slug>/block passes the reason to the CLI", () => {
   assert.deepEqual(calls, [["block", "alpha/001-a", "waiting on API key"]]);
 });
 
+test("routeMutation: /t/<slug>/reopen passes the optional reason when present, omits it when empty", () => {
+  const { runner, calls } = captureRunner();
+  routeMutation("/t/alpha/001-a/reopen", new URLSearchParams("reason=blocker cleared"), runner);
+  routeMutation("/t/alpha/001-a/reopen", new URLSearchParams("reason=   "), runner);
+  routeMutation("/t/alpha/001-a/reopen", new URLSearchParams(), runner);
+  assert.deepEqual(calls, [
+    ["reopen", "alpha/001-a", "blocker cleared"],
+    ["reopen", "alpha/001-a"],
+    ["reopen", "alpha/001-a"],
+  ]);
+});
+
 test("routeMutation: /t/<slug>/complete passes --outcome only when non-empty", () => {
   const { runner, calls } = captureRunner();
   routeMutation("/t/alpha/001-a/complete", new URLSearchParams("outcome=shipped"), runner);
@@ -1334,6 +1346,20 @@ test("renderTask: needs-review task rail no longer renders LGTM/request-changes 
   } finally {
     rmTempDir(root);
   }
+});
+
+test("renderTask: blocked task's Reopen form carries an optional (not required) reason textarea", () => {
+  // Symmetric to block's reason, but unblocking shouldn't force a justification —
+  // the textarea is present so the why lands on the Log when given, but stays
+  // submittable empty (no `required` attr) for the common no-comment unblock.
+  const t = task("001-a", "blocked");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/reopen"/);
+  assert.match(r.body, /<textarea name="reason"[^>]*><\/textarea>/, "reopen form should render a reason textarea");
+  const reopenForm = r.body.slice(r.body.indexOf('action="/t/alpha/001-a/reopen"'));
+  const textarea = reopenForm.slice(reopenForm.indexOf("<textarea"), reopenForm.indexOf("</textarea>"));
+  assert.doesNotMatch(textarea, /\brequired\b/, "reopen reason must not be required");
 });
 
 test("renderTask: needs-review PR-shaped task rail also lacks LGTM/request-changes", () => {
