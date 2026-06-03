@@ -8,9 +8,10 @@ import { selectCandidates } from "./queue.ts";
 import { findTask } from "./resolve.ts";
 import * as mutate from "./mutate.ts";
 import * as lock from "./lock.ts";
-import { readConfig, DEFAULT_TIME_BOUND_MINUTES } from "./config.ts";
+import { readConfig, DEFAULT_TIME_BOUND_MINUTES, serveBaseUrl } from "./config.ts";
 import { logLine as sharedLogLine, type LogLevel } from "./log.ts";
 import { shouldNotify, fireNotification } from "./notify.ts";
+import { taskDeepLink } from "./serve_url.ts";
 import { context as buildBriefing, resolveRepo, type Repo } from "./context.ts";
 import { hostFor } from "./pr_signal.ts";
 import { resolveSameRepoStrategy, worktreePath, worktreeBranch } from "./strategy.ts";
@@ -998,7 +999,8 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
   }, 60_000);
 
   if (shouldNotify("start", { task: pick.task, project: pick.project, globalConfig: cfg.notifications })) {
-    fireNotification("tpm", `${agentId} starting ${pick.task.slug}`);
+    const url = taskDeepLink(serveBaseUrl(cfg), pick.project, pick.task);
+    fireNotification("tpm", `${agentId} starting ${pick.task.slug}`, { url });
   }
 
   // Build the prompt inline: briefing (same shape as `tpm context <slug>`)
@@ -1134,7 +1136,8 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
   const event = result.exitCode === 0 ? "finish" : "fail";
   if (shouldNotify(event, { task: notifyTask, project: notifyProject, globalConfig: cfg.notifications })) {
     const verb = event === "finish" ? "finished" : "failed";
-    fireNotification("tpm", `${agentId} ${verb} ${pick.task.slug}`);
+    const url = taskDeepLink(serveBaseUrl(cfg), notifyProject, notifyTask);
+    fireNotification("tpm", `${agentId} ${verb} ${pick.task.slug}`, { url });
   }
 
   const after = matchAfter ? snapshotTask(matchAfter.task) : null;

@@ -9,8 +9,10 @@ import {
   CONFIG_DIR,
   CONFIG_PATH,
   DEFAULT_TIMEZONE,
+  DEFAULT_SERVE_BASE_URL,
   readConfig,
   writeConfig,
+  serveBaseUrl,
 } from "./config.ts";
 import { configuredTimezone, now } from "./time.ts";
 
@@ -76,6 +78,37 @@ test("readConfig: throws on JSON number with a clear message", () => {
   writeConfig({ root: "/x" });
   writeFileSync(CONFIG_PATH, "42");
   assert.throws(() => readConfig(), /must be a JSON object, got number/);
+});
+
+test("readConfig: reads serve.url", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({ serve: { url: "http://host:9999" } }));
+  assert.deepEqual(readConfig().serve, { url: "http://host:9999" });
+});
+
+test("readConfig: throws when serve is not an object", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({ serve: "http://host" }));
+  assert.throws(() => readConfig(), /"serve" must be an object, got string/);
+});
+
+test("readConfig: throws when serve.url is not a string", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({ serve: { url: 42 } }));
+  assert.throws(() => readConfig(), /"serve.url" must be a string/);
+});
+
+test("serveBaseUrl: defaults to the loopback serve address when unset", () => {
+  assert.equal(serveBaseUrl({}), DEFAULT_SERVE_BASE_URL);
+  assert.equal(DEFAULT_SERVE_BASE_URL, "http://127.0.0.1:7777");
+});
+
+test("serveBaseUrl: returns the configured url (trimmed) when set", () => {
+  assert.equal(serveBaseUrl({ serve: { url: "  http://host:9999  " } }), "http://host:9999");
+});
+
+test("serveBaseUrl: falls back to the default for a blank configured url", () => {
+  assert.equal(serveBaseUrl({ serve: { url: "   " } }), DEFAULT_SERVE_BASE_URL);
 });
 
 test("readConfig: throws when root is not a string", () => {

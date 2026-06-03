@@ -41,6 +41,47 @@ test("buildPowerShellSnippet: prefers BurntToast and falls back to WinRT", () =>
   assert.ok(snippet.includes("CreateToastNotifier('tpm').Show($toast)"));
 });
 
+test("buildPowerShellSnippet: with a URL, both branches launch it as a protocol", () => {
+  const snippet = buildPowerShellSnippet("tpm", "hi", "http://127.0.0.1:7777/t/p/001-t");
+  assert.ok(snippet.includes(`$u = 'http://127.0.0.1:7777/t/p/001-t'`), "expected URL literal");
+  // BurntToast branch carries the launch target.
+  assert.ok(snippet.includes("New-BurntToastNotification -Text @($t, $b) -Launch $u -ActivationType Protocol"));
+  // WinRT fallback stamps launch/activationType on the toast root.
+  assert.ok(snippet.includes("$tpl.DocumentElement.SetAttribute('launch', $u)"));
+  assert.ok(snippet.includes("$tpl.DocumentElement.SetAttribute('activationType', 'protocol')"));
+});
+
+test("buildPowerShellSnippet: a URL with a single quote is escaped into the literal", () => {
+  const snippet = buildPowerShellSnippet("tpm", "hi", "http://x/'inject");
+  assert.ok(snippet.includes(`$u = 'http://x/''inject'`), "single quote should double");
+});
+
+test("buildPowerShellSnippet: without a URL stays byte-for-byte the display-only toast", () => {
+  // No $u assignment, no launch wiring — unchanged from the pre-deep-link snippet.
+  const snippet = buildPowerShellSnippet("tpm", "hi");
+  assert.ok(!snippet.includes("$u ="));
+  assert.ok(!snippet.includes("-Launch"));
+  assert.ok(!snippet.includes("SetAttribute('launch'"));
+  assert.ok(snippet.includes("New-BurntToastNotification -Text @($t, $b)"));
+});
+
+test("buildPowerShellArgs: threads the URL into the snippet", () => {
+  const url = "http://127.0.0.1:7777/t/p/001-t";
+  const args = buildPowerShellArgs("tpm", "hi", url);
+  assert.equal(args[3], buildPowerShellSnippet("tpm", "hi", url));
+});
+
+test("firePowerShellNotification: passes opts.url into the built argv", () => {
+  const calls: Array<{ cmd: string; args: string[] }> = [];
+  const spawn = (cmd: string, args: string[]): PowerShellSpawnResult => {
+    calls.push({ cmd, args });
+    return { status: 0 };
+  };
+  const url = "http://127.0.0.1:7777/t/p/001-t";
+  firePowerShellNotification("tpm", "001-t: finish", { url, spawn, log: () => {} });
+  assert.deepEqual(calls[0].args, buildPowerShellArgs("tpm", "001-t: finish", url));
+});
+
 test("buildPowerShellSnippet: silences errors so the fallback can't bubble out as exit nonzero", () => {
   const snippet = buildPowerShellSnippet("tpm", "hi");
   assert.ok(snippet.includes("$ErrorActionPreference = 'SilentlyContinue'"));

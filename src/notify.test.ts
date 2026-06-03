@@ -115,3 +115,60 @@ test("fireNotification: invokes injected powershell and survives a thrown error"
     fireNotification("tpm", "001-t: fail", { powershell: () => { throw new Error("boom"); } }),
   );
 });
+
+test("fireNotification: macOS uses terminal-notifier when a URL is set and the binary is present", () => {
+  const tn: Array<[string, string, string]> = [];
+  const osa: Array<[string, string]> = [];
+  fireNotification("tpm", "001-t: finish", {
+    url: "http://127.0.0.1:7777/t/p/001-t",
+    hasTerminalNotifier: () => true,
+    terminalNotifier: (t, m, u) => tn.push([t, m, u]),
+    osascript: (t, m) => osa.push([t, m]),
+  });
+  assert.deepEqual(tn, [["tpm", "001-t: finish", "http://127.0.0.1:7777/t/p/001-t"]]);
+  assert.deepEqual(osa, [], "osascript fallback should not fire when terminal-notifier ran");
+});
+
+test("fireNotification: macOS falls back to osascript when terminal-notifier is absent", () => {
+  const tn: Array<unknown> = [];
+  const osa: Array<[string, string]> = [];
+  fireNotification("tpm", "001-t: finish", {
+    url: "http://127.0.0.1:7777/t/p/001-t",
+    hasTerminalNotifier: () => false,
+    terminalNotifier: (...a) => tn.push(a),
+    osascript: (t, m) => osa.push([t, m]),
+  });
+  assert.deepEqual(osa, [["tpm", "001-t: finish"]]);
+  assert.deepEqual(tn, [], "terminal-notifier should not fire when it isn't installed");
+});
+
+test("fireNotification: macOS uses osascript (never terminal-notifier) when no URL is set", () => {
+  const tn: Array<unknown> = [];
+  const osa: Array<[string, string]> = [];
+  fireNotification("tpm", "001-t: finish", {
+    hasTerminalNotifier: () => true, // present, but irrelevant without a URL
+    terminalNotifier: (...a) => tn.push(a),
+    osascript: (t, m) => osa.push([t, m]),
+  });
+  assert.deepEqual(osa, [["tpm", "001-t: finish"]]);
+  assert.deepEqual(tn, [], "no URL → nothing to open → stay on the osascript path");
+});
+
+test("fireNotification: a thrown terminal-notifier is swallowed (best-effort)", () => {
+  assert.doesNotThrow(() =>
+    fireNotification("tpm", "001-t: fail", {
+      url: "http://127.0.0.1:7777/t/p/001-t",
+      hasTerminalNotifier: () => true,
+      terminalNotifier: () => { throw new Error("boom"); },
+    }),
+  );
+});
+
+test("fireNotification: passes the URL through to the Windows powershell adapter", () => {
+  const calls: Array<[string, string, string | undefined]> = [];
+  fireNotification("tpm", "001-t: finish", {
+    url: "http://127.0.0.1:7777/t/p/001-t",
+    powershell: (t, m, u) => calls.push([t, m, u]),
+  });
+  assert.deepEqual(calls, [["tpm", "001-t: finish", "http://127.0.0.1:7777/t/p/001-t"]]);
+});
