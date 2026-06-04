@@ -5,6 +5,7 @@ import { now } from "./time.ts";
 import { archiveTask, foldTask, isParent, taskHasReport, taskReportPath } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
 import { REPORT_TEMPLATE } from "./defaults.ts";
+import { validateType } from "./new.ts";
 
 export const VALID_STATUSES = [
   "open",
@@ -370,6 +371,26 @@ export function setAllowOrchestrator(task: Task, allow: boolean): MutateResult {
   writeFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
   return { message: `${task.slug}: allow_orchestrator -> ${allow}` };
+}
+
+// Reclassify a task's `type:` (pr / investigation / spike / chore). Type drives
+// close-out behavior (pr/chore archive on done; investigation expects a report),
+// so it's the kind of field an operator might want to correct after creation —
+// hence a verb rather than hand-editing frontmatter. Validated against the same
+// KNOWN_TASK_TYPES gate `tpm new` uses; idempotent on a no-op.
+export function setType(task: Task, newType: string): MutateResult {
+  guardArchived(task);
+  validateType(newType);
+  const { data, body } = readParsed(task);
+  const current = String(data.type ?? "");
+  if (current === newType) {
+    return { message: `${task.slug}: type already ${newType}` };
+  }
+  data.type = newType;
+  const newBody = appendLog(body, `${now()}: type ${current || "?"} -> ${newType}`);
+  writeFileSync(task.path, stringify(data, newBody));
+  syncInMemory(task, data, newBody);
+  return { message: `${task.slug}: type ${current || "?"} -> ${newType}` };
 }
 
 export function complete(task: Task, opts: CompleteOptions = {}): MutateResult {

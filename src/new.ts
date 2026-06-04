@@ -168,7 +168,7 @@ function validateSlug(slug: string): void {
   }
 }
 
-function validateType(type: string): void {
+export function validateType(type: string): void {
   if (!(KNOWN_TASK_TYPES as readonly string[]).includes(type)) {
     throw new Error(
       `Invalid type "${type}". Known types: ${KNOWN_TASK_TYPES.join(", ")}.`,
