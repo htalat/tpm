@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
 import { loadProjects } from "./tree.ts";
 import {
-  start, ready, block, reopen, revert, logEntry, addPr, setStatus, complete,
+  start, ready, block, reopen, revert, logEntry, addPr, setStatus, setType, complete,
   setAllowOrchestrator, reparent, addReport, requestReportChanges,
   pullFromQueue, appendLog, setSection, sectionHasContent, editTaskSection,
   editProjectSection,
@@ -211,6 +211,54 @@ test("ready: open -> ready, logs promoted", () => {
     const text = readFileSync(t.path, "utf8");
     assert.match(text, /status: ready/);
     assert.match(text, /: promoted to ready$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("setType: rewrites type frontmatter and logs the transition", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "open", "pr");
+    const t = loadTask(root, "alpha", "001-a");
+    const r = setType(t, "investigation");
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /type: investigation/);
+    assert.doesNotMatch(text, /type: pr/);
+    assert.match(text, /: type pr -> investigation$/m);
+    assert.match(r.message, /type pr -> investigation/);
+    // in-memory copy is synced so subsequent reads see the new type
+    assert.equal(t.data.type, "investigation");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("setType: no-op when type already matches (no extra log line)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "open", "pr");
+    const t = loadTask(root, "alpha", "001-a");
+    const r = setType(t, "pr");
+    assert.match(r.message, /already pr/);
+    const text = readFileSync(t.path, "utf8");
+    assert.equal((text.match(/-> /g) ?? []).length, 0, "no transition log line written");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("setType: rejects an unknown type", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "open", "pr");
+    const t = loadTask(root, "alpha", "001-a");
+    assert.throws(() => setType(t, "bogus"), /Invalid type "bogus"/);
+    // file untouched on a rejected change
+    assert.match(readFileSync(t.path, "utf8"), /type: pr/);
   } finally {
     rmTempDir(root);
   }

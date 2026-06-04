@@ -135,7 +135,7 @@ export interface ServeOpts {
 // `buildCliArgs`. Kept narrow so a stray POST can't shell out to any tpm verb.
 const MUTATION_ACTIONS = new Set([
   "ready", "block", "reopen", "complete", "log", "pr", "status", "allow-orchestrator",
-  "lgtm", "request-changes", "archive", "pull", "edit",
+  "lgtm", "request-changes", "archive", "pull", "edit", "set-type",
 ]);
 
 // Bulk-action whitelist for the multi-select bar (task 126). Each key is a
@@ -850,6 +850,11 @@ function buildCliArgs(slug: string, action: string, body: URLSearchParams): stri
       const newStatus = body.get("status")?.trim();
       if (!newStatus) return null;
       return ["status", slug, newStatus];
+    }
+    case "set-type": {
+      const type = body.get("type")?.trim();
+      if (!type) return null;
+      return ["set-type", slug, type];
     }
     case "allow-orchestrator": {
       const allow = body.get("allow");
@@ -2226,18 +2231,23 @@ function renderSettings(project: Project, task: Task, status: string, opts: Rout
   if (opts.mutationsEnabled === false) return ""; // covered by the disabled-actions notice
   if (task.archived) return "";
   if (isParent(task)) return "";
-  if (status === "done" || status === "dropped") return ""; // terminal: toggle has no effect
+  if (status === "done" || status === "dropped") return ""; // terminal: settings have no effect
+
+  const href = taskHref(project, task);
+  const parts: string[] = [];
+  // Type reclassification — meaningful in any non-terminal state (you might
+  // create a task as the default `pr` then realize it's an investigation before
+  // promoting it). Self-contained dropdown, so it's not gated like the toggle.
+  parts.push(typeForm(href, strOr(task.data.type, "")));
   // `open` tasks aren't claimable regardless of the flag (the queue gate skips
   // anything not ready/needs-feedback/stranded), and "Promote to ready" already
   // sets allow_orchestrator: true — so a separate "Enable autonomous" toggle
-  // here is the exact two-clicks-for-one-intent friction this change removes.
-  // The toggle returns once the task is promoted, for the supervised-only
-  // override (disable after ready).
-  if (status === "open") return "";
-
-  const href = taskHref(project, task);
-  const allowOn = task.data.allow_orchestrator === true;
-  return `<section class="task-settings"><h2>Settings</h2>${allowForm(href, allowOn)}</section>`;
+  // here is the exact two-clicks-for-one-intent friction we avoid. The toggle
+  // returns once the task is promoted, for the supervised-only override.
+  if (status !== "open") {
+    parts.push(allowForm(href, task.data.allow_orchestrator === true));
+  }
+  return `<section class="task-settings"><h2>Settings</h2>${parts.join("")}</section>`;
 }
 
 function taskHref(project: Project, task: Task): string {
@@ -2337,6 +2347,18 @@ function pullForm(href: string, status: string): string {
   const dest = status === "ready" ? "open" : "needs-review";
   return `<form method="POST" action="${href}/pull" class="action-form">
     <button type="submit">Pull from queue (→ ${esc(dest)})</button>
+  </form>`;
+}
+
+function typeForm(href: string, current: string): string {
+  const options = KNOWN_TASK_TYPES
+    .map(t => `<option value="${escAttr(t)}"${t === current ? " selected" : ""}>${esc(t)}</option>`)
+    .join("");
+  return `<form method="POST" action="${href}/set-type" class="action-form">
+    <label>Type
+      <select name="type">${options}</select>
+    </label>
+    <button type="submit">Change type</button>
   </form>`;
 }
 

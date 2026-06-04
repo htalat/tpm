@@ -566,11 +566,13 @@ test("renderTask: allow_orchestrator toggle renders for every promoted non-termi
 test("renderTask: open task offers Promote to ready but no separate autonomous toggle", () => {
   // "Promote to ready" now sets allow_orchestrator: true in the same op, so the
   // open-task promotion is one button — no redundant "Enable autonomous" toggle.
+  // The type dropdown still renders (reclassifying is meaningful pre-promotion),
+  // so the Settings section is present — just without the allow toggle.
   const t = task("001-a", "open");
   const p = project("alpha", [t]);
   const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
   assert.match(r.body, /action="\/t\/alpha\/001-a\/ready"/, "expected Promote to ready form");
-  assert.doesNotMatch(r.body, /class="task-settings"/, "expected no settings section for open task");
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/set-type"/, "expected type dropdown for open task");
   assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/allow-orchestrator"/, "expected no allow toggle for open task");
 });
 
@@ -737,6 +739,15 @@ test("renderTask: allow-orchestrator toggle hidden input flips based on current 
   const rOff = route("/t/alpha/002-off", new URLSearchParams(), [p], { mutationsEnabled: true });
   assert.match(rOff.body, /name="allow" value="true"/);
   assert.match(rOff.body, /Enable autonomous/);
+});
+
+test("renderTask: type dropdown pre-selects the task's current type", () => {
+  const t = task("001-a", "in-progress", { type: "investigation" });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/set-type"/);
+  assert.match(r.body, /<option value="investigation" selected>investigation<\/option>/);
+  assert.match(r.body, /<option value="pr">pr<\/option>/);
 });
 
 test("renderTask: flash banner is HTML-escaped (no injection)", () => {
@@ -936,6 +947,16 @@ test("routeMutation: /t/<slug>/allow-orchestrator maps allow=true|false to allow
     ["allow", "alpha/001-a"],
     ["disallow", "alpha/001-a"],
     // bogus value -> no CLI call (bad request)
+  ]);
+});
+
+test("routeMutation: /t/<slug>/set-type forwards the chosen type, drops empty", () => {
+  const { runner, calls } = captureRunner();
+  routeMutation("/t/alpha/001-a/set-type", new URLSearchParams("type=investigation"), runner);
+  routeMutation("/t/alpha/001-a/set-type", new URLSearchParams("type=   "), runner);
+  assert.deepEqual(calls, [
+    ["set-type", "alpha/001-a", "investigation"],
+    // empty value -> no CLI call (bad request)
   ]);
 });
 

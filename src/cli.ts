@@ -337,6 +337,13 @@ try {
       console.log(r.message);
       break;
     }
+    case "set-type": {
+      const newType = args[2];
+      if (!args[1] || !newType) usage("tpm set-type <task> <pr|investigation|spike|chore>");
+      const r = mutate.setType(resolveLiveTask(args[1], "tpm set-type <task> <type>"), newType);
+      console.log(r.message);
+      break;
+    }
     case "complete": {
       if (!args[1]) usage('tpm complete <task> [--outcome "..."] [--no-archive] [--archive]');
       const outcome = parseFlag(args, "--outcome");
@@ -1026,6 +1033,7 @@ Usage:
   tpm pull <task>                            pull a queued task back into the human pile: ready -> open, needs-feedback -> needs-review
   tpm revert <task> ["<reason>"]             flip in-progress -> ready, log a timeout/revert (no-op otherwise)
   tpm status <task> <new-status>             generic status setter (validated)
+  tpm set-type <task> <pr|investigation|spike|chore>   reclassify a task's type: (validated); back-end for tpm serve's type dropdown
   tpm log <task> "<message>"                 append a single timestamped Log line
   tpm edit <task> <title|context|plan|outcome> "<value>" [--expect-mtime <ms>]
                                              rewrite the title (frontmatter) or one prose section; back-end for tpm serve's inline editor
