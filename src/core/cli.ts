@@ -12,16 +12,16 @@ import { resolveSameRepoStrategy } from "./strategy.ts";
 import { findTask, findRepoTarget } from "./resolve.ts";
 import { init } from "./init.ts";
 import { CONFIG_PATH, readConfig, writeConfig, serveBaseUrl } from "./config.ts";
-import { now } from "./time.ts";
+import { now } from "../util/time.ts";
 import * as mutate from "./mutate.ts";
 import * as lock from "./lock.ts";
 import { runOrchestrate } from "./orchestrate.ts";
 import { migrateReportsToTaskFolders } from "./migrate_reports.ts";
 import { migrateRunsToTaskFolders } from "./migrate_runs.ts";
 import { runPoll } from "./poll.ts";
-import { runServe } from "./serve.ts";
+import { runServe } from "../web/serve.ts";
 import { shouldNotify, fireNotification, NOTIFY_EVENTS } from "./notify.ts";
-import { taskDeepLink } from "./serve_url.ts";
+import { taskDeepLink } from "../web/serve_url.ts";
 import type { NotifyEvent } from "./notify.ts";
 import { resolveRepo } from "./context.ts";
 import { checkDrift } from "./drift.ts";
@@ -992,7 +992,7 @@ function usage(msg: string): never {
 }
 
 function readVersion(): string {
-  const pkgPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+  const pkgPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
   const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
   return typeof pkg.version === "string" ? pkg.version : "0.0.0";
 }
@@ -1007,7 +1007,7 @@ function resolveTpmBin(): string {
   if (override && isAbsolute(override) && existsSync(override)) return override;
   try {
     const here = fileURLToPath(import.meta.url);
-    const candidate = resolve(dirname(here), "..", "bin", "tpm");
+    const candidate = resolve(dirname(here), "..", "..", "bin", "tpm");
     if (existsSync(candidate)) return candidate;
   } catch {
     // ignore

@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
 import { migrateReportsToTaskFolders } from "./migrate_reports.ts";
-import { parse } from "./frontmatter.ts";
+import { parse } from "../util/frontmatter.ts";
 
 function projectMd(slug: string): string {
   return `---\nname: ${slug}\nslug: ${slug}\nstatus: active\ncreated: 2026-01-01 00:00 PDT\ntags: []\n---\n\n# ${slug}\n\n## Goal\nx\n`;

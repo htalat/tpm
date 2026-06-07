@@ -1,4 +1,4 @@
-import { readConfig, DEFAULT_TIMEZONE } from "./config.ts";
+import { readConfig, DEFAULT_TIMEZONE } from "../core/config.ts";
 
 export function now(date: Date = new Date()): string {
   return format(date, configuredTimezone());

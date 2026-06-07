@@ -52,7 +52,7 @@ export interface RefreshEnv {
 
 export function defaultSourceRoot(): string {
   const here = fileURLToPath(import.meta.url);
-  return resolve(dirname(here), "..", "skills");
+  return resolve(dirname(here), "..", "..", "skills");
 }
 
 export function targetRoot(homeDir: string): string {

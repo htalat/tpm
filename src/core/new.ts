@@ -1,11 +1,11 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { PROJECT_TEMPLATE, TASK_TEMPLATE } from "./defaults.ts";
-import { now } from "./time.ts";
+import { now } from "../util/time.ts";
 import { loadProjects, foldTask } from "./tree.ts";
 import type { Task } from "./tree.ts";
 import { findTask } from "./resolve.ts";
-import { parse, stringify } from "./frontmatter.ts";
+import { parse, stringify } from "../util/frontmatter.ts";
 
 function loadTemplate(root: string, kind: "project" | "task"): string {
   const path = join(root, ".tpm", "templates", `${kind}.md`);

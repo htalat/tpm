@@ -22,7 +22,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { parse, stringify } from "./frontmatter.ts";
+import { parse, stringify } from "../util/frontmatter.ts";
 
 export interface MigrationStep {
   project: string;

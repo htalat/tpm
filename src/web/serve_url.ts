@@ -1,4 +1,4 @@
-import type { Project, Task } from "./tree.ts";
+import type { Project, Task } from "../core/tree.ts";
 
 // Route path for a task's detail page in `tpm serve`: `/t/<project>/<slug>` (or
 // `/t/<project>/<parent>/<slug>` for a child). This is the single source for the

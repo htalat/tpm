@@ -5,21 +5,21 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadProjects, flatTasks, isParent, rollupStatus, taskHasReport, taskReportPath } from "./tree.ts";
-import { KNOWN_TASK_TYPES } from "./new.ts";
-import type { Project, Task } from "./tree.ts";
-import { findRoot } from "./root.ts";
-import { findTask } from "./resolve.ts";
-import { resolveRepo } from "./context.ts";
-import { now } from "./time.ts";
-import { inboxItems } from "./queue.ts";
-import { listTaskLocks } from "./lock.ts";
+import { loadProjects, flatTasks, isParent, rollupStatus, taskHasReport, taskReportPath } from "../core/tree.ts";
+import { KNOWN_TASK_TYPES } from "../core/new.ts";
+import type { Project, Task } from "../core/tree.ts";
+import { findRoot } from "../core/root.ts";
+import { findTask } from "../core/resolve.ts";
+import { resolveRepo } from "../core/context.ts";
+import { now } from "../util/time.ts";
+import { inboxItems } from "../core/queue.ts";
+import { listTaskLocks } from "../core/lock.ts";
 import { BASE_CSS, SERVE_CSS } from "./css.ts";
-import { renderMarkdown } from "./markdown.ts";
-import { readPrCache, parsePrUrl } from "./pr_cache.ts";
-import type { PrCacheEntry } from "./pr_cache.ts";
-import { analyzePr } from "./pr_signal.ts";
-import type { RawPrJson, PrDecision } from "./pr_signal.ts";
+import { renderMarkdown } from "../util/markdown.ts";
+import { readPrCache, parsePrUrl } from "../core/pr_cache.ts";
+import type { PrCacheEntry } from "../core/pr_cache.ts";
+import { analyzePr } from "../core/pr_signal.ts";
+import type { RawPrJson, PrDecision } from "../core/pr_signal.ts";
 import {
   allRunLogs,
   encodeLegacySlug,
@@ -27,8 +27,8 @@ import {
   isValidRunLogName,
   latestRunLog,
   parseRunLog,
-} from "./run_log.ts";
-import type { RunEvent } from "./run_log.ts";
+} from "../core/run_log.ts";
+import type { RunEvent } from "../core/run_log.ts";
 import {
   CONFIG_PATH,
   DEFAULT_NOTIFICATIONS,
@@ -36,11 +36,11 @@ import {
   DEFAULT_TIME_BOUND_MINUTES,
   DEFAULT_SERVE_HOST,
   DEFAULT_SERVE_PORT,
-} from "./config.ts";
-import type { Config } from "./config.ts";
+} from "../core/config.ts";
+import type { Config } from "../core/config.ts";
 import { taskPath } from "./serve_url.ts";
-import { defaultHarnessLogReader, parseTaskLogEntries } from "./harness_log.ts";
-import type { HarnessLogReader, HarnessLogSource, HarnessLogLine } from "./harness_log.ts";
+import { defaultHarnessLogReader, parseTaskLogEntries } from "../core/harness_log.ts";
+import type { HarnessLogReader, HarnessLogSource, HarnessLogLine } from "../core/harness_log.ts";
 
 // A PR-cache lookup. Production passes `readPrCache` (reads ~/.tpm/pr-cache);
 // tests pass a stub so `route` stays pure and disk-free.
@@ -176,7 +176,7 @@ const BULK_CAPS: Record<string, string[]> = {
 // Order the bar renders its buttons in (stable, independent of which are shown).
 const BULK_ACTION_ORDER = ["promote", "pull", "close", "reopen", "block", "archive"];
 
-const CLI_PATH = fileURLToPath(new URL("./cli.ts", import.meta.url));
+const CLI_PATH = fileURLToPath(new URL("../core/cli.ts", import.meta.url));
 
 // `tpm serve`: localhost dashboard for the queues. POST endpoints shell out to
 // the CLI so the web layer never writes files directly (one writer contract,

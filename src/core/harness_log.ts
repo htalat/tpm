@@ -18,7 +18,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { CONFIG_DIR } from "./config.ts";
-import { wallToIsoOffset } from "./time.ts";
+import { wallToIsoOffset } from "../util/time.ts";
 
 export type LogLevel = "INFO" | "WARN" | "ERROR";
 

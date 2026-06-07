@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, statSync, unlinkSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { parse, stringify } from "./frontmatter.ts";
-import { now } from "./time.ts";
+import { parse, stringify } from "../util/frontmatter.ts";
+import { now } from "../util/time.ts";
 import { archiveTask, foldTask, isParent, taskHasReport, taskReportPath } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
 import { REPORT_TEMPLATE } from "./defaults.ts";
