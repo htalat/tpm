@@ -126,9 +126,8 @@ export function prepareRunLogPath(task: Task, when: Date = new Date()): PrepareR
 
 // ---- legacy (~/.tpm/runs/) ------------------------------------------------
 //
-// The flat global runs dir is being retired (this task). The helpers below
-// exist solely so `tpm migrate runs` can find the legacy files and the
-// serve layer can 302-redirect old `/runs/<file>` URLs for one release.
+// The flat global runs dir has been retired. The helpers below exist solely
+// so the serve layer can 302-redirect old `/runs/<file>` URLs.
 
 export function legacyRunsDir(): string {
   return resolve(CONFIG_DIR, "runs");

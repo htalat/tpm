@@ -16,8 +16,6 @@ import { now } from "../util/time.ts";
 import * as mutate from "./mutate.ts";
 import * as lock from "./lock.ts";
 import { runOrchestrate } from "./orchestrate.ts";
-import { migrateReportsToTaskFolders } from "./migrate_reports.ts";
-import { migrateRunsToTaskFolders } from "./migrate_runs.ts";
 import { runPoll } from "./poll.ts";
 import { runServe } from "../web/serve.ts";
 import { shouldNotify, fireNotification, NOTIFY_EVENTS } from "./notify.ts";
@@ -550,44 +548,6 @@ try {
       }
       break;
     }
-    case "migrate": {
-      // One-shot migrations. Each sub-verb is meant to run once after
-      // pulling the corresponding schema change; re-runs are no-ops.
-      const sub = args[1];
-      if (sub === "reports") {
-        const root = findRoot();
-        const result = migrateReportsToTaskFolders(root);
-        for (const step of result.steps) {
-          console.log(`${step.project}/${step.slug}: ${step.action} (${step.detail})`);
-        }
-        for (const dir of result.removedReportsDirs) {
-          console.log(`removed empty dir: ${dir}`);
-        }
-        for (const warn of result.warnings) {
-          console.error(`warning: ${warn}`);
-        }
-        if (result.steps.length === 0 && result.removedReportsDirs.length === 0) {
-          console.log("nothing to migrate");
-        }
-        break;
-      }
-      if (sub === "runs") {
-        const root = findRoot();
-        const result = migrateRunsToTaskFolders(root);
-        for (const step of result.steps) {
-          console.log(`${step.legacyName}: ${step.action} (${step.detail})`);
-        }
-        for (const warn of result.warnings) {
-          console.error(`warning: ${warn}`);
-        }
-        if (result.steps.length === 0) {
-          console.log("nothing to migrate");
-        }
-        break;
-      }
-      usage("tpm migrate reports | runs");
-      break;
-    }
     case "drift-check": {
       const root = findRoot();
       const projectFlag = parseFlag(args, "--project");
@@ -1057,8 +1017,6 @@ Usage:
   tpm lock list                              list every claimed task across the tree
   tpm lock release-stale [--ttl <minutes>]   clear locks whose heartbeat is older than ttl
   tpm drift-check <project | task>           verify the project's repo.local is on its default branch + clean
-  tpm migrate reports                        one-shot: move flat <project>/reports/<slug>.md files into <project>/tasks/<slug>/report.md (auto-folds file-form tasks) and strip legacy report: frontmatter; safe to re-run
-  tpm migrate runs                           one-shot: move flat ~/.tpm/runs/*.log captures into each task's own <task>/runs/<utc>.log (auto-folds file-form tasks); unresolvable files land in ~/.tpm/runs/orphans/; safe to re-run
   tpm next [--project <slug>] [--autonomous] [--claim <id>]
                                              print next leaf task (needs-feedback > ready, oldest first); --claim atomically locks
   tpm inbox                                  list human-queue tasks (needs-review, blocked, open) cross-project
