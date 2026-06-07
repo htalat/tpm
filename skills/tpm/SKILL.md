@@ -200,7 +200,7 @@ Just run the corresponding `tpm` subcommand and print the result.
 
 ## Conventions
 
-- **Prefer CLI verbs over manual file edits for state changes.** `tpm start | ready | complete | block | reopen | revert | pull | status | set-type | allow | disallow | log | pr | report | lgtm | request-changes | archive | fold | reparent | new` cover frontmatter and Log mutations. Manual file edits are only for body-text authoring (`## Context`, `## Plan`, `## Outcome`).
+- **Prefer CLI verbs over manual file edits for state changes.** The `tpm` verbs cover frontmatter and Log mutations — run `tpm --help` (and `tpm <command> --help`) for the current surface rather than relying on a list here. Manual file edits are only for body-text authoring (`## Context`, `## Plan`, `## Outcome`).
 - When you do edit a task file directly, only touch the four canonical body sections. Preserve key order in frontmatter.
 - Timestamps: the CLI verbs stamp `tpm now` automatically. If you need to write one yourself, use `tpm now` (format `YYYY-MM-DD HH:MM <ZZZ>` in the configured TZ — defaults to Pacific). Don't guess or hand-format.
 - Don't manually create project/task files where `tpm new` would do it.

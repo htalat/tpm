@@ -248,7 +248,7 @@ Refuses to move a task that has children (would create grandchildren) or any mov
 
 ## Conventions
 
-- **Prefer CLI verbs over manual file edits for state changes.** Use `tpm start | ready | complete | block | reopen | revert | pull | status | set-type | allow | disallow | log | pr | report | lgtm | request-changes | archive | fold | reparent | new` for frontmatter and Log mutations. Manual file edits are only for body-text authoring (`## Context`, `## Plan`, `## Outcome`).
+- **Prefer CLI verbs over manual file edits for state changes.** The `tpm` verbs cover frontmatter and Log mutations — run `tpm --help` (and `tpm <command> --help`) for the current surface rather than relying on a list here. Manual file edits are only for body-text authoring (`## Context`, `## Plan`, `## Outcome`).
 - When you do edit a task file directly, only touch the four canonical body sections. Preserve key order in frontmatter.
 - Don't reformat unrelated frontmatter or rename slugs.
 - Don't delete the `## Outcome` section even if empty — it's a closing prompt.
