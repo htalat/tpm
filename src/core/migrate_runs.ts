@@ -3,9 +3,9 @@
 // task's own folder (`<project>/tasks/<slug>/runs/<utc>.log` for top-level,
 // `<project>/tasks/<parent>/runs/<child-slug>--<utc>.log` for children).
 //
-// Mirrors `migrate_reports.ts` (task 094): walk the legacy dir, resolve each
-// filename's encoded prefix against the loaded project tree (live + archive),
-// fold file-form top-level tasks if needed, mkdir the runs/ target, and rename.
+// Walks the legacy dir, resolves each filename's encoded prefix against the
+// loaded project tree (live + archive), folds file-form top-level tasks if
+// needed, mkdirs the runs/ target, and renames each file into place.
 // Files that can't be resolved (deleted task, ambiguous prefix) move to
 // `~/.tpm/runs/orphans/` so the operator can triage without losing transcript.
 //
