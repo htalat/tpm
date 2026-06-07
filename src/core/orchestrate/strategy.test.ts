@@ -6,7 +6,7 @@ import {
   worktreeBranch,
   DEFAULT_SAME_REPO_STRATEGY,
 } from "./strategy.ts";
-import type { Project } from "./tree.ts";
+import type { Project } from "../tree.ts";
 
 function project(extra: Record<string, unknown> = {}): Project {
   return {

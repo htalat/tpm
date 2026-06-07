@@ -20,7 +20,7 @@ import {
   prepareRunLogPath,
   taskRunsDir,
 } from "./run_log.ts";
-import type { Task } from "./tree.ts";
+import type { Task } from "../tree.ts";
 
 function topLevelFileForm(root: string, slug: string): Task {
   const path = join(root, `${slug}.md`);

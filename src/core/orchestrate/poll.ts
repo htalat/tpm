@@ -6,9 +6,9 @@
 // envelope as `tpm orchestrate` (src/log.ts) so a single `tpm` log file tails
 // cleanly.
 
-import { findRoot } from "./root.ts";
-import { flatTasks, loadProjects } from "./tree.ts";
-import type { Project, Task } from "./tree.ts";
+import { findRoot } from "../root.ts";
+import { flatTasks, loadProjects } from "../tree.ts";
+import type { Project, Task } from "../tree.ts";
 import {
   aggregateSignals,
   deriveOutcomeFromSignals,
@@ -19,8 +19,8 @@ import {
   type PrSignal,
 } from "./pr_signal.ts";
 import { writePrCache } from "./pr_cache.ts";
-import * as mutate from "./mutate.ts";
-import { logLine, type LogLevel } from "./log.ts";
+import * as mutate from "../mutate.ts";
+import { logLine, type LogLevel } from "../log.ts";
 
 const SCRIPT = "poll";
 

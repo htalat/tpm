@@ -20,9 +20,9 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { CONFIG_DIR } from "./config.ts";
+import { CONFIG_DIR } from "../config.ts";
 import { hostFor } from "./pr_signal.ts";
-import type { PrRef } from "./hosts/types.ts";
+import type { PrRef } from "../hosts/types.ts";
 
 export interface PrCacheEntry {
   fetchedAt: string;        // ISO 8601 — when the poller last fetched this PR

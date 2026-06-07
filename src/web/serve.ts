@@ -13,13 +13,13 @@ import { findTask } from "../core/resolve.ts";
 import { resolveRepo } from "../core/context.ts";
 import { now } from "../util/time.ts";
 import { inboxItems } from "../core/queue.ts";
-import { listTaskLocks } from "../core/lock.ts";
+import { listTaskLocks } from "../core/orchestrate/lock.ts";
 import { BASE_CSS, SERVE_CSS } from "./css.ts";
 import { renderMarkdown } from "../util/markdown.ts";
-import { readPrCache, parsePrUrl } from "../core/pr_cache.ts";
-import type { PrCacheEntry } from "../core/pr_cache.ts";
-import { analyzePr } from "../core/pr_signal.ts";
-import type { RawPrJson, PrDecision } from "../core/pr_signal.ts";
+import { readPrCache, parsePrUrl } from "../core/orchestrate/pr_cache.ts";
+import type { PrCacheEntry } from "../core/orchestrate/pr_cache.ts";
+import { analyzePr } from "../core/orchestrate/pr_signal.ts";
+import type { RawPrJson, PrDecision } from "../core/orchestrate/pr_signal.ts";
 import {
   allRunLogs,
   encodeLegacySlug,
@@ -27,8 +27,8 @@ import {
   isValidRunLogName,
   latestRunLog,
   parseRunLog,
-} from "../core/run_log.ts";
-import type { RunEvent } from "../core/run_log.ts";
+} from "../core/orchestrate/run_log.ts";
+import type { RunEvent } from "../core/orchestrate/run_log.ts";
 import {
   CONFIG_PATH,
   DEFAULT_NOTIFICATIONS,

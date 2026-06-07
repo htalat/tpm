@@ -24,8 +24,8 @@ import {
   runWithTimeout,
   shouldAutoRevert,
 } from "./orchestrate.ts";
-import * as mutate from "./mutate.ts";
-import type { Project, Task } from "./tree.ts";
+import * as mutate from "../mutate.ts";
+import type { Project, Task } from "../tree.ts";
 
 function task(extra: Record<string, unknown> = {}): Task {
   return {
@@ -1400,7 +1400,7 @@ test("resolvePoolShape: --cli alone (no --workers) only validates against the de
 // workers would race on, using the same queue+lock primitives runWorkerIteration
 // calls.
 test("worker pool: two concurrent workers pick distinct tasks via lock contention", async () => {
-  const { selectCandidates } = await import("./queue.ts");
+  const { selectCandidates } = await import("../queue.ts");
   const { acquireTask, releaseTask } = await import("./lock.ts");
   const root = mkdtempSync(resolve(tmpdir(), "tpm-orch-pool-"));
   try {
@@ -1468,7 +1468,7 @@ test("worker pool: a third worker finds nothing claimable once two locks are hel
   // task lock, sibling workers walking the same candidate list see EEXIST and
   // fall through. With only two tasks and two locks held, the third worker's
   // pick must come back empty.
-  const { selectCandidates } = await import("./queue.ts");
+  const { selectCandidates } = await import("../queue.ts");
   const { acquireTask } = await import("./lock.ts");
   const root = mkdtempSync(resolve(tmpdir(), "tpm-orch-pool-third-"));
   try {

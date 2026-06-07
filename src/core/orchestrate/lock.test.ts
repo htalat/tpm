@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
+import { mkTempDir, rmTempDir } from "../_test_helpers.ts";
 import { utimesSync } from "node:fs";
 import {
   acquire, release, status, lockPath,
