@@ -3,8 +3,16 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
-import { newProject, newTask } from "./new.ts";
+import { newProject, newTask, KNOWN_TASK_TYPES } from "./new.ts";
 import { parse } from "./frontmatter.ts";
+
+test("KNOWN_TASK_TYPES is exactly the two-type model", () => {
+  // The schema has exactly two lifecycles: `pr` (archive on complete) and
+  // `investigation` (stay at canonical path, expects a report). The dropped
+  // `chore`/`spike` were lifecycle twins of these. Guards against a revert or
+  // typo silently re-widening the schema.
+  assert.deepEqual([...KNOWN_TASK_TYPES], ["pr", "investigation"]);
+});
 
 test("newProject: scaffolds project.md with substituted vars and tasks/notes dirs", () => {
   const root = mkTempDir();

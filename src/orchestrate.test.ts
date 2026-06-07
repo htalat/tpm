@@ -166,7 +166,7 @@ test("classifyDisposition: in-progress → needs-review with PR opened → shipp
 });
 
 test("classifyDisposition: in-progress → done → shipped", () => {
-  // `tpm complete` ran (investigation/spike close-out, or direct-push task).
+  // `tpm complete` ran (investigation close-out, or direct-push task).
   assert.equal(
     classifyDisposition({
       exitCode: 0,
@@ -288,7 +288,7 @@ test("classifyDisposition: exit 124 with in-progress -> needs-review and prs +1 
 });
 
 test("classifyDisposition: exit 124 with in-progress -> done → shipped (delivery state)", () => {
-  // Investigation/spike close-out (`tpm complete`) lands here. The agent
+  // Investigation close-out (`tpm complete`) lands here. The agent
   // closed the task; SIGTERM after that is just cleanup noise.
   assert.equal(
     classifyDisposition({

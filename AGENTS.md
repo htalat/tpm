@@ -29,7 +29,7 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
   - `needs-review` = human's queue — agent escalated (e.g. design pushback on a thread, `CHANGES_REQUESTED`, a merge conflict the agent couldn't resolve cleanly). Surfaced via `tpm inbox`.
   - `blocked` = human's queue, external dep. Surfaced via `tpm inbox`.
   - Parent containers display a roll-up status (all children done → done; any in-progress → in-progress; else parent's declared status). The roll-up is display only — never written to frontmatter.
-- **Types**: `pr | investigation | spike | chore`
+- **Types**: `pr | investigation`
 - **Project body**: `## Goal`, `## Context`, `## Notes`, `## Log`. The project Log is a timeline for events that don't belong to any single task — pivots, milestones, status flips, decisions that span multiple tasks. Use the same `- YYYY-MM-DD HH:MM ZZZ: <event>` format as task Logs. Keep per-task events in the task's own Log (don't double-write).
 - **Task body**: `## Context`, `## Plan`, `## Log`, `## Outcome`
 - Code work happens in `repo.local`. `tpm context` calls this out; `tpm path <target>` prints it for shell composition (`cd $(tpm path my-task)`).
@@ -124,7 +124,6 @@ This is the primary action.
 8. **To ship**, the verb depends on the task type:
    - **`type: pr`**: follow the workflow doc verbatim — validate (run any checks/tests it names), commit, push, open PR. Then `tpm pr <slug> <url>` — that adds the URL to `prs:`, logs the open, and auto-flips `in-progress → needs-review` (the handoff to the human). If the workflow says "close after merge" (the default for `type: pr`), stop after `tpm pr` — the poller closes the task inline when the PR merges; manual **close out** is the escape hatch.
    - **`type: investigation`**: your deliverable is a report file at `<project>/tasks/<slug>/report.md`. Run `tpm report <slug>` — it auto-folds the file-form task into a folder and scaffolds `report.md` from the template. Write the findings into that file (sections: `## Summary`, `## Findings`, `## Recommendation`). When the report is complete, re-run `tpm report <slug>` — the CLI auto-flips `in-progress → needs-review`. Do **not** open a PR; do **not** run `tpm pr`. A reviewer runs `tpm lgtm <slug>` to approve (derives the Outcome and completes the task) or `tpm request-changes <slug> "<comment>"` to push back (appends the comment to `## Reviewer feedback` in the report file and flips back to `needs-feedback`). For a feedback round, address the comment in the same report file, then re-run `tpm report <slug>` to bounce status back to `needs-review`.
-   - **`type: chore` / `type: spike`**: workflow doc decides. Defaults: chore tracks like a PR; spike like an investigation.
 9. If you hit a blocker you can't resolve: run `tpm block <slug> "<reason>"` to set `status: blocked` and log the reason. Then surface to the user instead of guessing.
 10. **Never exit while the task is still `in-progress`.** A task at `in-progress` with no active agent is stranded — without intervention, no one picks it up until a human or sweeper notices. On every exit path, leave the task in a recoverable state:
     - **Work shipped** (PR opened, investigation report attached, etc.): the relevant CLI call (`tpm pr`, `tpm report`, `tpm complete`) has already flipped the status. Nothing more to do.
@@ -221,14 +220,14 @@ Don't:
    - **Shortcut:** if the task's current status is `needs-close`, the poller has already verified a linked PR merged — you can skip the `gh pr view ... --jq '.state'` round trip and proceed directly.
 3. Fill `## Outcome` with what shipped, what changed, what was learned. Reference PRs. (Free-form prose: edit the file directly. The CLI will refuse to overwrite an Outcome that already has content, so author it before the next step.)
    - **Autonomous fill (status `needs-close`):** stragglers reach this action only when the poller's inline auto-close failed (PR body empty, `Outcome` already filled, lock contention). You may still fill `## Outcome` from PR signal (title + body + recent commits via `gh pr view <url> --json title,body,commits`) without prompting the user — the merge already shipped; a faithful summary of the PR description is an acceptable Outcome. Reference each merged PR.
-4. Run `tpm complete <slug>`. This flips status to `done`, stamps `closed`, appends a `closed` Log line, and **archives by type**: `pr`/`chore` move under `tasks/archive/`; `investigation`/`spike` stay at the canonical path so `tpm ls --status done` and `tpm context <slug>` continue to find them. Override the default with `--archive` or `--no-archive` when needed.
+4. Run `tpm complete <slug>`. This flips status to `done`, stamps `closed`, appends a `closed` Log line, and **archives by type**: `pr` moves under `tasks/archive/`; `investigation` stays at the canonical path so `tpm ls --status done` and `tpm context <slug>` continue to find them. Override the default with `--archive` or `--no-archive` when needed.
 5. **Cleanup local branch** (when at least one linked PR was merged). For each merged PR:
    - `BRANCH=$(gh pr view <url> --json headRefName --jq '.headRefName')`. Skip if `BRANCH` equals the project's default branch (typically `main`).
    - `cd "$(tpm path <slug>)"`. If the local branch doesn't exist (`git rev-parse --verify "$BRANCH"` fails), skip — already cleaned up.
    - `git checkout main && git pull --ff-only`.
    - `git branch -d "$BRANCH"`. **Use `-d`, not `-D`** — if git refuses (e.g., you kept working on the branch after merge), surface the message and let the user decide. Don't force-delete.
    - Check the remote: `git ls-remote --heads origin "$BRANCH"`. If it still exists (GitHub's auto-delete-head-branches isn't on for this repo), print the one-liner `git push origin --delete <BRANCH>` for the user to copy/paste. Don't run it silently.
-6. Print a one-line confirmation: new status, archive path (or "kept at <path>" for investigations/spikes), and the remote-delete hint if applicable.
+6. Print a one-line confirmation: new status, archive path (or "kept at <path>" for investigations), and the remote-delete hint if applicable.
 
 ### Scaffold a project or task
 - New project: `tpm new project <slug> [--name "..."] [--repo <url>] [--path <local-dir>]`. Ask about `--repo` and `--path` if not provided.

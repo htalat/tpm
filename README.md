@@ -361,7 +361,7 @@ tpm new project sandbox --path ~/sandbox-repo
 
 # 2. Create a tiny task and shape it.
 tpm new task sandbox hello-world --title "Print hello world"
-$EDITOR "$(tpm root)/sandbox/tasks/001-hello-world.md"   # add a Plan, set type: chore
+$EDITOR "$(tpm root)/sandbox/tasks/001-hello-world.md"   # add a Plan, set type: pr
 tpm ready sandbox/hello-world
 
 # 3. Drain manually first.
@@ -399,7 +399,7 @@ tpm start <task>                          # set status: in-progress, log started
 tpm ready <task>                          # set status: ready (+ allow_orchestrator: true), log promoted
 tpm complete <task> [--outcome "..."] [--no-archive] [--archive]
                                           # set status: done, stamp closed, log;
-                                          # archives by type (pr/chore yes, investigation/spike no)
+                                          # archives by type (pr yes, investigation no)
 tpm block <task> "<reason>"               # set status: blocked, log the reason
 tpm reopen <task> ["<reason>"]            # set status: open, log reopened (optional reason)
 tpm revert <task> ["<reason>"]            # flip in-progress -> ready, log a timeout/revert (no-op otherwise)
@@ -504,7 +504,7 @@ title: Refactor auth middleware
 slug: refactor-auth
 project: my-project
 status: open          # open | ready | in-progress | needs-feedback | needs-close | needs-review | blocked | done | dropped
-type: pr              # pr | investigation | spike | chore
+type: pr              # pr | investigation
 created: 2026-04-25 09:30 PDT
 closed:               # YYYY-MM-DD HH:MM ZZZ when status flips to done
 prs: []               # list of PR URLs

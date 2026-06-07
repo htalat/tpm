@@ -373,8 +373,8 @@ export function setAllowOrchestrator(task: Task, allow: boolean): MutateResult {
   return { message: `${task.slug}: allow_orchestrator -> ${allow}` };
 }
 
-// Reclassify a task's `type:` (pr / investigation / spike / chore). Type drives
-// close-out behavior (pr/chore archive on done; investigation expects a report),
+// Reclassify a task's `type:` (pr / investigation). Type drives
+// close-out behavior (pr archives on done; investigation expects a report),
 // so it's the kind of field an operator might want to correct after creation —
 // hence a verb rather than hand-editing frontmatter. Validated against the same
 // KNOWN_TASK_TYPES gate `tpm new` uses; idempotent on a no-op.
@@ -419,7 +419,7 @@ export function complete(task: Task, opts: CompleteOptions = {}): MutateResult {
   const type = String(data.type ?? "");
   const shouldArchive = opts.archive !== undefined
     ? opts.archive
-    : (type === "pr" || type === "chore");
+    : (type === "pr");
   if (!shouldArchive) {
     return { message: `${task.slug} -> done (kept at ${task.path})` };
   }

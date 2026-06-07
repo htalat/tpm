@@ -2145,7 +2145,7 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
 
   // Status -> set of action keys. Every non-terminal status offers `Close`
   // (terminal/parent already returned above): closing is a first-class UI
-  // action so investigations / spikes / chores without a linked PR can be
+  // action so investigations without a linked PR can be
   // closed without dropping to `tpm complete` in the shell. The Outcome
   // textarea is optional — close-now-edit-later stays possible.
   switch (status) {
@@ -2211,8 +2211,8 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
 // archived. Separate from renderActions because archiving isn't a status
 // transition — it retires an already-closed task off the canonical path (the
 // explicit "ok, I'm done with this investigation, archive it" step). type: pr
-// and type: chore already archive on `tpm complete`, so this button is the
-// affordance for investigations/spikes that intentionally finish at `done`.
+// already archives on `tpm complete`, so this button is the
+// affordance for investigations that intentionally finish at `done`.
 // renderActions returns "" for terminal status; this fills exactly that gap.
 // Parents with live children are refused server-side (archiveTask); the error
 // surfaces via the flash banner rather than being hidden here.
@@ -2565,7 +2565,7 @@ const BULK_SELECT_SCRIPT = `(function(){if(window.__tpmBulk)return;window.__tpmB
 // Inline "close" affordance (task 127) — the per-row analogue of the
 // detail-page Close button. Posts to the same `complete` mutation with an
 // empty Outcome (close-now-edit-later), so archive-by-type defaults apply
-// (`pr` / `chore` archive; `investigation` / `spike` stay at the canonical
+// (`pr` archives; `investigation` stays at the canonical
 // path). Self-gating: hidden on terminal rows (already closed — use Archive)
 // and on parent containers (closing a container isn't meaningful), shown for
 // every other status. No confirm — `tpm reopen` makes it reversible.
