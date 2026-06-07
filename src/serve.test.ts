@@ -481,7 +481,7 @@ test("renderTask: open task offers Promote + Block + Complete + Drop", () => {
   assert.match(r.body, /action="\/t\/alpha\/001-a\/ready"/);
   assert.match(r.body, /action="\/t\/alpha\/001-a\/block"/);
   assert.match(r.body, /action="\/t\/alpha\/001-a\/status"/);
-  // Close affordance even at open: chores/spikes can be closed without a PR.
+  // Close affordance even at open: investigations can be closed without a PR.
   assert.match(r.body, /action="\/t\/alpha\/001-a\/complete"/);
   assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/pr"/);
 });
@@ -1425,7 +1425,7 @@ test("renderTaskReport: bar appears for report-attached non-investigation task a
   // Same OR gate the rail had previously: report presence is enough.
   const root = mkTempDir();
   try {
-    const t = folderTask(root, "001-a", "needs-review", { hasReport: true, extra: { type: "spike" } });
+    const t = folderTask(root, "001-a", "needs-review", { hasReport: true, extra: { type: "pr" } });
     const p = project("alpha", [t]);
     const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: true });
     assert.match(r.body, /class="report-actions-bar"/);
@@ -1545,8 +1545,8 @@ test("renderProject: renders a New task <details> form with slug/title/parent/ty
   // Parent dropdown lists top-level non-archived tasks and a top-level option.
   assert.match(r.body, /<select[^>]*name="parent">[\s\S]*<option[^>]*value="">\(top-level\)<\/option>[\s\S]*<option[^>]*value="001-foo"/);
   assert.match(r.body, /<option[^>]*value="002-bar"/);
-  // Type dropdown has all four known types, with `pr` selected by default.
-  for (const t of ["pr", "investigation", "spike", "chore"]) {
+  // Type dropdown has all known types, with `pr` selected by default.
+  for (const t of ["pr", "investigation"]) {
     assert.match(r.body, new RegExp(`<option[^>]*value="${t}"`));
   }
   assert.match(r.body, /<option[^>]*value="pr"[^>]*selected/);

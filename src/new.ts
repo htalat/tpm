@@ -48,7 +48,7 @@ export interface NewTaskOpts {
 // Allowed values for the `type:` frontmatter field. Kept narrow so a typo on
 // the CLI (or in the serve form) doesn't seed a task with an unrecognized
 // type that later silently misroutes through queue / close-out logic.
-export const KNOWN_TASK_TYPES = ["pr", "investigation", "spike", "chore"] as const;
+export const KNOWN_TASK_TYPES = ["pr", "investigation"] as const;
 export type KnownTaskType = (typeof KNOWN_TASK_TYPES)[number];
 
 export function newTask(root: string, projectSlug: string, taskSlug: string, opts: NewTaskOpts = {}): string {
