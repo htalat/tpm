@@ -7,4 +7,4 @@ while [ -L "$SCRIPT" ]; do
   [[ "$SCRIPT" != /* ]] && SCRIPT="$DIR/$SCRIPT"
 done
 DIR="$(cd -P "$(dirname "$SCRIPT")" && pwd)"
-exec node "$DIR/../src/cli.ts" "$@"
+exec node "$DIR/../src/core/cli.ts" "$@"

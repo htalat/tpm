@@ -1,4 +1,4 @@
-import { isoWithOffset } from "./time.ts";
+import { isoWithOffset } from "../util/time.ts";
 
 export type LogLevel = "INFO" | "WARN" | "ERROR";
 

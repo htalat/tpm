@@ -14,7 +14,7 @@ import {
   writeConfig,
   serveBaseUrl,
 } from "./config.ts";
-import { configuredTimezone, now } from "./time.ts";
+import { configuredTimezone, now } from "../util/time.ts";
 
 beforeEach(() => {
   rmSync(CONFIG_DIR, { recursive: true, force: true });

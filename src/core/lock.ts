@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, openSync, closeSync, readFileSync, readdirSync, unlinkSync, writeFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { now } from "./time.ts";
+import { now } from "../util/time.ts";
 
 // ---- legacy global lock (one release of overlap; deprecated) ---------------
 //

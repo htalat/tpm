@@ -3,8 +3,8 @@ import { join } from "node:path";
 import { loadProjects, flatTasks, isParent, rollupStatus } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
 import { resolveRepo } from "./context.ts";
-import { now } from "./time.ts";
-import { BASE_CSS } from "./css.ts";
+import { now } from "../util/time.ts";
+import { BASE_CSS } from "../web/css.ts";
 
 export function report(root: string, opts: { format: "html" | "md" }): string {
   const projects = loadProjects(root, { archived: true });

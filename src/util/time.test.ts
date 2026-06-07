@@ -1,5 +1,5 @@
 // Side-effect import: re-homes this process before config.ts is evaluated.
-import "./_test_helpers.ts";
+import "../core/_test_helpers.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { isoWithOffset, wallToIsoOffset } from "./time.ts";

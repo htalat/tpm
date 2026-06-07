@@ -10,7 +10,7 @@ import {
   pullFromQueue, appendLog, setSection, sectionHasContent, editTaskSection,
   editProjectSection,
 } from "./mutate.ts";
-import { parse } from "./frontmatter.ts";
+import { parse } from "../util/frontmatter.ts";
 
 function projectMd(slug: string): string {
   return `---

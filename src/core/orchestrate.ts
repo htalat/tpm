@@ -11,7 +11,7 @@ import * as lock from "./lock.ts";
 import { readConfig, DEFAULT_TIME_BOUND_MINUTES, serveBaseUrl } from "./config.ts";
 import { logLine as sharedLogLine, type LogLevel } from "./log.ts";
 import { shouldNotify, fireNotification } from "./notify.ts";
-import { taskDeepLink } from "./serve_url.ts";
+import { taskDeepLink } from "../web/serve_url.ts";
 import { context as buildBriefing, resolveRepo, type Repo } from "./context.ts";
 import { hostFor } from "./pr_signal.ts";
 import { resolveSameRepoStrategy, worktreePath, worktreeBranch } from "./strategy.ts";

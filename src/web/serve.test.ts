@@ -2,10 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
+import { mkTempDir, rmTempDir } from "../core/_test_helpers.ts";
 import { route, routeMutation, routeBulk, isSameOrigin, isLoopback } from "./serve.ts";
 import type { CliRunner, ConfigSnapshot, PrCacheReader } from "./serve.ts";
-import type { Project, Task } from "./tree.ts";
+import type { Project, Task } from "../core/tree.ts";
 
 function task(slug: string, status: string, extra: Record<string, unknown> = {}): Task {
   return {
@@ -2336,7 +2336,7 @@ test("route: /config marks the config chip as active (no href)", () => {
 // ---- /logs page -----------------------------------------------------------
 
 import type { HarnessLogReader, HarnessLogSource } from "./serve.ts";
-import { parseLine } from "./harness_log.ts";
+import { parseLine } from "../core/harness_log.ts";
 
 function harnessSource(name: string, lines: string[]): HarnessLogSource {
   return {

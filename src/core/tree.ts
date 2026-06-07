@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, renameSync, readdirSync, readFileSync, rmdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { parse } from "./frontmatter.ts";
+import { parse } from "../util/frontmatter.ts";
 
 export interface Project {
   slug: string;

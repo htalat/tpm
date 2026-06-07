@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
 import { newProject, newTask, KNOWN_TASK_TYPES } from "./new.ts";
-import { parse } from "./frontmatter.ts";
+import { parse } from "../util/frontmatter.ts";
 
 test("KNOWN_TASK_TYPES is exactly the two-type model", () => {
   // The schema has exactly two lifecycles: `pr` (archive on complete) and

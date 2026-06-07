@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { taskPath, taskDeepLink } from "./serve_url.ts";
-import type { Project, Task } from "./tree.ts";
+import type { Project, Task } from "../core/tree.ts";
 
 function task(slug: string, parent?: string): Task {
   return { slug, path: `/tmp/${slug}.md`, archived: false, data: { slug, status: "ready", ...(parent ? { parent } : {}) }, body: "", parent };

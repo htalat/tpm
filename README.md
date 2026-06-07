@@ -8,9 +8,12 @@ Markdown-based task & project manager. CLI-driven, agent-friendly. Zero deps —
 
 This repo (the CLI install):
 ```
-bin/tpm                            entry (bash shim → src/cli.ts)
-bin/tpm.cmd                        entry (Windows shim → src/cli.ts)
-src/                               TypeScript implementation
+bin/tpm                            entry (bash shim → src/core/cli.ts)
+bin/tpm.cmd                        entry (Windows shim → src/core/cli.ts)
+src/core/                          orchestration, task tree, mutations, CLI dispatch (entry: src/core/cli.ts)
+src/web/                           the web dashboard (`tpm serve`) + shared HTML/CSS
+src/util/                          dependency-free helpers (markdown, frontmatter, time)
+src/tui/                           reserved for the terminal UI (empty today)
 .tpm/templates/                    distributed default templates
 AGENTS.md                          agent-neutral guide for using tpm (safe to drop into other repos)
 CONTRIBUTING.md                    shipping rules for the tpm CLI repo itself
@@ -135,7 +138,7 @@ tpm init
 ```
 
 PowerShell users can use `Copy-Item` or `New-Item -ItemType SymbolicLink`
-instead — the `.cmd` is just a thin `node src/cli.ts %*` wrapper, so any
+instead — the `.cmd` is just a thin `node src/core/cli.ts %*` wrapper, so any
 mechanism that puts it on `PATH` works.
 
 ## Setting up the harness
@@ -259,7 +262,7 @@ The `--autonomous` gate is the safety boundary between "an agent can run this wh
 
 ### PR-signal poller
 
-`tpm poll` is the in-process PR-signal poller. Walks every non-terminal task with a linked PR (plus every `in-progress` task — the round may open its PR mid-tick): `ready`, `in-progress`, `needs-review`, `needs-feedback`, `needs-close`. The PR is alive across all of those — review states, CI runs, eventual merge — so the watch set spans the whole non-terminal lifecycle rather than just the in-flight slice. `open` / `blocked` / `done` / `dropped` are skipped. The rule lives in `shouldWatchForPrSignal` in `src/pr_signal.ts`. Each candidate dispatches to a host adapter per linked PR URL. Adapters ship for GitHub (`gh pr view`) and Azure DevOps (`az repos pr show` + `az pipelines runs list`); adding a new host is one file under `src/hosts/<name>.ts` plus an entry in the `HOSTS` array in `src/pr_signal.ts`. Each adapter answers the same coarse question in its own dialect — `merged` / `needs-agent` / `needs-human` / `abandoned` / `no-action` — so the harness never carries `if host === 'ado'` branches. Per-host CLI presence is checked inside the adapter (an ADO-only user doesn't need `gh` installed). Aggregated signal flips status to `needs-feedback` (merge conflict / CI red / branch behind / open threads — agent attempts the rebase and other fixes via `/tpm feedback`), `needs-review` (`CHANGES_REQUESTED`, ADO vote ≤ -5, or a PR closed-without-merge — the human decides whether to reopen or drop), or **auto-closes inline** when any linked PR merged: flips to `needs-close`, derives an Outcome from PR title + body (Test plan + Claude Code footer stripped), and calls the same code path as `tpm complete --outcome "<derived>"` in the same tick. No claude session spawned, no orchestrator wait. If the inline auto-close fails (body empty, Outcome already filled, lock contention) the task stays at `needs-close` for manual `/tpm done <slug>`. `tpm poll --dry-run` previews decisions without mutating.
+`tpm poll` is the in-process PR-signal poller. Walks every non-terminal task with a linked PR (plus every `in-progress` task — the round may open its PR mid-tick): `ready`, `in-progress`, `needs-review`, `needs-feedback`, `needs-close`. The PR is alive across all of those — review states, CI runs, eventual merge — so the watch set spans the whole non-terminal lifecycle rather than just the in-flight slice. `open` / `blocked` / `done` / `dropped` are skipped. The rule lives in `shouldWatchForPrSignal` in `src/core/pr_signal.ts`. Each candidate dispatches to a host adapter per linked PR URL. Adapters ship for GitHub (`gh pr view`) and Azure DevOps (`az repos pr show` + `az pipelines runs list`); adding a new host is one file under `src/core/hosts/<name>.ts` plus an entry in the `HOSTS` array in `src/core/pr_signal.ts`. Each adapter answers the same coarse question in its own dialect — `merged` / `needs-agent` / `needs-human` / `abandoned` / `no-action` — so the harness never carries `if host === 'ado'` branches. Per-host CLI presence is checked inside the adapter (an ADO-only user doesn't need `gh` installed). Aggregated signal flips status to `needs-feedback` (merge conflict / CI red / branch behind / open threads — agent attempts the rebase and other fixes via `/tpm feedback`), `needs-review` (`CHANGES_REQUESTED`, ADO vote ≤ -5, or a PR closed-without-merge — the human decides whether to reopen or drop), or **auto-closes inline** when any linked PR merged: flips to `needs-close`, derives an Outcome from PR title + body (Test plan + Claude Code footer stripped), and calls the same code path as `tpm complete --outcome "<derived>"` in the same tick. No claude session spawned, no orchestrator wait. If the inline auto-close fails (body empty, Outcome already filled, lock contention) the task stays at `needs-close` for manual `/tpm done <slug>`. `tpm poll --dry-run` previews decisions without mutating.
 
 Cron pattern combining the signal poller and the drain:
 
@@ -338,7 +341,7 @@ For each project the harness touches, the agent needs a couple of fields in `pro
 
 - **`repo.local`** — absolute path to the working tree. `tpm context` surfaces it; `tpm path <task>` prints it. Without it, `tpm orchestrate` and `/tpm <task>` can't `cd` into the repo. The one field that's effectively required for harness use.
 - **`repo.remote`** — URL. Used by `tpm report` and the live dashboard to link out.
-- **`host: github | ado`** *(optional, default `github`)* — informational. Used by the agent's `/tpm feedback` mode to pick which CLI to run (`gh` vs `az repos pr`). The PR-signal poller doesn't gate on this field — it routes per linked PR URL via the host registry in `src/pr_signal.ts`, so a task that links both a GitHub and an ADO PR (rare but valid) gets both adapters dispatched on the same tick.
+- **`host: github | ado`** *(optional, default `github`)* — informational. Used by the agent's `/tpm feedback` mode to pick which CLI to run (`gh` vs `az repos pr`). The PR-signal poller doesn't gate on this field — it routes per linked PR URL via the host registry in `src/core/pr_signal.ts`, so a task that links both a GitHub and an ADO PR (rare but valid) gets both adapters dispatched on the same tick.
 - **`workflow: <path>`** *(optional)* — relative path inside the repo to the doc agents follow when shipping (commit style, validation, PR conventions, when to close). If unset, the agent looks for `AGENTS.md` then `CLAUDE.md` in the repo root, then asks before each shipping step. See [Per-repo workflow](#per-repo-workflow).
 
 For agents that read `AGENTS.md` (Claude Code, Codex CLI, Copilot via symlink), drop a tpm-aware `AGENTS.md` at the repo root — the [tpm CLI repo's own `AGENTS.md`](AGENTS.md) is a working example. Per-agent setup details: [Using tpm with an AI coding agent](#using-tpm-with-an-ai-coding-agent).
@@ -625,8 +628,8 @@ The HTML report is one self-contained file with no external assets. Dark mode su
 
 ```sh
 npm test                                  # runs every src/**/*.test.ts
-node --test src/frontmatter.test.ts       # one file
-node --test --test-name-pattern=archive src/tree.test.ts
+node --test src/util/frontmatter.test.ts  # one file
+node --test --test-name-pattern=archive src/core/tree.test.ts
 ```
 
 Uses Node's built-in test runner (`node --test`) and `node:assert/strict`. No install step — the suite has zero dependencies, same as the CLI. Tests are colocated with source as `*.test.ts` and create their own temp dirs; nothing touches `~/.tpm` because each test file re-homes the process via `src/_test_helpers.ts`.
