@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { CONFIG_DIR } from "./config.ts";
-import { foldTask } from "./tree.ts";
-import type { Task } from "./tree.ts";
-import type { AgentOutputFormat } from "./agent_cli.ts";
+import { CONFIG_DIR } from "../config.ts";
+import { foldTask } from "../tree.ts";
+import type { Task } from "../tree.ts";
+import type { AgentOutputFormat } from "../agent_cli.ts";
 
 // Per-run logs live alongside the task they describe: top-level tasks get
 // their own `runs/` subfolder inside the task's folder; child tasks share the

@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { Project, Task } from "./tree.ts";
+import type { Project, Task } from "../tree.ts";
 
 // `same_repo_strategy` controls how tpm coordinates two parallel agents
 // claiming different tasks in the same `repo.local`:

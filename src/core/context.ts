@@ -1,7 +1,7 @@
 import { loadProjects } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
 import { findTask, findRepoTarget } from "./resolve.ts";
-import { resolveSameRepoStrategy, DEFAULT_SAME_REPO_STRATEGY } from "./strategy.ts";
+import { resolveSameRepoStrategy, DEFAULT_SAME_REPO_STRATEGY } from "./orchestrate/strategy.ts";
 
 export interface Repo {
   remote: string | null;

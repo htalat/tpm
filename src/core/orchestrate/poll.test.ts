@@ -2,11 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
+import { mkTempDir, rmTempDir } from "../_test_helpers.ts";
 import { runPoll } from "./poll.ts";
-import { parse } from "../util/frontmatter.ts";
+import { parse } from "../../util/frontmatter.ts";
 import type { FetchedSignal } from "./pr_signal.ts";
-import type { LogLevel } from "./log.ts";
+import type { LogLevel } from "../log.ts";
 
 // ---- fixtures ------------------------------------------------------------
 

@@ -22,12 +22,12 @@
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { writePrCache } from "./pr_cache.ts";
-import { github, mapGithub, GITHUB_PR_JSON_FIELDS } from "./hosts/github.ts";
-import type { GithubPrJson } from "./hosts/github.ts";
-import { ado } from "./hosts/ado.ts";
-import type { FetchedSignal, PrHost, PrSignal } from "./hosts/types.ts";
+import { github, mapGithub, GITHUB_PR_JSON_FIELDS } from "../hosts/github.ts";
+import type { GithubPrJson } from "../hosts/github.ts";
+import { ado } from "../hosts/ado.ts";
+import type { FetchedSignal, PrHost, PrSignal } from "../hosts/types.ts";
 
-export type { PrSignal, PrHost, PrRef, FetchedSignal } from "./hosts/types.ts";
+export type { PrSignal, PrHost, PrRef, FetchedSignal } from "../hosts/types.ts";
 
 // Open-ended registry. Adding a new host = append an entry here plus a
 // src/hosts/<name>.ts file. No abstract base class to extend.
