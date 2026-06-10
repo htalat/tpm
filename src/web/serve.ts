@@ -996,7 +996,7 @@ ${flashBanner}
 </header>
 <section class="queue">
   <h2>Your inbox <span class="meta">(${inbox.length})</span></h2>
-  ${inbox.length === 0 ? `<p class="queue-empty">Inbox empty.</p>` : inbox.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPromote: true, showClose: true, closeRedirect: "/", showDrop: true, dropRedirect: "/", selectable: mutationsEnabled })).join("")}
+  ${inbox.length === 0 ? `<p class="queue-empty">Inbox empty.</p>` : inbox.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPromote: true, showClose: true, closeRedirect: "/", showReopenForAgent: true, reopenRedirect: "/", showDrop: true, dropRedirect: "/", selectable: mutationsEnabled })).join("")}
 </section>
 <section class="queue">
   <h2>Agent queue <span class="meta">(${agentItems.length})</span></h2>
@@ -2444,9 +2444,10 @@ interface TaskRowOpts {
   // Render an inline "promote to ready" button for open/blocked rows. Only the
   // inbox section opts in — task 110: one-click promote without leaving the
   // landing page. needs-review rows skip the button because the dominant action
-  // there is "Reopen for agent (→ needs-feedback)" on the task page (task 088),
-  // and a one-click promote-to-ready would silently mis-route a review bounce
-  // through the wrong queue.
+  // there is "Reopen for agent (→ needs-feedback)", which now has its own
+  // per-row button (`showReopenForAgent` — task 146); a one-click
+  // promote-to-ready would silently mis-route a review bounce through the wrong
+  // queue.
   showPromote?: boolean;
   // Render an inline "pull from queue" button for ready / needs-feedback rows
   // (symmetric inverse of the promote button — task 117). Callers in the
@@ -2485,6 +2486,16 @@ interface TaskRowOpts {
   // Where to land the operator after the drop mutation, same contract as
   // `closeRedirect`. Defaults to the task page when omitted.
   dropRedirect?: string;
+  // Render an inline "Reopen for agent" button (→ needs-feedback) for
+  // needs-review rows — task 146. The per-row analogue of the detail-page
+  // `statusForm(href, "needs-feedback", "Reopen for agent …")` so a review
+  // bounce-back is one click from the inbox instead of a click-through.
+  // Self-gating on status (needs-review only) / parent so opting in can't
+  // surface the button on any other row.
+  showReopenForAgent?: boolean;
+  // Where to land the operator after the reopen mutation, same contract as
+  // `closeRedirect`. Defaults to the task page when omitted.
+  reopenRedirect?: string;
 }
 
 function taskRow(project: Project, task: Task, status: string, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, opts: TaskRowOpts = {}): string {
@@ -2516,9 +2527,10 @@ function taskRow(project: Project, task: Task, status: string, prCache: PrCacheR
   const promote = promoteButton(href, task, status, opts);
   const pull = pullButton(href, task, status, opts);
   const close = closeButton(href, task, status, opts);
+  const reopen = reopenForAgentButton(href, task, status, opts);
   const drop = dropButton(href, task, status, opts);
   return `<div class="${classes.join(" ")}">
-    ${select}${promote}${pull}${close}${drop}
+    ${select}${promote}${pull}${close}${reopen}${drop}
     <span class="badge s-${cls(status)}${task.archived ? " s-archived" : ""}">${esc(status)}</span>
     ${lockChip(task, status, taskLocks.has(slug))}
     ${titleCell}
@@ -2672,6 +2684,29 @@ function dropButton(href: string, task: Task, status: string, opts: TaskRowOpts)
     : "";
   return `<form method="POST" action="${href}/drop" class="drop-form">
     ${redirectInput}<button type="submit" title="${esc(label)}" aria-label="${esc(label)}">✕</button>
+  </form>`;
+}
+
+// Inline "Reopen for agent" affordance (task 146) — the per-row analogue of the
+// detail-page `statusForm(href, "needs-feedback", "Reopen for agent …")`.
+// Bouncing a review back to the agent was one click on the task page but
+// required clicking through from the inbox first; this puts it next to the
+// row's Close button. Posts to the `status` mutation with
+// `status=needs-feedback`. Self-gating: only ever shown on needs-review rows
+// (a review awaiting the human) and hidden on parents/archived, so opting in
+// can't escape the one status where a review bounce-back makes sense.
+function reopenForAgentButton(href: string, task: Task, status: string, opts: TaskRowOpts): string {
+  if (!opts.showReopenForAgent) return "";
+  if (task.archived) return "";
+  if (isParent(task)) return "";
+  if (status !== "needs-review") return "";
+  const label = "Reopen for agent (→ needs-feedback)";
+  const redirectInput = opts.reopenRedirect
+    ? `<input type="hidden" name="redirect" value="${escAttr(opts.reopenRedirect)}">`
+    : "";
+  return `<form method="POST" action="${href}/status" class="reopen-form">
+    <input type="hidden" name="status" value="needs-feedback">
+    ${redirectInput}<button type="submit" title="${esc(label)}" aria-label="${esc(label)}">↩</button>
   </form>`;
 }
 
