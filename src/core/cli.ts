@@ -357,6 +357,16 @@ try {
       if (r.archivedAt) console.log(`Archived -> ${r.archivedAt}`);
       break;
     }
+    case "drop": {
+      // Terminal "abandon" verb — the dropped-status counterpart to complete.
+      // Optional reason lands in ## Outcome + the Log line; reasonless drops
+      // log a plain `dropped` (block/reopen dash convention).
+      if (!args[1]) usage('tpm drop <task> ["<reason>"]');
+      const reason = args[2];
+      const r = mutate.drop(resolveLiveTask(args[1], 'tpm drop <task> ["<reason>"]'), reason);
+      console.log(r.message);
+      break;
+    }
     case "lgtm": {
       // Reviewer LGTM on an investigation report: derive an Outcome from the
       // report file (title + first paragraph) and run complete. The serve
@@ -988,6 +998,7 @@ Usage:
   tpm ready <task>                           set status: ready (+ allow_orchestrator: true), log promoted; tpm disallow after for supervised-only
   tpm complete <task> [--outcome "..."] [--no-archive] [--archive]
                                              set status: done, stamp closed, log; archives by type
+  tpm drop <task> ["<reason>"]               set status: dropped, stamp closed; optional reason fills ## Outcome + Log
   tpm block <task> "<reason>"                set status: blocked, log the reason
   tpm reopen <task> ["<reason>"]             set status: open, log it (optional reason on the Log)
   tpm pull <task>                            pull a queued task back into the human pile: ready -> open, needs-feedback -> needs-review

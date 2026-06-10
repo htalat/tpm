@@ -427,6 +427,49 @@ export function complete(task: Task, opts: CompleteOptions = {}): MutateResult {
   return { message: `${task.slug} -> done`, archivedAt };
 }
 
+// Drop a task: the terminal "abandoned, not finished" counterpart to
+// `complete`. Flips status to `dropped`, stamps `closed`, and — when a reason
+// is supplied — lands it in `## Outcome` (the drop IS the outcome) plus the
+// `dropped — <reason>` Log line. Reasonless drops log a plain `dropped`,
+// matching the block/reopen dash convention. Refuses already-terminal statuses
+// (done is a different terminus; dropped is idempotent-clean like complete's
+// already-done). Outcome is refuse-on-content, mirroring complete --outcome, so
+// a drop reason never clobbers prose someone already wrote there.
+//
+// Lock release (the in-progress case): a human can drop a task while an agent
+// holds its per-task + repo lock mid-run. We intentionally don't reach into the
+// orchestrator's lock dir from here — mutate is the single-task-file layer and
+// has no `root`/agent-id context. The flip to a terminal status is enough: the
+// queue gate never re-claims a dropped task, and the held lock files are freed
+// by the run-completion path (the spawning orchestrator releases on exit) or
+// the stale-TTL sweep (`releaseStaleTaskLocks`). The agent's in-flight work is
+// being discarded by design; nothing downstream acts on it.
+export function drop(task: Task, reason?: string): MutateResult {
+  guardArchived(task);
+  const { data, body } = readParsed(task);
+  const current = String(data.status ?? "");
+  if (current === "dropped") {
+    return { message: `${task.slug} is already dropped` };
+  }
+  if (current === "done") {
+    throw new Error(`Cannot drop ${task.slug}: status is done`);
+  }
+  data.status = "dropped";
+  data.closed = now();
+  const trimmed = reason?.trim();
+  let newBody = body;
+  if (trimmed) {
+    if (sectionHasContent(newBody, "Outcome")) {
+      throw new Error(`${task.slug}: Outcome already has content. Edit the file directly, or drop without a reason.`);
+    }
+    newBody = setSection(newBody, "Outcome", trimmed);
+  }
+  newBody = appendLog(newBody, `${now()}: ${trimmed ? `dropped — ${trimmed}` : "dropped"}`);
+  writeFileSync(task.path, stringify(data, newBody));
+  syncInMemory(task, data, newBody);
+  return { message: `${task.slug} -> dropped` };
+}
+
 // Move a task to a new parent (or to top-level when newParent is null). Renumbers
 // the file within its destination container, rewrites the `parent:` frontmatter,
 // folds the new parent if it isn't already folder-form, and appends a Log line.

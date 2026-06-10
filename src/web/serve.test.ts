@@ -480,7 +480,9 @@ test("renderTask: open task offers Promote + Block + Complete + Drop", () => {
   const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
   assert.match(r.body, /action="\/t\/alpha\/001-a\/ready"/);
   assert.match(r.body, /action="\/t\/alpha\/001-a\/block"/);
-  assert.match(r.body, /action="\/t\/alpha\/001-a\/status"/);
+  // Drop posts to the dedicated /drop endpoint (task 140) — no more /status
+  // round-trip with a hidden value="dropped".
+  assert.match(r.body, /action="\/t\/alpha\/001-a\/drop"/);
   // Close affordance even at open: investigations can be closed without a PR.
   assert.match(r.body, /action="\/t\/alpha\/001-a\/complete"/);
   assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/pr"/);
@@ -523,7 +525,7 @@ test("renderTask: done/dropped tasks render the Archive button but no transition
     const p = project("alpha", [t]);
     const r = route(`/t/alpha/001-${status}`, new URLSearchParams(), [p], { mutationsEnabled: true });
     assert.match(r.body, new RegExp(`action="/t/alpha/001-${status}/archive"`), `expected Archive form for status=${status}`);
-    for (const verb of ["complete", "block", "ready", "status", "log", "pr", "reopen"]) {
+    for (const verb of ["complete", "block", "ready", "status", "log", "pr", "reopen", "drop"]) {
       assert.doesNotMatch(r.body, new RegExp(`action="/t/alpha/001-${status}/${verb}"`), `expected no ${verb} form for status=${status}`);
     }
     assert.doesNotMatch(r.body, /class="task-settings"/, `expected no settings forms for status=${status}`);
@@ -1320,6 +1322,87 @@ test("routeMutation: row close posts `complete` and honors redirect=/ so the que
   assert.deepEqual(calls, [["complete", "alpha/001-a"]]);
   assert.equal(r.status, 303);
   assert.match(r.location ?? "", /^\/\?flash=/);
+});
+
+// ---- drop affordance (task 140) -------------------------------------------
+
+test("renderTask: Drop form renders on every non-terminal status, posting to /drop with an optional reason", () => {
+  // Drop is a first-class action at every stage (task 140) — not just open/
+  // ready. The form POSTs to the dedicated /drop endpoint with an optional
+  // reason textarea (fills ## Outcome), never the old /status round-trip.
+  for (const status of ["open", "ready", "in-progress", "needs-feedback", "needs-close", "needs-review", "blocked"]) {
+    const t = task("001-a", status);
+    const p = project("alpha", [t]);
+    const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
+    assert.match(
+      r.body,
+      /<form[^>]*action="\/t\/alpha\/001-a\/drop"[^>]*>[\s\S]*?<textarea[^>]*name="reason"/,
+      `expected Drop form with reason textarea for status=${status}`,
+    );
+  }
+});
+
+test("renderTask: the Drop button reads 'Drop (→ dropped)' and no longer round-trips through /status", () => {
+  const r = route("/t/alpha/001-a", new URLSearchParams(), [project("alpha", [task("001-a", "open")])], { mutationsEnabled: true });
+  assert.match(r.body, /<button type="submit">Drop \(→ dropped\)<\/button>/);
+  // No hidden status=dropped input anywhere — the dedicated verb replaced it.
+  assert.doesNotMatch(r.body, /name="status"[^>]*value="dropped"/);
+});
+
+test("renderIndex: inbox / agent-queue / in-flight rows render the inline drop button (redirect=/)", () => {
+  const p = project("alpha", [
+    task("001-o", "open"),          // inbox
+    task("002-r", "ready"),         // agent queue
+    task("003-ip", "in-progress"),  // in flight
+  ]);
+  const r = route("/", new URLSearchParams(), [p]);
+  for (const slug of ["001-o", "002-r", "003-ip"]) {
+    assert.match(
+      r.body,
+      new RegExp(`<form[^>]*method="POST"[^>]*action="/t/alpha/${slug}/drop"[^>]*class="drop-form"[\\s\\S]*?name="redirect"[^>]*value="/"`),
+      `expected drop form for ${slug}`,
+    );
+  }
+});
+
+test("renderIndex: terminal rows do NOT render the drop button (already terminal — use Archive)", () => {
+  const p = project("alpha", [
+    task("001-done", "done", { closed: "2026-04-01 12:00 PDT" }),
+    task("002-drop", "dropped", { closed: "2026-04-01 12:00 PDT" }),
+  ]);
+  const r = route("/", new URLSearchParams(), [p]);
+  assert.doesNotMatch(r.body, /class="drop-form"/);
+});
+
+test("renderIndex: parent container rows do NOT render the drop button", () => {
+  const child = task("003-child", "ready", { parent: "002-parent" });
+  child.parent = "002-parent";
+  const parent = task("002-parent", "in-progress");
+  parent.children = [child];
+  const p = project("alpha", [parent]);
+  const r = route("/", new URLSearchParams(), [p]);
+  assert.match(r.body, /action="\/t\/alpha\/002-parent\/003-child\/drop"[^>]*class="drop-form"/);
+  assert.doesNotMatch(r.body, /action="\/t\/alpha\/002-parent\/drop"[^>]*class="drop-form"/);
+});
+
+test("routeMutation: row drop posts a reasonless `drop` and honors redirect=/ so the queue stays put", () => {
+  const { runner, calls } = captureRunner();
+  const r = routeMutation("/t/alpha/001-a/drop", new URLSearchParams("redirect=/"), runner);
+  assert.deepEqual(calls, [["drop", "alpha/001-a"]]);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/\?flash=/);
+});
+
+test("routeMutation: detail-page drop forwards the reason as the trailing arg", () => {
+  const { runner, calls } = captureRunner();
+  routeMutation("/t/alpha/001-a/drop", new URLSearchParams("reason=superseded by 002"), runner);
+  assert.deepEqual(calls, [["drop", "alpha/001-a", "superseded by 002"]]);
+});
+
+test("routeMutation: a whitespace-only drop reason collapses to the reasonless form", () => {
+  const { runner, calls } = captureRunner();
+  routeMutation("/t/alpha/001-a/drop", new URLSearchParams("reason=%20%20%20"), runner);
+  assert.deepEqual(calls, [["drop", "alpha/001-a"]]);
 });
 
 // ---- report flow (investigation deliverable) ------------------------------
@@ -3326,6 +3409,7 @@ test("routeBulk: each action maps to its CLI verb", () => {
     ["pull", "pull"],
     ["close", "complete"],
     ["reopen", "reopen"],
+    ["drop", "drop"],
     ["archive", "archive"],
   ];
   for (const [action, verb] of cases) {
@@ -3461,14 +3545,17 @@ test("route: bulk cap-* classes reflect each status so the bar reveals only vali
   const open = rowClasses("001-open");
   assert.match(open, /cap-promote/);
   assert.match(open, /cap-close/);
+  assert.match(open, /cap-drop/);
   assert.match(open, /cap-block/);
   assert.doesNotMatch(open, /cap-archive/);
   const ready = rowClasses("002-ready");
   assert.match(ready, /cap-pull/);
+  assert.match(ready, /cap-drop/);
   assert.doesNotMatch(ready, /cap-promote/);
   const done = rowClasses("003-done");
   assert.match(done, /cap-archive/);
-  assert.doesNotMatch(done, /cap-(promote|pull|close|block)/);
+  // drop is non-terminal only — a done row must never offer it.
+  assert.doesNotMatch(done, /cap-(promote|pull|close|drop|block)/);
 });
 
 test("route: per-task page renders no select checkbox or bulk bar (read-only context)", () => {
