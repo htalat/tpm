@@ -9,7 +9,6 @@
   },
   "scripts": {
     "test": "node --test 'src/**/*.test.ts'",
-    "loop": "node scripts/loop.ts",
     "release": "./scripts/release.sh"
   },
   "devDependencies": {

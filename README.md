@@ -273,15 +273,15 @@ Cron pattern combining the signal poller and the drain:
 */5 * * * *         /opt/homebrew/bin/tpm orchestrate --workers 2 >> ~/.tpm/orchestrator.log 2>&1
 ```
 
-Or as a single long-running process (the equivalent of the cron pattern above) — `scripts/loop.ts` runs both loops with one Ctrl-C to stop:
+Or as a single long-running process (the equivalent of the cron pattern above) — `tpm loop` runs both loops with one Ctrl-C to stop:
 
 ```sh
-npm run loop                                         # poll + orchestrate, every 60s
-node scripts/loop.ts --orchestrate-interval 300 --workers 2
-node scripts/loop.ts --help                          # all flags
+tpm loop                                             # poll + orchestrate, every 60s
+tpm loop --orchestrate-interval 300 --workers 2
+tpm loop --once                                      # one pass of each, then exit
 ```
 
-Two independent loops (a slow orchestrate tick never blocks a poll tick); SIGINT/SIGTERM kills the in-flight child and exits. It's a faithful port of the bash one-liner this section used to carry — `trap 'kill 0' EXIT` plus two backgrounded `while true; do …; sleep; done` loops — kept as TypeScript so there's no second language to maintain. The `tpm` binary resolves via `$TPM_BIN` → this install's `bin/tpm` → bare `tpm` on PATH, same as `tpm schedule`.
+Two independent loops (a slow orchestrate tick never blocks a poll tick); SIGINT/SIGTERM kills the in-flight child and exits. It's a faithful port of the bash one-liner this section used to carry — `trap 'kill 0' EXIT` plus two backgrounded `while true; do …; sleep; done` loops — kept as TypeScript so there's no second language to maintain. Each tick runs as a child `tpm` (resolved via `$TPM_BIN` → this install's `bin/tpm` → bare `tpm` on PATH, same as `tpm schedule`), so a crashing tick can't take the loop down.
 
 `tpm orchestrate` and `tpm poll` emit one structured line per event so a single log file greps + sorts cleanly:
 

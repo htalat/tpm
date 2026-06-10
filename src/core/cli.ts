@@ -17,6 +17,7 @@ import * as mutate from "./mutate.ts";
 import * as lock from "./orchestrate/lock.ts";
 import { runOrchestrate } from "./orchestrate/orchestrate.ts";
 import { runPoll } from "./orchestrate/poll.ts";
+import { runLoop, parseLoopArgs } from "./orchestrate/loop.ts";
 import { runServe } from "../web/serve.ts";
 import { shouldNotify, fireNotification, NOTIFY_EVENTS } from "./notify.ts";
 import { taskDeepLink } from "../web/serve_url.ts";
@@ -734,6 +735,14 @@ try {
       const r = await runOrchestrate(opts);
       process.exit(r.exitCode);
     }
+    case "loop": {
+      // Long-running drain harness: poll + orchestrate on independent cadences
+      // in one foreground process. Each tick is spawned as a child `tpm` (via
+      // the resolved bin) so a crash/hang in one can't take the loop down.
+      const opts = parseLoopArgs(args.slice(1), usage);
+      await runLoop(resolveTpmBin(), opts);
+      break;
+    }
     case "inbox": {
       const root = findRoot();
       const projects = loadProjects(root);
@@ -1040,6 +1049,9 @@ Usage:
                                              --task pins a single pre-claimed task (pool flags ignored).
                                              --claude <path> is a back-compat alias that pins the agent to claude with a bin override.
   tpm poll [--dry-run]                       PR-signal poller: walk linked PRs, flip status, auto-close on merge
+  tpm loop [--poll-interval <sec>] [--orchestrate-interval <sec>] [--workers <N>] [--once]
+                                             long-running drain: run poll + orchestrate on independent cadences
+                                             in one foreground process (defaults 60s); Ctrl-C stops both
   tpm schedule install <name> --every <sec> -- <cmd> [args...]
                                              install a recurring job (Linux: systemd --user timer / cron fallback; Windows: Task Scheduler via schtasks)
   tpm schedule uninstall <name>              remove a job by name
