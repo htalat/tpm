@@ -1550,6 +1550,8 @@ test("renderProject: renders a New task <details> form with slug/title/parent/ty
     assert.match(r.body, new RegExp(`<option[^>]*value="${t}"`));
   }
   assert.match(r.body, /<option[^>]*value="pr"[^>]*selected/);
+  // Optional multi-line Context textarea, written into ## Context on submit.
+  assert.match(r.body, /<textarea[^>]*name="context"[^>]*rows="6"/);
 });
 
 test("renderProject: New task form renders above the project body", () => {
@@ -1652,6 +1654,75 @@ test("routeMutation: /p/<project>/new-task surfaces CLI stdout in success flash"
   const runner: CliRunner = () => ({ ok: true, stdout: "Created /tree/alpha/tasks/003-add-thing/task.md", stderr: "" });
   const r = routeMutation("/p/alpha/new-task", new URLSearchParams("slug=add-thing"), runner);
   assert.match(decodeURIComponent(r.location ?? ""), /Created \/tree\/alpha\/tasks\/003-add-thing\/task\.md/);
+});
+
+test("routeMutation: /p/<project>/new-task with Context fires a follow-up `tpm edit`", () => {
+  // Two CLI calls: create lands first (writes the file), then edit writes the
+  // Context section into the brand-new slug. The flash flags that the second
+  // call ran so a partial create is distinguishable from a full one.
+  const { runner, calls } = captureRunner();
+  const params = new URLSearchParams();
+  params.set("slug", "add-thing");
+  params.set("context", "a fact I have right now");
+  const r = routeMutation("/p/alpha/new-task", params, runner);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/t\/alpha\/add-thing\?flash=/);
+  assert.deepEqual(calls, [
+    ["new", "task", "alpha", "add-thing"],
+    ["edit", "add-thing", "context", "a fact I have right now"],
+  ]);
+  assert.match(decodeURIComponent(r.location ?? ""), /with Context/);
+});
+
+test("routeMutation: /p/<project>/new-task with blank Context skips the edit call", () => {
+  // Whitespace-only Context is treated as empty — no second call, no "with
+  // Context" suffix, preserving the pre-feature behavior.
+  const { runner, calls } = captureRunner();
+  const params = new URLSearchParams();
+  params.set("slug", "add-thing");
+  params.set("context", "   \n  ");
+  const r = routeMutation("/p/alpha/new-task", params, runner);
+  assert.deepEqual(calls, [["new", "task", "alpha", "add-thing"]]);
+  assert.doesNotMatch(decodeURIComponent(r.location ?? ""), /with Context/);
+});
+
+test("routeMutation: /p/<project>/new-task surfaces both messages when the Context edit fails", () => {
+  // Create succeeds, edit fails: don't roll back (partial state is harmless),
+  // still redirect to the new task, and surface both outcomes in the flash.
+  let n = 0;
+  const runner: CliRunner = () => {
+    n += 1;
+    return n === 1
+      ? { ok: true, stdout: "Created task", stderr: "" }
+      : { ok: false, stdout: "", stderr: "edit: section locked" };
+  };
+  const r = routeMutation(
+    "/p/alpha/new-task",
+    new URLSearchParams("slug=add-thing&context=some+context"),
+    runner,
+  );
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/t\/alpha\/add-thing\?flash=/);
+  const flash = decodeURIComponent(r.location ?? "");
+  assert.match(flash, /Created task/);
+  assert.match(flash, /Context failed: edit: section locked/);
+});
+
+test("routeMutation: /p/<project>/new-task skips the Context edit when the create fails", () => {
+  // No follow-up edit against a slug that was never created.
+  const calls: string[][] = [];
+  const runner: CliRunner = (args) => {
+    calls.push(args);
+    return { ok: false, stdout: "", stderr: "Invalid slug" };
+  };
+  const r = routeMutation(
+    "/p/alpha/new-task",
+    new URLSearchParams("slug=Bad-Slug&context=some+context"),
+    runner,
+  );
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/p\/alpha\?flash=/);
+  assert.deepEqual(calls, [["new", "task", "alpha", "Bad-Slug"]]);
 });
 
 // ---- project inline editor (task 124) -------------------------------------
