@@ -690,7 +690,8 @@ try {
       // back-compat alias so existing cron/launchd entries don't have to flip
       // on the same tick as the install.
       const dryRun = args.includes("--dry-run");
-      await runPoll({ dryRun });
+      const force = args.includes("--force") || args.includes("--no-throttle");
+      await runPoll({ dryRun, force });
       break;
     }
     case "orchestrate": {
@@ -1048,7 +1049,8 @@ Usage:
                                              --cli is a comma-separated CLI per worker slot (extra slots beyond the list use the default agent).
                                              --task pins a single pre-claimed task (pool flags ignored).
                                              --claude <path> is a back-compat alias that pins the agent to claude with a bin override.
-  tpm poll [--dry-run]                       PR-signal poller: walk linked PRs, flip status, auto-close on merge
+  tpm poll [--dry-run] [--force]             PR-signal poller: walk linked PRs, flip status, auto-close on merge
+                                             --force (alias --no-throttle) bypasses the per-PR cache-freshness floor
   tpm loop [--poll-interval <sec>] [--orchestrate-interval <sec>] [--workers <N>] [--once]
                                              long-running drain: run poll + orchestrate on independent cadences
                                              in one foreground process (defaults 60s); Ctrl-C stops both
