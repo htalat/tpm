@@ -111,14 +111,16 @@ export function setStatus(task: Task, newStatus: string, verb?: string): MutateR
 // re-queues it for the next orchestrator tick. Pull is the operator's "stop and
 // reshape" — revert is the orchestrator's "timed out, try again".
 //
-// Lock release (the in-progress case): like `drop`, we don't reach into the
-// orchestrator's lock dir from here — mutate is the single-task-file layer with
-// no root/agent-id context. The flip to a non-claimable status is enough: the
-// queue gate never re-claims an `open` task, and the held lock files are freed
-// by the run-completion path (the spawning orchestrator releases on exit) or
-// the stale-TTL sweep (`releaseStaleTaskLocks`). The agent's process isn't
-// killed — its in-flight work is simply no longer wanted; nothing downstream
-// re-picks the task.
+// Stopping the agent (the in-progress case): mutate is the single-task-file
+// layer with no root/agent-id context, so it can't reach into the running
+// spawn from here. It doesn't need to — the flip to `open` is the signal. The
+// orchestrator that spawned the agent polls the task's status every few seconds
+// (`evaluateTerminalState`) and SIGTERMs the child the moment it sees a
+// non-running status; `open` is wired into that path, so pulling a running task
+// stops the agent on the next poll, exactly as completing or dropping it
+// mid-run would. The held lock frees on that run-completion path (or the
+// stale-TTL sweep, `releaseStaleTaskLocks`, as a backstop), and the
+// non-claimable `open` status keeps the queue gate from re-picking the task.
 export function pullFromQueue(task: Task): MutateResult {
   guardArchived(task);
   const { data } = readParsed(task);
@@ -132,13 +134,13 @@ export function pullFromQueue(task: Task): MutateResult {
     throw new Error(`${task.slug}: pull only applies to ready / in-progress / needs-feedback (status=${current || "?"})`);
   }
   const r = transition(task, target, `pulled from queue (${current} -> ${target})`, { refusal: [] });
-  // Be explicit about what pull does NOT do: it removes the task from the
-  // queue so nothing re-claims it, but it does not kill an already-running
-  // agent (see the layering note above). Without this the operator pulling a
-  // running task sees a bare `-> open` and may assume the agent was stopped.
+  // Tell the operator what to expect when they stop a running task: the agent
+  // isn't killed synchronously here (see the layering note above), but the
+  // orchestrator's mid-run poll picks up the `open` flip and SIGTERMs the agent
+  // within a few seconds. The lock frees on that run-completion path.
   if (current === "in-progress") {
     return {
-      message: `${r.message} — note: the running agent process is not killed; its lock frees on run-completion or the stale-TTL sweep, and the open status keeps it from being re-claimed`,
+      message: `${r.message} — the orchestrator stops the running agent on its next poll (within a few seconds); its lock frees on run-completion`,
     };
   }
   return r;

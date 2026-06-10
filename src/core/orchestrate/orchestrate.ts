@@ -143,13 +143,20 @@ export function classifyDisposition(input: ClassifyDispositionInput): Dispositio
 // should keep running. `needs-close` is *not* terminal — it's a transient
 // state the poller sets just before its inline auto-close, and killing the
 // agent during that window would race the close-out for no benefit.
-export type TerminalReason = "archived" | "done" | "dropped";
+export type TerminalReason = "archived" | "done" | "dropped" | "pulled";
 
 export function evaluateTerminalState(task: Task | null): TerminalReason | null {
   if (task === null) return "archived";
   const status = String(task.data.status ?? "");
   if (status === "done") return "done";
   if (status === "dropped") return "dropped";
+  // `open` mid-run is the operator stopping the task with `tpm pull`
+  // (in-progress -> open). pull is the single-task-file layer and can't reach
+  // the running spawn itself; this poll is the cross-layer kill — the same
+  // SIGTERM path that fires when a task is completed/dropped mid-run now stops
+  // a pulled agent too. `open` is never a status an agent claims into or works
+  // at, so seeing it here always means "this run is no longer wanted."
+  if (status === "open") return "pulled";
   return null;
 }
 

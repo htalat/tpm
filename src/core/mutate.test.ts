@@ -540,9 +540,10 @@ test("pull: in-progress -> open, stops a running task (off the agent, not re-que
     const t = loadTask(root, "alpha", "001-a");
     const r = pullFromQueue(t);
     assert.match(r.message, /-> open/);
-    // The operator is told pull does not kill the running agent process, so
-    // pulling a running task can't be mistaken for a hard stop.
-    assert.match(r.message, /running agent process is not killed/);
+    // The operator is told the orchestrator stops the running agent on its next
+    // poll — `open` is wired into the mid-run terminal-state SIGTERM path
+    // (evaluateTerminalState), so pull is a real stop, not just a state flip.
+    assert.match(r.message, /orchestrator stops the running agent/);
     const text = readFileSync(t.path, "utf8");
     assert.match(text, /status: open/);
     assert.match(text, /: pulled from queue \(in-progress -> open\)$/m);
