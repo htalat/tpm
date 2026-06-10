@@ -689,7 +689,8 @@ try {
       // back-compat alias so existing cron/launchd entries don't have to flip
       // on the same tick as the install.
       const dryRun = args.includes("--dry-run");
-      await runPoll({ dryRun });
+      const force = args.includes("--force") || args.includes("--no-throttle");
+      await runPoll({ dryRun, force });
       break;
     }
     case "orchestrate": {
@@ -1039,7 +1040,8 @@ Usage:
                                              --cli is a comma-separated CLI per worker slot (extra slots beyond the list use the default agent).
                                              --task pins a single pre-claimed task (pool flags ignored).
                                              --claude <path> is a back-compat alias that pins the agent to claude with a bin override.
-  tpm poll [--dry-run]                       PR-signal poller: walk linked PRs, flip status, auto-close on merge
+  tpm poll [--dry-run] [--force]             PR-signal poller: walk linked PRs, flip status, auto-close on merge
+                                             --force (alias --no-throttle) bypasses the per-PR cache-freshness floor
   tpm schedule install <name> --every <sec> -- <cmd> [args...]
                                              install a recurring job (Linux: systemd --user timer / cron fallback; Windows: Task Scheduler via schtasks)
   tpm schedule uninstall <name>              remove a job by name

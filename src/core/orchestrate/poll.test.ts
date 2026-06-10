@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "../_test_helpers.ts";
-import { runPoll } from "./poll.ts";
+import { runPoll, resolvePollFloor } from "./poll.ts";
+import { writePrCache } from "./pr_cache.ts";
 import { parse } from "../../util/frontmatter.ts";
 import type { FetchedSignal } from "./pr_signal.ts";
 import type { LogLevel } from "../log.ts";
@@ -64,6 +65,13 @@ function setupTree(): string {
   return root;
 }
 
+// Isolate the pr-cache under the temp tree so tests don't read/write the real
+// ~/.tpm/pr-cache (which would also make the freshness throttle flaky across
+// runs). Pass this as cacheDir on every runPoll call.
+function cacheDirFor(root: string): string {
+  return join(root, "pr-cache");
+}
+
 function writeTask(root: string, slug: string, status: string, prs: string[] = []): string {
   const path = join(root, "alpha", "tasks", `${slug}.md`);
   writeFileSync(path, taskMd(slug, status, prs));
@@ -103,9 +111,10 @@ test("runPoll: empty queue -> 'no tasks to watch', summary all zero", async () =
     const summary = await runPoll({
       root,
       log: sink,
+      cacheDir: cacheDirFor(root),
       fetchSignal: async () => { throw new Error("should not fetch"); },
     });
-    assert.deepEqual(summary, { checked: 0, flipped: 0, noSignal: 0, fetchFailed: 0 });
+    assert.deepEqual(summary, { checked: 0, flipped: 0, noSignal: 0, fetchFailed: 0, throttled: 0 });
     assert.ok(
       lines.some((l) => l.includes("no tasks to watch")),
       `expected 'no tasks to watch' in log; got:\n${lines.join("\n")}`,
@@ -123,6 +132,7 @@ test("runPoll: in-progress task with merged PR -> needs-close + inline auto-clos
     const summary = await runPoll({
       root,
       log: sink,
+      cacheDir: cacheDirFor(root),
       fetchSignal: async (url) => mergedFetch(url),
     });
     assert.equal(summary.checked, 1);
@@ -153,6 +163,7 @@ test("runPoll: ready task + PR with CI red -> flip-to-needs-feedback", async () 
     const summary = await runPoll({
       root,
       log: sink,
+      cacheDir: cacheDirFor(root),
       fetchSignal: async () => ({
         signal: { kind: "needs-agent", reason: "CI FAIL on https://github.com/o/r/pull/2" },
         raw: { state: "OPEN" },
@@ -195,6 +206,7 @@ test("runPoll: mixed queue (no-signal + flipped + fetch-failed) — counters add
     const summary = await runPoll({
       root,
       log: sink,
+      cacheDir: cacheDirFor(root),
       fetchSignal: async (url) => {
         if (url.endsWith("/1")) return { signal: { kind: "no-action" }, raw: {} };
         if (url.endsWith("/2")) return mergedFetch(url);
@@ -225,6 +237,7 @@ test("runPoll: --dry-run logs decisions but does not mutate", async () => {
       root,
       dryRun: true,
       log: sink,
+      cacheDir: cacheDirFor(root),
       fetchSignal: async (url) => mergedFetch(url),
     });
     assert.equal(summary.flipped, 1);
@@ -257,10 +270,158 @@ test("runPoll: tasks in non-watched statuses are not enumerated", async () => {
     const summary = await runPoll({
       root,
       log: sink,
+      cacheDir: cacheDirFor(root),
       fetchSignal: async () => { throw new Error("should not fetch"); },
     });
-    assert.deepEqual(summary, { checked: 0, flipped: 0, noSignal: 0, fetchFailed: 0 });
+    assert.deepEqual(summary, { checked: 0, flipped: 0, noSignal: 0, fetchFailed: 0, throttled: 0 });
   } finally {
     rmTempDir(root);
   }
+});
+
+// ---- throttle / cache-freshness gate -------------------------------------
+
+// Seed a pr-cache snapshot whose fetchedAt is `ageMinutes` before `nowMs`.
+function seedCache(root: string, url: string, nowMs: number, ageMinutes: number, host = "github") {
+  const fetchedAt = new Date(nowMs - ageMinutes * 60000);
+  writePrCache(url, { state: "OPEN" }, {
+    baseDir: cacheDirFor(root),
+    host,
+    now: () => fetchedAt,
+  });
+}
+
+test("runPoll: fresh cache within floor -> skip (throttled, no fetch)", async () => {
+  const root = setupTree();
+  const url = "https://github.com/o/r/pull/1";
+  writeTask(root, "001-foo", "in-progress", [url]);
+  const nowMs = new Date("2026-05-10T19:00:00Z").getTime();
+  // GitHub floor defaults to 5m; cache is 2m old -> throttled.
+  seedCache(root, url, nowMs, 2);
+  const { sink, lines } = captureLog();
+  try {
+    const summary = await runPoll({
+      root,
+      log: sink,
+      cacheDir: cacheDirFor(root),
+      now: () => new Date(nowMs),
+      fetchSignal: async () => { throw new Error("should not fetch when throttled"); },
+    });
+    assert.equal(summary.checked, 1);
+    assert.equal(summary.throttled, 1);
+    assert.equal(summary.flipped, 0);
+    assert.equal(summary.noSignal, 0);
+    assert.equal(summary.fetchFailed, 0);
+    assert.ok(
+      lines.some((l) => l.includes("action=skip reason=throttled") && l.includes("floor=5m")),
+      `expected throttled skip log; got:\n${lines.join("\n")}`,
+    );
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("runPoll: stale cache past floor -> fetch", async () => {
+  const root = setupTree();
+  const url = "https://github.com/o/r/pull/1";
+  writeTask(root, "001-foo", "in-progress", [url]);
+  const nowMs = new Date("2026-05-10T19:00:00Z").getTime();
+  // GitHub floor 5m; cache is 10m old -> fetch (and here, merge -> flip).
+  seedCache(root, url, nowMs, 10);
+  const { sink } = captureLog();
+  try {
+    const summary = await runPoll({
+      root,
+      log: sink,
+      cacheDir: cacheDirFor(root),
+      now: () => new Date(nowMs),
+      fetchSignal: async (u) => mergedFetch(u),
+    });
+    assert.equal(summary.throttled, 0);
+    assert.equal(summary.flipped, 1);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("runPoll: missing cache -> fetch", async () => {
+  const root = setupTree();
+  const url = "https://github.com/o/r/pull/1";
+  writeTask(root, "001-foo", "in-progress", [url]);
+  const nowMs = new Date("2026-05-10T19:00:00Z").getTime();
+  const { sink } = captureLog();
+  try {
+    const summary = await runPoll({
+      root,
+      log: sink,
+      cacheDir: cacheDirFor(root),
+      now: () => new Date(nowMs),
+      fetchSignal: async (u) => mergedFetch(u),
+    });
+    assert.equal(summary.throttled, 0);
+    assert.equal(summary.flipped, 1);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("runPoll: --force bypasses a fresh cache", async () => {
+  const root = setupTree();
+  const url = "https://github.com/o/r/pull/1";
+  writeTask(root, "001-foo", "in-progress", [url]);
+  const nowMs = new Date("2026-05-10T19:00:00Z").getTime();
+  seedCache(root, url, nowMs, 1); // 1m old — would normally throttle
+  const { sink } = captureLog();
+  try {
+    const summary = await runPoll({
+      root,
+      force: true,
+      log: sink,
+      cacheDir: cacheDirFor(root),
+      now: () => new Date(nowMs),
+      fetchSignal: async (u) => mergedFetch(u),
+    });
+    assert.equal(summary.throttled, 0);
+    assert.equal(summary.flipped, 1);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("runPoll: configured per-host floor throttles a cache the global default would fetch", async () => {
+  const root = setupTree();
+  const url = "https://github.com/o/r/pull/1";
+  writeTask(root, "001-foo", "in-progress", [url]);
+  const nowMs = new Date("2026-05-10T19:00:00Z").getTime();
+  // 8m old: past the 5m global default, but inside a 15m github override.
+  seedCache(root, url, nowMs, 8);
+  const { sink } = captureLog();
+  try {
+    const summary = await runPoll({
+      root,
+      log: sink,
+      cacheDir: cacheDirFor(root),
+      now: () => new Date(nowMs),
+      pollConfig: { per_host: { github: { min_interval_minutes: 15 } } },
+      fetchSignal: async () => { throw new Error("should not fetch when throttled"); },
+    });
+    assert.equal(summary.throttled, 1);
+    assert.equal(summary.flipped, 0);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("resolvePollFloor: precedence — per_host > global > built-in default", () => {
+  // per-host override wins
+  assert.equal(
+    resolvePollFloor({ min_interval_minutes: 5, per_host: { ado: { min_interval_minutes: 20 } } }, "ado"),
+    20,
+  );
+  // global beats built-in when no per-host entry
+  assert.equal(resolvePollFloor({ min_interval_minutes: 3 }, "ado"), 3);
+  // built-in default: ado backs off to 15, others to 5, with no config at all
+  assert.equal(resolvePollFloor(undefined, "ado"), 15);
+  assert.equal(resolvePollFloor(undefined, "github"), 5);
+  assert.equal(resolvePollFloor({}, "github"), 5);
 });
