@@ -98,23 +98,38 @@ export function setStatus(task: Task, newStatus: string, verb?: string): MutateR
   return transition(task, newStatus, verb ?? `status -> ${newStatus}`, { refusal: [] });
 }
 
-// Symmetric inverse of the inbox play-button promote: pull a queued task back
-// into the human pile. Status-aware:
+// Symmetric inverse of the inbox play-button promote: pull a queued — or
+// running — task back into the human pile. Status-aware:
 //   - ready          -> open          (operator wants to pause / reshape the Plan)
+//   - in-progress    -> open          (stop a running task; pull it off the agent)
 //   - needs-feedback -> needs-review  (escalate ambiguous agent signal to the human)
 // Other statuses are refused — the caller (web or CLI) should hide / gate the
 // button so a refusal only fires on a stale form replay.
+//
+// in-progress -> open vs `revert` (in-progress -> ready): pull yanks the task
+// out of the autonomous loop entirely (open isn't claimable), whereas revert
+// re-queues it for the next orchestrator tick. Pull is the operator's "stop and
+// reshape" — revert is the orchestrator's "timed out, try again".
+//
+// Lock release (the in-progress case): like `drop`, we don't reach into the
+// orchestrator's lock dir from here — mutate is the single-task-file layer with
+// no root/agent-id context. The flip to a non-claimable status is enough: the
+// queue gate never re-claims an `open` task, and the held lock files are freed
+// by the run-completion path (the spawning orchestrator releases on exit) or
+// the stale-TTL sweep (`releaseStaleTaskLocks`). The agent's process isn't
+// killed — its in-flight work is simply no longer wanted; nothing downstream
+// re-picks the task.
 export function pullFromQueue(task: Task): MutateResult {
   guardArchived(task);
   const { data } = readParsed(task);
   const current = String(data.status ?? "");
-  const target = current === "ready"
+  const target = current === "ready" || current === "in-progress"
     ? "open"
     : current === "needs-feedback"
       ? "needs-review"
       : null;
   if (!target) {
-    throw new Error(`${task.slug}: pull only applies to ready / needs-feedback (status=${current || "?"})`);
+    throw new Error(`${task.slug}: pull only applies to ready / in-progress / needs-feedback (status=${current || "?"})`);
   }
   return transition(task, target, `pulled from queue (${current} -> ${target})`, { refusal: [] });
 }

@@ -1002,7 +1002,7 @@ Usage:
   tpm drop <task> ["<reason>"]               set status: dropped, stamp closed; optional reason fills ## Outcome + Log
   tpm block <task> "<reason>"                set status: blocked, log the reason
   tpm reopen <task> ["<reason>"]             set status: open, log it (optional reason on the Log)
-  tpm pull <task>                            pull a queued task back into the human pile: ready -> open, needs-feedback -> needs-review
+  tpm pull <task>                            pull a queued or running task back into the human pile: ready/in-progress -> open, needs-feedback -> needs-review
   tpm revert <task> ["<reason>"]             flip in-progress -> ready, log a timeout/revert (no-op otherwise)
   tpm status <task> <new-status>             generic status setter (validated)
   tpm set-type <task> <pr|investigation>   reclassify a task's type: (validated); back-end for tpm serve's type dropdown
