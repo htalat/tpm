@@ -273,17 +273,15 @@ Cron pattern combining the signal poller and the drain:
 */5 * * * *         /opt/homebrew/bin/tpm orchestrate --workers 2 >> ~/.tpm/orchestrator.log 2>&1
 ```
 
-Or as a long-running tmux loop (the equivalent of the cron pattern above):
+Or as a single long-running process (the equivalent of the cron pattern above) — `scripts/loop.ts` runs both loops with one Ctrl-C to stop:
 
 ```sh
-#!/bin/bash
-trap 'kill 0' EXIT
-(while true; do tpm poll;                  echo "[poll] sleeping";        sleep 60;  done) &
-(while true; do tpm orchestrate --workers 2; echo "[orchestrate] sleeping"; sleep 300; done) &
-wait
+npm run loop                                         # poll + orchestrate, every 60s
+node scripts/loop.ts --orchestrate-interval 300 --workers 2
+node scripts/loop.ts --help                          # all flags
 ```
 
-Bump worker count or mix CLIs by editing one line.
+Two independent loops (a slow orchestrate tick never blocks a poll tick); SIGINT/SIGTERM kills the in-flight child and exits. It's a faithful port of the bash one-liner this section used to carry — `trap 'kill 0' EXIT` plus two backgrounded `while true; do …; sleep; done` loops — kept as TypeScript so there's no second language to maintain. The `tpm` binary resolves via `$TPM_BIN` → this install's `bin/tpm` → bare `tpm` on PATH, same as `tpm schedule`.
 
 `tpm orchestrate` and `tpm poll` emit one structured line per event so a single log file greps + sorts cleanly:
 
