@@ -25,6 +25,23 @@ export interface Config {
   // to 1 by the orchestrator with a warning — config.ts permits any finite
   // number so a hand-edited bad value doesn't crash every consumer.
   workers?: number;
+  // PR-signal poller cadence. A per-PR fetch floor: `tpm poll` skips a PR
+  // whose cache was last refreshed within the window, so a fast cron doesn't
+  // hammer the host API for PRs that haven't moved. See src/orchestrate/poll.ts
+  // for resolution + built-in defaults (conservative for ADO).
+  poll?: PollConfig;
+}
+
+export interface PollConfig {
+  // Global per-PR floor in minutes. Skipped if a fresher cache exists.
+  min_interval_minutes?: number;
+  // Optional per-host overrides keyed by host name ('github', 'ado', …).
+  // A configured per-host value wins over the global floor for that host.
+  per_host?: Record<string, PollHostConfig>;
+}
+
+export interface PollHostConfig {
+  min_interval_minutes?: number;
 }
 
 export interface NotificationsConfig {
@@ -56,6 +73,11 @@ export function serveBaseUrl(cfg: Config): string {
 
 export const DEFAULT_TIMEZONE = "America/Los_Angeles";
 export const DEFAULT_TIME_BOUND_MINUTES = 30;
+// PR-signal poll floor (minutes since last successful fetch) when nothing is
+// configured. Global default stays responsive for GitHub; the per-host map
+// pushes ADO out to 15m so an unconfigured tree stops hammering its API.
+export const DEFAULT_POLL_MIN_INTERVAL_MINUTES = 5;
+export const DEFAULT_POLL_PER_HOST: Readonly<Record<string, number>> = { ado: 15 };
 // Quiet on start (every cron tick), visible on completion + failure.
 export const DEFAULT_NOTIFICATIONS: Required<NotificationsConfig> = {
   start: false,
@@ -102,7 +124,51 @@ export function readConfig(): Config {
   if (record.workers !== undefined) {
     cfg.workers = expectFiniteNumber(record.workers, "workers");
   }
+  if (record.poll !== undefined) {
+    cfg.poll = expectPoll(record.poll);
+  }
   return cfg;
+}
+
+function expectPoll(value: unknown): PollConfig {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    const got = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+    throw new Error(`${CONFIG_PATH}: "poll" must be an object, got ${got}`);
+  }
+  const record = value as Record<string, unknown>;
+  const out: PollConfig = {};
+  if (record.min_interval_minutes !== undefined) {
+    out.min_interval_minutes = expectPositiveInt(record.min_interval_minutes, "poll.min_interval_minutes");
+  }
+  if (record.per_host !== undefined) {
+    out.per_host = expectPerHost(record.per_host);
+  }
+  return out;
+}
+
+function expectPerHost(value: unknown): Record<string, PollHostConfig> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    const got = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+    throw new Error(`${CONFIG_PATH}: "poll.per_host" must be an object, got ${got}`);
+  }
+  const record = value as Record<string, unknown>;
+  const out: Record<string, PollHostConfig> = {};
+  for (const [host, hostValue] of Object.entries(record)) {
+    if (hostValue === null || typeof hostValue !== "object" || Array.isArray(hostValue)) {
+      const got = hostValue === null ? "null" : Array.isArray(hostValue) ? "array" : typeof hostValue;
+      throw new Error(`${CONFIG_PATH}: "poll.per_host.${host}" must be an object, got ${got}`);
+    }
+    const hostRecord = hostValue as Record<string, unknown>;
+    const hostOut: PollHostConfig = {};
+    if (hostRecord.min_interval_minutes !== undefined) {
+      hostOut.min_interval_minutes = expectPositiveInt(
+        hostRecord.min_interval_minutes,
+        `poll.per_host.${host}.min_interval_minutes`,
+      );
+    }
+    out[host] = hostOut;
+  }
+  return out;
 }
 
 function expectNotifications(value: unknown): NotificationsConfig {

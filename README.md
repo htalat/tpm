@@ -291,11 +291,12 @@ Bump worker count or mix CLIs by editing one line.
 2026-05-15T09:14:33-07:00  INFO   poll             no tasks to watch
 2026-05-15T09:14:35-07:00  INFO   poll             decide tpm/040-serve-mutations pr=https://… host=github action=no-signal reason=no-action
 2026-05-15T09:14:36-07:00  INFO   poll             flipped tpm/041-foo -> needs-feedback (CI FAIL on https://…)
+2026-05-15T09:14:37-07:00  INFO   poll             decide tpm/043-baz pr=https://… host=ado action=skip reason=throttled (age=4m, floor=15m)
 2026-05-15T09:14:37-07:00  INFO   poll             auto-closed tpm/042-bar (merged https://…)
-2026-05-15T09:14:38-07:00  INFO   poll             summary checked=6 flipped=2 no-signal=3 fetch-failed=1
+2026-05-15T09:14:38-07:00  INFO   poll             summary checked=6 flipped=2 no-signal=3 fetch-failed=1 throttled=1
 ```
 
-ISO-8601 second precision in the configured TZ (from `~/.tpm/config.json`, falls back to UTC) with explicit `±HH:MM` offset; level padded to 5 chars; script padded to 16 chars; free-form single-line message. The format is lexicographically sortable within a single TZ (DST transitions stay ordered because the offset is part of the string) and unambiguous if logs are ever shipped cross-host. INFO/WARN write to stdout, ERROR to stderr (cron's `>> log 2>&1` collapses both — the split is for interactive runs that want `2>/dev/null` for warn-free output). `grep -E '^\d{4}.*ERROR' ~/.tpm/*.log` returns only the actual errors; `grep 'action=no-signal'` shows everything the poller passed on. The summary line's `checked=N flipped=N no-signal=N fetch-failed=N` add up to `checked`.
+ISO-8601 second precision in the configured TZ (from `~/.tpm/config.json`, falls back to UTC) with explicit `±HH:MM` offset; level padded to 5 chars; script padded to 16 chars; free-form single-line message. The format is lexicographically sortable within a single TZ (DST transitions stay ordered because the offset is part of the string) and unambiguous if logs are ever shipped cross-host. INFO/WARN write to stdout, ERROR to stderr (cron's `>> log 2>&1` collapses both — the split is for interactive runs that want `2>/dev/null` for warn-free output). `grep -E '^\d{4}.*ERROR' ~/.tpm/*.log` returns only the actual errors; `grep 'action=no-signal'` shows everything the poller passed on. A PR whose cached snapshot is younger than its configured floor logs `action=skip reason=throttled` and increments `throttled` instead of being fetched (see the [`poll` config field](#config-fields)). The summary line's `checked=N flipped=N no-signal=N fetch-failed=N` are per-task and add up to `checked`; `throttled=N` is a per-PR count of skipped fetches (orthogonal — a task whose every PR was throttled contributes to neither `flipped` nor `no-signal`).
 
 #### `tpm schedule` (cross-platform scheduler wrapper)
 
@@ -471,7 +472,8 @@ cat ~/.tpm/config.json
   "timezone": "America/Los_Angeles",
   "time_bound_minutes": 30,
   "notifications": { "start": false, "finish": true, "fail": true },
-  "serve": { "url": "http://127.0.0.1:7777" }
+  "serve": { "url": "http://127.0.0.1:7777" },
+  "poll": { "min_interval_minutes": 5, "per_host": { "ado": { "min_interval_minutes": 15 } } }
 }
 ```
 
@@ -480,6 +482,7 @@ cat ~/.tpm/config.json
 - `time_bound_minutes` — global default for `tpm orchestrate`'s hard time bound. Positive integer. Defaults to 30 if absent. Project and task frontmatter can override per-scope (see [Scheduling unattended runs](#scheduling-unattended-runs-cron)).
 - `notifications` — global default for `tpm orchestrate`'s system-notification calls. Three independent boolean keys: `start` / `finish` / `fail`. Default `{ start: false, finish: true, fail: true }` — quiet on every cron tick, visible on completion + failure. Project and task frontmatter can override per-scope (cascade: task > project > global). Channels: macOS `osascript`; Windows `powershell.exe` (BurntToast preferred — `Install-Module BurntToast` — WinRT fallback otherwise); other platforms log to stderr.
 - `serve` — `{ "url": "..." }`, the base URL clicking a notification deep-links into (`<url>/t/<project>/<slug>`). Defaults to `http://127.0.0.1:7777` (the `tpm serve` default host/port); set it if you run serve on a non-default `--port`/`--host`. Hand-edited only — there's no `tpm config set serve.url` setter. The link resolves only while `tpm serve` is up; clicking when it's down lands the browser on a connection error.
+- `poll` — per-PR fetch floor for the `tpm poll` PR-signal poller: it skips any PR whose cached snapshot is younger than the floor, so a fast cron stops re-hitting the host API for PRs that haven't moved. `min_interval_minutes` is the global floor; `per_host.<host>.min_interval_minutes` overrides it for a single host (`github`, `ado`, …). Resolution is `per_host[host] ?? min_interval_minutes ?? built-in default`. The built-in defaults are deliberately ADO-friendly: **5 minutes globally, 15 for `ado`** — so an unconfigured tree keeps GitHub responsive while it stops hammering ADO. Positive integers only. `tpm poll --force` (alias `--no-throttle`) bypasses the floor for a manual diagnostic run; cron uses the throttled path. The throttled-PR count surfaces in the poller's `summary … throttled=N` log line.
 
 ## Frontmatter schema
 

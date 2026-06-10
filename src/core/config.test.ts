@@ -193,6 +193,44 @@ test("readConfig: rejects non-boolean notifications.<event>", () => {
   assert.throws(() => readConfig(), /"notifications.start" must be a boolean/);
 });
 
+test("readConfig: accepts a poll block (global + per-host floors)", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({
+    root: "/x",
+    poll: { min_interval_minutes: 5, per_host: { ado: { min_interval_minutes: 15 } } },
+  }));
+  assert.deepEqual(readConfig(), {
+    root: "/x",
+    poll: { min_interval_minutes: 5, per_host: { ado: { min_interval_minutes: 15 } } },
+  });
+});
+
+test("readConfig: rejects non-object poll", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x", poll: 5 }));
+  assert.throws(() => readConfig(), /"poll" must be an object, got number/);
+});
+
+test("readConfig: rejects non-positive/non-integer poll.min_interval_minutes", () => {
+  writeConfig({ root: "/x" });
+  for (const bad of [0, -1, 2.5, "5"]) {
+    writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x", poll: { min_interval_minutes: bad } }));
+    assert.throws(() => readConfig(), /"poll.min_interval_minutes" must be a positive integer/);
+  }
+});
+
+test("readConfig: rejects non-object poll.per_host and bad per-host floors", () => {
+  writeConfig({ root: "/x" });
+  writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x", poll: { per_host: ["ado"] } }));
+  assert.throws(() => readConfig(), /"poll.per_host" must be an object, got array/);
+
+  writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x", poll: { per_host: { ado: 15 } } }));
+  assert.throws(() => readConfig(), /"poll.per_host.ado" must be an object/);
+
+  writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x", poll: { per_host: { ado: { min_interval_minutes: 0 } } } }));
+  assert.throws(() => readConfig(), /"poll.per_host.ado.min_interval_minutes" must be a positive integer/);
+});
+
 test("readConfig: missing optional fields produce undefined, not present in object", () => {
   writeConfig({ root: "/x" });
   writeFileSync(CONFIG_PATH, JSON.stringify({ root: "/x" }));
