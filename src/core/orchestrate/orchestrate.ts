@@ -556,7 +556,11 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   // Hygiene: clear stale per-task locks before claiming. TTL = global time
   // bound + 5m buffer (per-task overrides apply on acquire, not on cleanup).
   const ttl = (cfg.time_bound_minutes ?? DEFAULT_TIME_BOUND_MINUTES) + 5;
-  lock.releaseStaleTaskLocks(root, ttl);
+  for (const e of lock.releaseStaleTaskLocks(root, ttl)) {
+    if (e.reverted) {
+      logLine("WARN", `${e.qualifiedSlug}: stale lock (was ${e.data.agentId}); reverted in-progress -> ready`);
+    }
+  }
 
   if (opts.preClaimedTask) {
     const agentId = process.env.TPM_AGENT_ID ?? `${hostname()}-${process.pid}`;
