@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
+      "Bash(bin/tpm:*)",
+      "Bash(./bin/tpm:*)"
+    ]
+  }
+}
