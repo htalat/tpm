@@ -669,17 +669,28 @@ export function routeMutation(pathname: string, body: URLSearchParams, runner: C
   return flashRedirect(slugPath, flash, override);
 }
 
+// Server-side mirror of NEW_TASK_SLUG_SCRIPT: lowercase, collapse non-[a-z0-9]
+// runs to a single hyphen, trim leading/trailing hyphens. Used as the fallback
+// when the form's title-derived slug never reached the client (JS disabled). May
+// return "" (title was all punctuation) — caller treats that as "no slug".
+function slugifyTitle(title: string): string {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
 // Project-scoped `new task` dispatch. On success: redirect to the new task's
 // page so the operator can edit Context/Plan immediately. On failure: redirect
 // back to the project page with the CLI error in the flash banner (so a slug
 // collision or unknown parent is visible, not silently swallowed).
 function routeNewTask(projectSlug: string, body: URLSearchParams, runner: CliRunner): MutationResult {
   const projectHref = `/p/${encodeURIComponent(projectSlug)}`;
-  const slug = body.get("slug")?.trim();
-  if (!slug) {
-    return flashTo(projectHref, "new-task: slug is required");
-  }
   const title = body.get("title")?.trim();
+  // Fallback for the JS-disabled path: the inline script normally fills Slug from
+  // Title before submit, but if it arrives empty we derive it here from Title so
+  // the form still works. Same rule as NEW_TASK_SLUG_SCRIPT / validateSlug.
+  const slug = body.get("slug")?.trim() || (title ? slugifyTitle(title) : "");
+  if (!slug) {
+    return flashTo(projectHref, "new-task: title or slug is required");
+  }
   const parent = body.get("parent")?.trim();
   const type = body.get("type")?.trim();
   const args = ["new", "task", projectSlug, slug];
@@ -1094,14 +1105,19 @@ function renderNewTaskForm(project: Project, opts: RouteOpts): string {
   const typeOptions = KNOWN_TASK_TYPES
     .map(t => `<option value="${escAttr(t)}"${t === "pr" ? " selected" : ""}>${esc(t)}</option>`)
     .join("");
+  // Title leads: the operator thinks in sentences, and the inline script (plus a
+  // server-side fallback in routeNewTask) derives the slug from it. Slug is no
+  // longer HTML-`required` — that would block the JS-disabled title-only path at
+  // the client before the server fallback can run; "at least one of title/slug"
+  // is enforced server-side instead. The pattern still gates a slug when present.
   return `<details class="new-task-form">
   <summary>+ New task</summary>
   <form method="POST" action="${action}" class="action-form new-task">
-    <label>Slug <span class="meta">(required)</span>
-      <input type="text" name="slug" required pattern="[a-z0-9][a-z0-9-]*" title="lowercase letters, digits, hyphens; no leading hyphen" placeholder="add-ratelimit-to-foo">
+    <label>Title <span class="meta">(required if no slug)</span>
+      <input type="text" name="title" placeholder="Add ratelimit to foo">
     </label>
-    <label>Title <span class="meta">(optional)</span>
-      <input type="text" name="title" placeholder="defaults to humanized slug">
+    <label>Slug <span class="meta">(auto-filled from title; edit to override)</span>
+      <input type="text" name="slug" pattern="[a-z0-9][a-z0-9-]*" title="lowercase letters, digits, hyphens; no leading hyphen" placeholder="add-ratelimit-to-foo">
     </label>
     <label>Parent <span class="meta">(optional)</span>
       <select name="parent">
@@ -1114,8 +1130,18 @@ function renderNewTaskForm(project: Project, opts: RouteOpts): string {
     </label>
     <button type="submit">Create task</button>
   </form>
+  <script>${NEW_TASK_SLUG_SCRIPT}</script>
 </details>`;
 }
+
+// Auto-derives the Slug field from the Title field as the operator types, so the
+// common path is "write a sentence, get a slug for free." Mirrors the server-side
+// slugify in routeNewTask AND the `validateSlug` regex: lowercase, collapse any
+// non-[a-z0-9] run to a single hyphen, trim leading/trailing hyphens. We stop
+// overwriting once the slug diverges from the last value we derived — i.e. the
+// moment the operator hand-edits it — but resume if they clear it back to empty.
+// Plain ES5 + built-ins, matching BULK_SELECT_SCRIPT / FLASH_AUTO_DISMISS_SCRIPT.
+const NEW_TASK_SLUG_SCRIPT = `(function(){var f=document.querySelector('form.new-task');if(!f||f.__tpmSlug)return;f.__tpmSlug=1;var t=f.querySelector('input[name=\\'title\\']');var s=f.querySelector('input[name=\\'slug\\']');if(!t||!s)return;function slugify(v){return v.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');}var last='';t.addEventListener('input',function(){if(s.value===''||s.value===last){last=slugify(t.value);s.value=last;}});})();`;
 
 // Renders the project body for the project page. When `canEdit` is true, walks
 // the canonical prose sections (Goal / Context / Notes) and injects the same

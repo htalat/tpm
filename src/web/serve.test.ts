@@ -1538,9 +1538,11 @@ test("renderProject: renders a New task <details> form with slug/title/parent/ty
   assert.equal(r.status, 200);
   assert.match(r.body, /class="new-task-form"/);
   assert.match(r.body, /<form[^>]*method="POST"[^>]*action="\/p\/alpha\/new-task"/);
-  // Slug field is required and constrained to the same regex `validateSlug` uses.
-  assert.match(r.body, /<input[^>]*name="slug"[^>]*required[^>]*pattern="\[a-z0-9\]\[a-z0-9-\]\*"/);
-  // Optional title field.
+  // Slug field is no longer HTML-`required` (server enforces "title or slug"),
+  // but stays constrained to the same regex `validateSlug` uses when present.
+  assert.match(r.body, /<input[^>]*name="slug"[^>]*pattern="\[a-z0-9\]\[a-z0-9-\]\*"/);
+  assert.doesNotMatch(r.body, /<input[^>]*name="slug"[^>]*required/);
+  // Title field leads the form.
   assert.match(r.body, /<input[^>]*name="title"/);
   // Parent dropdown lists top-level non-archived tasks and a top-level option.
   assert.match(r.body, /<select[^>]*name="parent">[\s\S]*<option[^>]*value="">\(top-level\)<\/option>[\s\S]*<option[^>]*value="001-foo"/);
@@ -1550,6 +1552,19 @@ test("renderProject: renders a New task <details> form with slug/title/parent/ty
     assert.match(r.body, new RegExp(`<option[^>]*value="${t}"`));
   }
   assert.match(r.body, /<option[^>]*value="pr"[^>]*selected/);
+});
+
+test("renderProject: New task form renders Title before Slug", () => {
+  // The operator thinks in titles; the slug auto-fills from the title via the
+  // inline script, so Title leads and Slug follows.
+  const p = project("alpha", [task("001-foo", "open")]);
+  const r = route("/p/alpha", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.ok(
+    r.body.indexOf('<input type="text" name="title"') < r.body.indexOf('<input type="text" name="slug"'),
+    "Title field should appear before Slug field",
+  );
+  // The auto-fill script is wired in.
+  assert.match(r.body, /input\[name=\\'title\\'\]/);
 });
 
 test("renderProject: New task form renders above the project body", () => {
@@ -1628,12 +1643,44 @@ test("routeMutation: /p/<project>/new-task skips empty optional fields", () => {
   assert.deepEqual(calls, [["new", "task", "alpha", "do-thing"]]);
 });
 
-test("routeMutation: /p/<project>/new-task with missing slug redirects to project page with flash", () => {
+test("routeMutation: /p/<project>/new-task derives slug from title when slug is empty", () => {
+  // Server-side fallback for the JS-disabled path: a title-only submission gets
+  // a slug via the same slugify rule as the inline script. Title is still passed
+  // through as --title so the humanized form isn't lost.
+  const { runner, calls } = captureRunner();
+  const params = new URLSearchParams();
+  params.set("title", "Add ratelimit to foo");
+  const r = routeMutation("/p/alpha/new-task", params, runner);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/t\/alpha\/add-ratelimit-to-foo\?flash=/);
+  assert.deepEqual(calls, [[
+    "new", "task", "alpha", "add-ratelimit-to-foo",
+    "--title", "Add ratelimit to foo",
+  ]]);
+});
+
+test("routeMutation: /p/<project>/new-task keeps a manually-typed slug over the title", () => {
+  // When both arrive, the explicit slug wins — the title field never clobbers a
+  // slug the operator hand-edited.
+  const { runner, calls } = captureRunner();
+  const params = new URLSearchParams();
+  params.set("title", "Add ratelimit to foo");
+  params.set("slug", "rl-foo");
+  const r = routeMutation("/p/alpha/new-task", params, runner);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/t\/alpha\/rl-foo\?flash=/);
+  assert.deepEqual(calls, [[
+    "new", "task", "alpha", "rl-foo",
+    "--title", "Add ratelimit to foo",
+  ]]);
+});
+
+test("routeMutation: /p/<project>/new-task with neither title nor slug flashes the requirement", () => {
   const { runner, calls } = captureRunner();
   const r = routeMutation("/p/alpha/new-task", new URLSearchParams(), runner);
   assert.equal(r.status, 303);
   assert.match(r.location ?? "", /^\/p\/alpha\?flash=/);
-  assert.match(decodeURIComponent(r.location ?? ""), /slug is required/);
+  assert.match(decodeURIComponent(r.location ?? ""), /title or slug is required/);
   assert.deepEqual(calls, []);
 });
 
