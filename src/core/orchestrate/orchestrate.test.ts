@@ -544,6 +544,13 @@ test("evaluateTerminalState: status=needs-feedback → null (agent should react,
   assert.equal(evaluateTerminalState(task({ status: "needs-feedback" })), null);
 });
 
+test("evaluateTerminalState: status=open → 'pulled' (operator stopped the run with tpm pull)", () => {
+  // `tpm pull` flips a running task in-progress -> open. open is never a status
+  // an agent works at, so seeing it mid-run means the operator pulled it; the
+  // poll SIGTERMs the agent — this is pull's cross-layer kill.
+  assert.equal(evaluateTerminalState(task({ status: "open" })), "pulled");
+});
+
 test("classifyDisposition: terminationReason=early-term → terminal (wins over exit code)", () => {
   // Early-term resolves with exit 0 because the work shipped externally; the
   // termination reason is what tells classify it wasn't a normal completion.

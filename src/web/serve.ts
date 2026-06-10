@@ -160,7 +160,7 @@ const BULK_ACTIONS: Record<string, { verb: string; label: string; needsReason?: 
 // just surfaces as a "refused" in the summary rather than corrupting state.
 // Mirrors the single-row action rails (renderActions / promoteButton /
 // renderArchiveAction): every non-terminal status can be closed, dropped, or
-// blocked; `ready`/`needs-feedback` can be pulled; `open`/`blocked` promoted;
+// blocked; `ready`/`in-progress`/`needs-feedback` can be pulled; `open`/`blocked` promoted;
 // `blocked` reopened; terminal (done/dropped) only archived. A row is
 // selectable iff its status appears here (so corrupt/unknown statuses render no
 // checkbox).
@@ -168,7 +168,7 @@ const BULK_CAPS: Record<string, string[]> = {
   open: ["promote", "close", "drop", "block"],
   ready: ["pull", "close", "drop", "block"],
   blocked: ["promote", "reopen", "close", "drop"],
-  "in-progress": ["close", "drop", "block"],
+  "in-progress": ["pull", "close", "drop", "block"],
   "needs-feedback": ["pull", "close", "drop", "block"],
   "needs-close": ["close", "drop", "block"],
   "needs-review": ["close", "drop", "block"],
@@ -1004,7 +1004,7 @@ ${flashBanner}
 </section>
 <section class="queue">
   <h2>In flight <span class="meta">(${inFlight.length})</span></h2>
-  ${inFlight.length === 0 ? `<p class="queue-empty">No in-progress tasks.</p>` : inFlight.map(it => taskRow(it.project, it.task, "in-progress", prCache, taskLocks, { showClose: true, closeRedirect: "/", showDrop: true, dropRedirect: "/" })).join("")}
+  ${inFlight.length === 0 ? `<p class="queue-empty">No in-progress tasks.</p>` : inFlight.map(it => taskRow(it.project, it.task, "in-progress", prCache, taskLocks, { showPull: true, pullRedirect: "/", showClose: true, closeRedirect: "/", showDrop: true, dropRedirect: "/" })).join("")}
 </section>
 `;
   return layout("tpm", body, { autoRefresh: 30, afterRoot: bulkBar("/", mutationsEnabled) });
@@ -2213,6 +2213,7 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       forms.push(dropForm(href));
       break;
     case "in-progress":
+      forms.push(pullForm(href, "in-progress"));
       forms.push(blockForm(href));
       forms.push(completeForm(href));
       forms.push(logForm(href));
@@ -2399,11 +2400,12 @@ function statusForm(href: string, value: string, label: string): string {
 
 // "Pull from queue" — symmetric inverse of the inbox promote button. The label
 // names the destination so the operator sees the intended landing slot before
-// clicking (ready -> open is a re-shape moment; needs-feedback -> needs-review
-// is an escalation to the human queue). Server-side `tpm pull` is the only
-// thing that enforces the status -> target mapping; the form text just labels.
+// clicking (ready -> open is a re-shape moment; in-progress -> open stops a
+// running task; needs-feedback -> needs-review is an escalation to the human
+// queue). Server-side `tpm pull` is the only thing that enforces the status ->
+// target mapping; the form text just labels.
 function pullForm(href: string, status: string): string {
-  const dest = status === "ready" ? "open" : "needs-review";
+  const dest = status === "needs-feedback" ? "needs-review" : "open";
   return `<form method="POST" action="${href}/pull" class="action-form">
     <button type="submit">Pull from queue (→ ${esc(dest)})</button>
   </form>`;
@@ -2550,17 +2552,18 @@ function promoteButton(href: string, task: Task, status: string, opts: TaskRowOp
 }
 
 // Inline "pull from queue" affordance (task 117) — symmetric inverse of the
-// promote button. Self-gating on status (ready / needs-feedback only) so the
-// button can't escape into unsafe contexts even if a caller opts in without
-// per-row filtering. The destination differs by source: ready -> open is a
-// pause/re-shape; needs-feedback -> needs-review escalates ambiguous agent
-// signal to the human queue.
+// promote button. Self-gating on status (ready / in-progress / needs-feedback
+// only) so the button can't escape into unsafe contexts even if a caller opts
+// in without per-row filtering. The destination differs by source: ready -> open
+// is a pause/re-shape; in-progress -> open stops a running task (the in-flight
+// section's "off the agent" control); needs-feedback -> needs-review escalates
+// ambiguous agent signal to the human queue.
 function pullButton(href: string, task: Task, status: string, opts: TaskRowOpts): string {
   if (!opts.showPull) return "";
   if (task.archived) return "";
   if (isParent(task)) return "";
-  if (status !== "ready" && status !== "needs-feedback") return "";
-  const dest = status === "ready" ? "open" : "needs-review";
+  if (status !== "ready" && status !== "in-progress" && status !== "needs-feedback") return "";
+  const dest = status === "needs-feedback" ? "needs-review" : "open";
   const label = `Pull from queue (→ ${dest})`;
   const redirectInput = opts.pullRedirect
     ? `<input type="hidden" name="redirect" value="${escAttr(opts.pullRedirect)}">`

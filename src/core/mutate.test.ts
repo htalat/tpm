@@ -530,6 +530,28 @@ test("pull: ready -> open, logs pulled-from-queue with src+dst", () => {
   }
 });
 
+test("pull: in-progress -> open, stops a running task (off the agent, not re-queued)", () => {
+  // Distinct from `revert` (in-progress -> ready, re-claimable): pull lands the
+  // running task at `open`, out of the autonomous loop entirely.
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    const r = pullFromQueue(t);
+    assert.match(r.message, /-> open/);
+    // The operator is told the orchestrator stops the running agent on its next
+    // poll — `open` is wired into the mid-run terminal-state SIGTERM path
+    // (evaluateTerminalState), so pull is a real stop, not just a state flip.
+    assert.match(r.message, /orchestrator stops the running agent/);
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: open/);
+    assert.match(text, /: pulled from queue \(in-progress -> open\)$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
 test("pull: needs-feedback -> needs-review, logs pulled-from-queue", () => {
   // Escalation to the human queue: feedback flow already routes ambiguous
   // signal there, so the demote target stays consistent (task 117 plan, step 2).
@@ -567,11 +589,11 @@ test("pull: leaves allow_orchestrator: true alone when pulling a ready task back
   }
 });
 
-test("pull: refuses statuses outside ready / needs-feedback", () => {
+test("pull: refuses statuses outside ready / in-progress / needs-feedback", () => {
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
-    for (const s of ["open", "in-progress", "needs-review", "needs-close", "blocked", "done", "dropped"]) {
+    for (const s of ["open", "needs-review", "needs-close", "blocked", "done", "dropped"]) {
       writeTask(dir, `001-${s}.md`, s);
       const t = loadTask(root, "alpha", `001-${s}`);
       assert.throws(() => pullFromQueue(t), /pull only applies to ready/, `expected refusal on ${s}`);

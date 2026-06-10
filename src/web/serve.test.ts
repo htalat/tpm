@@ -1176,11 +1176,19 @@ test("renderTask: needs-feedback task surfaces a Pull-from-queue action (→ nee
   assert.match(r.body, /Pull from queue \(→ needs-review\)/);
 });
 
+test("renderTask: in-progress task surfaces a Pull-from-queue action (→ open) to stop the run", () => {
+  const t = task("001-ip", "in-progress");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-ip", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.match(r.body, /action="\/t\/alpha\/001-ip\/pull"/);
+  assert.match(r.body, /Pull from queue \(→ open\)/);
+});
+
 test("renderTask: non-pullable statuses don't surface a Pull-from-queue action", () => {
-  // Other statuses: hide the button (Plan step 2). Open/blocked already are in
-  // the human pile; in-progress / needs-close / needs-review have their own
-  // exit paths (complete, log, request-changes).
-  for (const status of ["open", "in-progress", "needs-close", "needs-review", "blocked"]) {
+  // Other statuses: hide the button. Open/blocked already are in the human pile;
+  // needs-close / needs-review have their own exit paths (complete, log,
+  // request-changes).
+  for (const status of ["open", "needs-close", "needs-review", "blocked"]) {
     const t = task("001-a", status);
     const p = project("alpha", [t]);
     const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
@@ -1204,12 +1212,15 @@ test("renderIndex: agent-queue ready and needs-feedback rows render the inline p
   );
 });
 
-test("renderIndex: in-flight rows (in-progress) do NOT render the pull button", () => {
-  // pullButton is self-gating: only ready / needs-feedback. The in-flight
-  // section doesn't even pass showPull, so this is a defense-in-depth check.
+test("renderIndex: in-flight rows (in-progress) render the inline pull button to stop the run (redirect=/)", () => {
+  // The in-flight section passes showPull so an operator can pull a running task
+  // off the agent (in-progress -> open) without leaving the dashboard.
   const p = project("alpha", [task("003-ip", "in-progress")]);
   const r = route("/", new URLSearchParams(), [p]);
-  assert.doesNotMatch(r.body, /class="pull-form"/);
+  assert.match(
+    r.body,
+    /<form[^>]*method="POST"[^>]*action="\/t\/alpha\/003-ip\/pull"[^>]*class="pull-form"[\s\S]*?name="redirect"[^>]*value="\/"/,
+  );
 });
 
 test("renderIndex: inbox rows (needs-review / blocked / open) do NOT render the pull button", () => {
@@ -1240,10 +1251,18 @@ test("renderProject: project-page ready / needs-feedback rows render the inline 
   );
 });
 
+test("renderProject: project-page in-progress rows render the inline pull button (redirect=/p/<slug>)", () => {
+  const p = project("alpha", [task("002-ip", "in-progress")]);
+  const r = route("/p/alpha", new URLSearchParams(), [p]);
+  assert.match(
+    r.body,
+    /<form[^>]*action="\/t\/alpha\/002-ip\/pull"[^>]*class="pull-form"[\s\S]*?name="redirect"[^>]*value="\/p\/alpha"/,
+  );
+});
+
 test("renderProject: project-page rows in non-pullable statuses don't render the pull button", () => {
   const p = project("alpha", [
     task("001-o", "open"),
-    task("002-ip", "in-progress"),
     task("003-d", "done", { closed: "2026-04-01 12:00 PDT" }),
   ]);
   const r = route("/p/alpha", new URLSearchParams("archived=1"), [p]);

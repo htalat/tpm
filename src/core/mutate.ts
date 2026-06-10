@@ -98,25 +98,52 @@ export function setStatus(task: Task, newStatus: string, verb?: string): MutateR
   return transition(task, newStatus, verb ?? `status -> ${newStatus}`, { refusal: [] });
 }
 
-// Symmetric inverse of the inbox play-button promote: pull a queued task back
-// into the human pile. Status-aware:
+// Symmetric inverse of the inbox play-button promote: pull a queued — or
+// running — task back into the human pile. Status-aware:
 //   - ready          -> open          (operator wants to pause / reshape the Plan)
+//   - in-progress    -> open          (stop a running task; pull it off the agent)
 //   - needs-feedback -> needs-review  (escalate ambiguous agent signal to the human)
 // Other statuses are refused — the caller (web or CLI) should hide / gate the
 // button so a refusal only fires on a stale form replay.
+//
+// in-progress -> open vs `revert` (in-progress -> ready): pull yanks the task
+// out of the autonomous loop entirely (open isn't claimable), whereas revert
+// re-queues it for the next orchestrator tick. Pull is the operator's "stop and
+// reshape" — revert is the orchestrator's "timed out, try again".
+//
+// Stopping the agent (the in-progress case): mutate is the single-task-file
+// layer with no root/agent-id context, so it can't reach into the running
+// spawn from here. It doesn't need to — the flip to `open` is the signal. The
+// orchestrator that spawned the agent polls the task's status every few seconds
+// (`evaluateTerminalState`) and SIGTERMs the child the moment it sees a
+// non-running status; `open` is wired into that path, so pulling a running task
+// stops the agent on the next poll, exactly as completing or dropping it
+// mid-run would. The held lock frees on that run-completion path (or the
+// stale-TTL sweep, `releaseStaleTaskLocks`, as a backstop), and the
+// non-claimable `open` status keeps the queue gate from re-picking the task.
 export function pullFromQueue(task: Task): MutateResult {
   guardArchived(task);
   const { data } = readParsed(task);
   const current = String(data.status ?? "");
-  const target = current === "ready"
+  const target = current === "ready" || current === "in-progress"
     ? "open"
     : current === "needs-feedback"
       ? "needs-review"
       : null;
   if (!target) {
-    throw new Error(`${task.slug}: pull only applies to ready / needs-feedback (status=${current || "?"})`);
+    throw new Error(`${task.slug}: pull only applies to ready / in-progress / needs-feedback (status=${current || "?"})`);
   }
-  return transition(task, target, `pulled from queue (${current} -> ${target})`, { refusal: [] });
+  const r = transition(task, target, `pulled from queue (${current} -> ${target})`, { refusal: [] });
+  // Tell the operator what to expect when they stop a running task: the agent
+  // isn't killed synchronously here (see the layering note above), but the
+  // orchestrator's mid-run poll picks up the `open` flip and SIGTERMs the agent
+  // within a few seconds. The lock frees on that run-completion path.
+  if (current === "in-progress") {
+    return {
+      message: `${r.message} — the orchestrator stops the running agent on its next poll (within a few seconds); its lock frees on run-completion`,
+    };
+  }
+  return r;
 }
 
 export function logEntry(task: Task, message: string): MutateResult {
