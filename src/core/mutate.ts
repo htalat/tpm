@@ -131,7 +131,17 @@ export function pullFromQueue(task: Task): MutateResult {
   if (!target) {
     throw new Error(`${task.slug}: pull only applies to ready / in-progress / needs-feedback (status=${current || "?"})`);
   }
-  return transition(task, target, `pulled from queue (${current} -> ${target})`, { refusal: [] });
+  const r = transition(task, target, `pulled from queue (${current} -> ${target})`, { refusal: [] });
+  // Be explicit about what pull does NOT do: it removes the task from the
+  // queue so nothing re-claims it, but it does not kill an already-running
+  // agent (see the layering note above). Without this the operator pulling a
+  // running task sees a bare `-> open` and may assume the agent was stopped.
+  if (current === "in-progress") {
+    return {
+      message: `${r.message} — note: the running agent process is not killed; its lock frees on run-completion or the stale-TTL sweep, and the open status keeps it from being re-claimed`,
+    };
+  }
+  return r;
 }
 
 export function logEntry(task: Task, message: string): MutateResult {
