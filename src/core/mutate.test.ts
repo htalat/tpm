@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
 import { loadProjects } from "./tree.ts";
 import {
-  start, ready, block, reopen, revert, logEntry, addPr, setStatus, setType, complete,
+  start, ready, block, reopen, revert, logEntry, addPr, setStatus, setType, complete, drop,
   setAllowOrchestrator, reparent, addReport, requestReportChanges,
   pullFromQueue, appendLog, setSection, sectionHasContent, editTaskSection,
   editProjectSection,
@@ -1136,6 +1136,89 @@ test("complete: rejects dropped", () => {
     writeTask(dir, "001-a.md", "dropped", "pr");
     const t = loadTask(root, "alpha", "001-a");
     assert.throws(() => complete(t, {}), /status is dropped/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+// ---- drop ------------------------------------------------------------------
+
+test("drop: no reason — flips to dropped, stamps closed, logs plain `dropped`, leaves Outcome empty", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    const r = drop(t);
+    assert.match(r.message, /001-a -> dropped/);
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: dropped/);
+    assert.match(text, /^closed: .+/m);
+    assert.match(text, /: dropped$/m);
+    // Outcome untouched (placeholder only) since no reason was given.
+    const { body } = parse(text);
+    assert.equal(sectionHasContent(body, "Outcome"), false);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("drop: with reason — fills ## Outcome and logs `dropped — <reason>` (dash form)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "blocked");
+    const t = loadTask(root, "alpha", "001-a");
+    drop(t, "  superseded by 002  ");
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: dropped/);
+    assert.match(text, /: dropped — superseded by 002$/m);
+    const { body } = parse(text);
+    assert.equal(sectionHasContent(body, "Outcome"), true);
+    assert.match(body, /## Outcome\nsuperseded by 002/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("drop: refuses a reason when Outcome already has prose (refuse-on-content, like complete)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    const path = writeTask(dir, "001-a.md", "open");
+    const orig = readFileSync(path, "utf8");
+    writeFileSync(path, orig.replace(/<!-- Filled when closed -->/, "already written prose"));
+    const t = loadTask(root, "alpha", "001-a");
+    assert.throws(() => drop(t, "new reason"), /already has content/);
+    // Status untouched on refusal.
+    assert.match(readFileSync(t.path, "utf8"), /status: open/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("drop: idempotent — already-dropped returns a clean message and doesn't duplicate logs", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "dropped");
+    const t = loadTask(root, "alpha", "001-a");
+    const before = readFileSync(t.path, "utf8");
+    const r = drop(t);
+    assert.match(r.message, /already dropped/);
+    assert.equal(readFileSync(t.path, "utf8"), before);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("drop: rejects done (a different terminus)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "done");
+    const t = loadTask(root, "alpha", "001-a");
+    assert.throws(() => drop(t), /status is done/);
   } finally {
     rmTempDir(root);
   }

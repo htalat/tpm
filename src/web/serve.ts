@@ -134,7 +134,7 @@ export interface ServeOpts {
 // Whitelisted POST action segments. The CLI verbs they map to are built in
 // `buildCliArgs`. Kept narrow so a stray POST can't shell out to any tpm verb.
 const MUTATION_ACTIONS = new Set([
-  "ready", "block", "reopen", "complete", "log", "pr", "status", "allow-orchestrator",
+  "ready", "block", "reopen", "complete", "drop", "log", "pr", "status", "allow-orchestrator",
   "lgtm", "request-changes", "archive", "pull", "edit", "set-type",
 ]);
 
@@ -150,6 +150,7 @@ const BULK_ACTIONS: Record<string, { verb: string; label: string; needsReason?: 
   pull: { verb: "pull", label: "Pull from queue" },
   close: { verb: "complete", label: "Close" },
   reopen: { verb: "reopen", label: "Reopen" },
+  drop: { verb: "drop", label: "Drop" },
   block: { verb: "block", label: "Block", needsReason: true },
   archive: { verb: "archive", label: "Archive" },
 };
@@ -158,23 +159,24 @@ const BULK_ACTIONS: Record<string, { verb: string; label: string; needsReason?: 
 // only — the per-row CLI call is the real enforcer, so a stale-form mismatch
 // just surfaces as a "refused" in the summary rather than corrupting state.
 // Mirrors the single-row action rails (renderActions / promoteButton /
-// renderArchiveAction): every non-terminal status can be closed or blocked;
-// `ready`/`needs-feedback` can be pulled; `open`/`blocked` promoted; `blocked`
-// reopened; terminal (done/dropped) only archived. A row is selectable iff its
-// status appears here (so corrupt/unknown statuses render no checkbox).
+// renderArchiveAction): every non-terminal status can be closed, dropped, or
+// blocked; `ready`/`needs-feedback` can be pulled; `open`/`blocked` promoted;
+// `blocked` reopened; terminal (done/dropped) only archived. A row is
+// selectable iff its status appears here (so corrupt/unknown statuses render no
+// checkbox).
 const BULK_CAPS: Record<string, string[]> = {
-  open: ["promote", "close", "block"],
-  ready: ["pull", "close", "block"],
-  blocked: ["promote", "reopen", "close"],
-  "in-progress": ["close", "block"],
-  "needs-feedback": ["pull", "close", "block"],
-  "needs-close": ["close", "block"],
-  "needs-review": ["close", "block"],
+  open: ["promote", "close", "drop", "block"],
+  ready: ["pull", "close", "drop", "block"],
+  blocked: ["promote", "reopen", "close", "drop"],
+  "in-progress": ["close", "drop", "block"],
+  "needs-feedback": ["pull", "close", "drop", "block"],
+  "needs-close": ["close", "drop", "block"],
+  "needs-review": ["close", "drop", "block"],
   done: ["archive"],
   dropped: ["archive"],
 };
 // Order the bar renders its buttons in (stable, independent of which are shown).
-const BULK_ACTION_ORDER = ["promote", "pull", "close", "reopen", "block", "archive"];
+const BULK_ACTION_ORDER = ["promote", "pull", "close", "reopen", "drop", "block", "archive"];
 
 const CLI_PATH = fileURLToPath(new URL("../core/cli.ts", import.meta.url));
 
@@ -836,6 +838,13 @@ function buildCliArgs(slug: string, action: string, body: URLSearchParams): stri
       if (outcome) args.push("--outcome", outcome);
       return args;
     }
+    case "drop": {
+      // Optional reason — detail-page form supplies one (fills ## Outcome);
+      // the per-row glyph and bulk path drop reasonless. Mirrors reopen.
+      const reason = body.get("reason")?.trim();
+      if (!reason) return ["drop", slug];
+      return ["drop", slug, reason];
+    }
     case "log": {
       const message = body.get("message")?.trim();
       if (!message) return null;
@@ -963,15 +972,15 @@ ${flashBanner}
 </header>
 <section class="queue">
   <h2>Your inbox <span class="meta">(${inbox.length})</span></h2>
-  ${inbox.length === 0 ? `<p class="queue-empty">Inbox empty.</p>` : inbox.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPromote: true, showClose: true, closeRedirect: "/", selectable: mutationsEnabled })).join("")}
+  ${inbox.length === 0 ? `<p class="queue-empty">Inbox empty.</p>` : inbox.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPromote: true, showClose: true, closeRedirect: "/", showDrop: true, dropRedirect: "/", selectable: mutationsEnabled })).join("")}
 </section>
 <section class="queue">
   <h2>Agent queue <span class="meta">(${agentItems.length})</span></h2>
-  ${agentItems.length === 0 ? `<p class="queue-empty">Nothing ready, needing feedback, or awaiting close.</p>` : agentItems.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPull: true, pullRedirect: "/", showClose: true, closeRedirect: "/" })).join("")}
+  ${agentItems.length === 0 ? `<p class="queue-empty">Nothing ready, needing feedback, or awaiting close.</p>` : agentItems.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPull: true, pullRedirect: "/", showClose: true, closeRedirect: "/", showDrop: true, dropRedirect: "/" })).join("")}
 </section>
 <section class="queue">
   <h2>In flight <span class="meta">(${inFlight.length})</span></h2>
-  ${inFlight.length === 0 ? `<p class="queue-empty">No in-progress tasks.</p>` : inFlight.map(it => taskRow(it.project, it.task, "in-progress", prCache, taskLocks, { showClose: true, closeRedirect: "/" })).join("")}
+  ${inFlight.length === 0 ? `<p class="queue-empty">No in-progress tasks.</p>` : inFlight.map(it => taskRow(it.project, it.task, "in-progress", prCache, taskLocks, { showClose: true, closeRedirect: "/", showDrop: true, dropRedirect: "/" })).join("")}
 </section>
 `;
   return layout("tpm", body, { autoRefresh: 30, afterRoot: bulkBar("/", mutationsEnabled) });
@@ -997,7 +1006,7 @@ function renderProject(project: Project, allProjects: Project[], showArchived: b
       if (s === "done" || s === "dropped") {
         group.sort((a, b) => String(b.data.closed ?? "").localeCompare(String(a.data.closed ?? "")));
       }
-      const rows = group.map(t => taskRow(project, t, s, prCache, taskLocks, { showPull: true, pullRedirect: `/p/${project.slug}`, showClose: true, closeRedirect: `/p/${project.slug}`, selectable: opts.mutationsEnabled !== false })).join("");
+      const rows = group.map(t => taskRow(project, t, s, prCache, taskLocks, { showPull: true, pullRedirect: `/p/${project.slug}`, showClose: true, closeRedirect: `/p/${project.slug}`, showDrop: true, dropRedirect: `/p/${project.slug}`, selectable: opts.mutationsEnabled !== false })).join("");
       return `<section class="queue"><h2>${esc(s)} <span class="meta">(${group.length})</span></h2>${rows}</section>`;
     })
     .join("");
@@ -2166,12 +2175,14 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       forms.push(completeForm(href));
       forms.push(logForm(href));
       forms.push(prForm(href));
+      forms.push(dropForm(href));
       break;
     case "needs-feedback":
       forms.push(pullForm(href, "needs-feedback"));
       forms.push(logForm(href));
       forms.push(completeForm(href));
       forms.push(blockForm(href));
+      forms.push(dropForm(href));
       break;
     case "needs-close":
       // Merged-PR sweep: the dominant action is closing out. Keep log/block
@@ -2179,6 +2190,7 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       forms.push(completeForm(href));
       forms.push(logForm(href));
       forms.push(blockForm(href));
+      forms.push(dropForm(href));
       break;
     case "needs-review": {
       // Report-shaped reviews surface LGTM + Request-changes on the report
@@ -2191,17 +2203,20 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       forms.push(completeForm(href));
       forms.push(blockForm(href));
       forms.push(statusForm(href, "needs-feedback", "Reopen for agent (→ needs-feedback)"));
+      forms.push(dropForm(href));
       break;
     }
     case "blocked":
       forms.push(reopenForm(href));
       forms.push(completeForm(href));
+      forms.push(dropForm(href));
       break;
     default:
-      // Unknown status (corrupt / future schema): fall back to log + close so
-      // the user can at least annotate or retire the task from the UI.
+      // Unknown status (corrupt / future schema): fall back to log + close +
+      // drop so the user can at least annotate or retire the task from the UI.
       forms.push(logForm(href));
       forms.push(completeForm(href));
+      forms.push(dropForm(href));
   }
 
   return `<section class="task-actions"><h2>Actions</h2>${forms.join("")}</section>`;
@@ -2283,9 +2298,11 @@ function reopenForm(href: string): string {
 }
 
 function dropForm(href: string): string {
-  return `<form method="POST" action="${href}/status" class="action-form">
-    <input type="hidden" name="status" value="dropped">
-    <button type="submit">Drop</button>
+  return `<form method="POST" action="${href}/drop" class="action-form">
+    <label>Drop reason (optional — fills <code>## Outcome</code>)
+      <textarea name="reason" rows="2" placeholder="why drop? (optional, fills Outcome)"></textarea>
+    </label>
+    <button type="submit">Drop (→ dropped)</button>
   </form>`;
 }
 
@@ -2415,6 +2432,15 @@ interface TaskRowOpts {
   // `pullRedirect`: index callers pass "/", the project page passes its own
   // URL. Defaults to the task page when omitted.
   closeRedirect?: string;
+  // Render an inline "drop" button (→ dropped) for any non-terminal non-parent
+  // row — task 140. The per-row analogue of the detail-page Drop form, but
+  // reasonless (close-now-edit-later: the operator can add a why on the task
+  // page). Self-gating on status/parent like `showClose` so opting in can't
+  // surface a button on a terminal or container row.
+  showDrop?: boolean;
+  // Where to land the operator after the drop mutation, same contract as
+  // `closeRedirect`. Defaults to the task page when omitted.
+  dropRedirect?: string;
 }
 
 function taskRow(project: Project, task: Task, status: string, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, opts: TaskRowOpts = {}): string {
@@ -2446,8 +2472,9 @@ function taskRow(project: Project, task: Task, status: string, prCache: PrCacheR
   const promote = promoteButton(href, task, status, opts);
   const pull = pullButton(href, task, status, opts);
   const close = closeButton(href, task, status, opts);
+  const drop = dropButton(href, task, status, opts);
   return `<div class="${classes.join(" ")}">
-    ${select}${promote}${pull}${close}
+    ${select}${promote}${pull}${close}${drop}
     <span class="badge s-${cls(status)}${task.archived ? " s-archived" : ""}">${esc(status)}</span>
     ${lockChip(task, status, taskLocks.has(slug))}
     ${titleCell}
@@ -2580,6 +2607,26 @@ function closeButton(href: string, task: Task, status: string, opts: TaskRowOpts
     : "";
   return `<form method="POST" action="${href}/complete" class="close-form">
     ${redirectInput}<button type="submit" title="${esc(label)}" aria-label="${esc(label)}">✓</button>
+  </form>`;
+}
+
+// Inline "drop" affordance (task 140) — the per-row analogue of the detail-page
+// Drop form. Posts to the `drop` mutation reasonless (close-now-edit-later: the
+// why goes in ## Outcome via the task page if the operator wants it), so a
+// queue-triage pass can abandon a row without clicking through. Self-gating:
+// hidden on terminal rows (already closed — use Archive) and on parent
+// containers, shown for every other status. Reversible via `tpm reopen`.
+function dropButton(href: string, task: Task, status: string, opts: TaskRowOpts): string {
+  if (!opts.showDrop) return "";
+  if (task.archived) return "";
+  if (isParent(task)) return "";
+  if (status === "done" || status === "dropped") return "";
+  const label = "Drop (→ dropped)";
+  const redirectInput = opts.dropRedirect
+    ? `<input type="hidden" name="redirect" value="${escAttr(opts.dropRedirect)}">`
+    : "";
+  return `<form method="POST" action="${href}/drop" class="drop-form">
+    ${redirectInput}<button type="submit" title="${esc(label)}" aria-label="${esc(label)}">✕</button>
   </form>`;
 }
 
