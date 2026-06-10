@@ -682,6 +682,9 @@ function routeNewTask(projectSlug: string, body: URLSearchParams, runner: CliRun
   const title = body.get("title")?.trim();
   const parent = body.get("parent")?.trim();
   const type = body.get("type")?.trim();
+  // Context is the only multi-line field — don't trim leading/trailing newlines
+  // out of the body, just decide whether anything non-whitespace was typed.
+  const context = body.get("context") ?? "";
   const args = ["new", "task", projectSlug, slug];
   if (title) args.push("--title", title);
   if (parent) args.push("--parent", parent);
@@ -698,7 +701,17 @@ function routeNewTask(projectSlug: string, body: URLSearchParams, runner: CliRun
   if (parent) parts.push(parent);
   parts.push(slug);
   const taskHref = "/t/" + parts.map(encodeURIComponent).join("/");
-  const flash = result.stdout || `new-task: created ${parts.join("/")}`;
+  let flash = result.stdout || `new-task: created ${parts.join("/")}`;
+  // Optional Context: the create has to land first (it writes the file the edit
+  // then mutates), so this is a second CLI call against the brand-new slug. A
+  // partial state (task created, Context unwritten) is harmless, so on edit
+  // failure we keep the created task and surface both messages in the flash.
+  if (context.trim()) {
+    const editResult = runner(["edit", slug, "context", context]);
+    flash = editResult.ok
+      ? `${flash} (with Context)`
+      : `${flash} — but Context failed: ${editResult.stderr || editResult.stdout || "edit failed"}`;
+  }
   return flashTo(taskHref, flash);
 }
 
@@ -1111,6 +1124,9 @@ function renderNewTaskForm(project: Project, opts: RouteOpts): string {
     </label>
     <label>Type
       <select name="type">${typeOptions}</select>
+    </label>
+    <label>Context <span class="meta">(optional; lands in ## Context)</span>
+      <textarea name="context" rows="6" placeholder="Facts I have right now…"></textarea>
     </label>
     <button type="submit">Create task</button>
   </form>
