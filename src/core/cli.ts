@@ -550,7 +550,8 @@ try {
             break;
           }
           for (const e of removed) {
-            console.log(`released ${e.qualifiedSlug} (was ${e.data.agentId}, age ${e.ageMinutes.toFixed(1)}m)`);
+            const note = e.reverted ? " -> reverted to ready" : "";
+            console.log(`released ${e.qualifiedSlug} (was ${e.data.agentId}, age ${e.ageMinutes.toFixed(1)}m)${note}`);
           }
           break;
         }

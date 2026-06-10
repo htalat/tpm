@@ -1,6 +1,9 @@
 import { existsSync, mkdirSync, openSync, closeSync, readFileSync, readdirSync, unlinkSync, writeFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { now } from "../../util/time.ts";
+import { loadProjects } from "../tree.ts";
+import { findTask } from "../resolve.ts";
+import * as mutate from "../mutate.ts";
 
 // ---- legacy global lock (one release of overlap; deprecated) ---------------
 //
@@ -316,24 +319,67 @@ export function listTaskLocks(root: string): TaskLockEntry[] {
   return out;
 }
 
+// A released stale lock, plus whether its task was stranded at in-progress and
+// got reverted to ready in the same sweep. `reverted` is false for repo locks
+// (not per-task) and for tasks that weren't in-progress when the lock cleared.
+export interface StaleLockRelease extends TaskLockEntry {
+  reverted: boolean;
+}
+
 // Walk the locks dir and remove anything whose heartbeat hasn't been touched
 // in `ttlMinutes`. Idempotent: safe to call on every orchestrator startup as a
 // hygiene step before the agent attempts its own claim.
-export function releaseStaleTaskLocks(root: string, ttlMinutes: number): TaskLockEntry[] {
+//
+// For each per-task lock released, if the task is still at `in-progress` the
+// lock is gone but nobody's working it — so we revert it to `ready` (with a Log
+// line) for the next agent to pick up. This is the parallel to the post-run
+// strand-on-exit safety net: that one fires when the orchestrator stays alive
+// to notice; this one fires when it didn't (crash, reboot) and the sweep is the
+// first thing to spot the orphaned status.
+export function releaseStaleTaskLocks(root: string, ttlMinutes: number): StaleLockRelease[] {
   if (!Number.isFinite(ttlMinutes) || ttlMinutes <= 0) {
     throw new Error("releaseStaleTaskLocks: ttlMinutes must be a positive number");
   }
-  const removed: TaskLockEntry[] = [];
+  const removed: StaleLockRelease[] = [];
   for (const entry of listTaskLocks(root)) {
     if (entry.ageMinutes > ttlMinutes) {
       try {
         unlinkSync(entry.path);
-        removed.push(entry);
+        removed.push({ ...entry, reverted: false });
       } catch {
         // Race with another process clearing the same lock; ignore.
       }
     }
   }
+
+  // Flip any stranded in-progress tasks back to ready. Repo locks (slug
+  // `repo--<project>`) aren't per-task, so skip them. Load the tree once; if it
+  // can't be read, leave statuses untouched — the post-run net or the next
+  // sweep will catch them.
+  const perTask = removed.filter(e => !e.qualifiedSlug.startsWith("repo--"));
+  if (perTask.length > 0) {
+    let projects;
+    try {
+      projects = loadProjects(root);
+    } catch {
+      projects = null;
+    }
+    if (projects) {
+      for (const e of perTask) {
+        const match = findTask(projects, e.qualifiedSlug);
+        if (!match) continue;
+        if (String(match.task.data.status ?? "") !== "in-progress") continue;
+        try {
+          mutate.revert(match.task, "stranded — lock expired");
+          e.reverted = true;
+        } catch {
+          // Best-effort: the lock is already gone; a failed revert just means
+          // the status flip waits for the next sweep or the post-run net.
+        }
+      }
+    }
+  }
+
   return removed;
 }
 
