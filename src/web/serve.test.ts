@@ -1343,6 +1343,55 @@ test("routeMutation: row close posts `complete` and honors redirect=/ so the que
   assert.match(r.location ?? "", /^\/\?flash=/);
 });
 
+// ---- per-row "Reopen for agent" button (task 146) -------------------------
+
+test("renderIndex: an inbox needs-review row renders the inline Reopen-for-agent button (status=needs-feedback, redirect=/)", () => {
+  // The per-row analogue of the detail-page "Reopen for agent (→ needs-feedback)"
+  // form — one click bounces a review back to the agent from the inbox without
+  // clicking through. Posts to the `status` mutation with status=needs-feedback.
+  const p = project("alpha", [task("001-nr", "needs-review")]);
+  const r = route("/", new URLSearchParams(), [p]);
+  assert.match(
+    r.body,
+    /<form[^>]*method="POST"[^>]*action="\/t\/alpha\/001-nr\/status"[^>]*class="reopen-form"[\s\S]*?name="status"[^>]*value="needs-feedback"[\s\S]*?name="redirect"[^>]*value="\/"/,
+  );
+});
+
+test("renderIndex: non-needs-review rows do NOT render the Reopen-for-agent button", () => {
+  // Self-gating: the button only makes sense on a review awaiting the human, so
+  // it never appears on open/blocked (inbox), ready (agent queue), or
+  // in-progress (in flight) rows.
+  const p = project("alpha", [
+    task("001-o", "open"),          // inbox
+    task("002-b", "blocked", { reason: "x" }), // inbox
+    task("003-r", "ready"),         // agent queue
+    task("004-ip", "in-progress"),  // in flight
+  ]);
+  const r = route("/", new URLSearchParams(), [p]);
+  assert.doesNotMatch(r.body, /class="reopen-form"/);
+});
+
+test("renderIndex: a parent container needs-review row does NOT render the Reopen-for-agent button", () => {
+  // Reopening a container for the agent isn't meaningful — self-gates on parents.
+  const child = task("002-child", "needs-review", { parent: "001-parent" });
+  child.parent = "001-parent";
+  const parent = task("001-parent", "needs-review");
+  parent.children = [child];
+  const p = project("alpha", [parent]);
+  const r = route("/", new URLSearchParams(), [p]);
+  // The child row carries the button; the parent container row does not.
+  assert.match(r.body, /action="\/t\/alpha\/001-parent\/002-child\/status"[^>]*class="reopen-form"/);
+  assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-parent\/status"[^>]*class="reopen-form"/);
+});
+
+test("routeMutation: row Reopen-for-agent posts `status needs-feedback` and honors redirect=/", () => {
+  const { runner, calls } = captureRunner();
+  const r = routeMutation("/t/alpha/001-nr/status", new URLSearchParams("status=needs-feedback&redirect=/"), runner);
+  assert.deepEqual(calls, [["status", "alpha/001-nr", "needs-feedback"]]);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/\?flash=/);
+});
+
 // ---- drop affordance (task 140) -------------------------------------------
 
 test("renderTask: Drop form renders on every non-terminal status, posting to /drop with an optional reason", () => {

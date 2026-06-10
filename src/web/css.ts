@@ -82,13 +82,14 @@ nav.project-chips { display: flex; gap: .4rem; flex-wrap: wrap; align-items: cen
 .task-row { display: flex; gap: .75rem; align-items: center; padding: .35rem 0; border-bottom: 1px solid #eaeef2; }
 .task-row:hover { background: #f6f8fa; }
 .task-row .badge { min-width: 6.5em; text-align: center; }
-.task-row .promote-form, .task-row .pull-form, .task-row .close-form, .task-row .drop-form { margin: 0; padding: 0; background: none; border: 0; display: inline-flex; }
-.task-row .promote-form button, .task-row .pull-form button, .task-row .close-form button, .task-row .drop-form button { padding: .05rem .55rem; font-size: .85em; line-height: 1.3; background: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 999px; cursor: pointer; font-family: inherit; }
+.task-row .promote-form, .task-row .pull-form, .task-row .close-form, .task-row .reopen-form, .task-row .drop-form { margin: 0; padding: 0; background: none; border: 0; display: inline-flex; }
+.task-row .promote-form button, .task-row .pull-form button, .task-row .close-form button, .task-row .reopen-form button, .task-row .drop-form button { padding: .05rem .55rem; font-size: .85em; line-height: 1.3; background: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 999px; cursor: pointer; font-family: inherit; }
 .task-row .promote-form button:hover { background: #ddf0ff; color: #6639ba; border-color: #b392f0; }
 .task-row .promote-form.promote-fast button { color: #57606a; background: transparent; border-style: dashed; }
 .task-row .promote-form.promote-fast button:hover { color: #6639ba; background: #ddf0ff; border-style: solid; border-color: #b392f0; }
 .task-row .pull-form button:hover { background: #fff1e5; color: #9a6700; border-color: #d4a72c; }
 .task-row .close-form button:hover { background: #e6f6eb; color: #1a7f37; border-color: #4ac26b; }
+.task-row .reopen-form button:hover { background: #ddf4ff; color: #0969da; border-color: #54aeff; }
 .task-row .drop-form button:hover { background: #ffebe9; color: #cf222e; border-color: #ff8182; }
 .task-row .when { color: #57606a; font-size: .85em; margin-left: auto; }
 .task-row a.title { font-weight: 500; }
@@ -167,7 +168,7 @@ body { max-width: 1600px; }
   .lock-chip-unclaimed { background: #5d1a1a; color: #ff7b72; }
   .task-row { border-color: #21262d; }
   .task-row:hover { background: #161b22; }
-  .task-row .promote-form button, .task-row .pull-form button, .task-row .close-form button, .task-row .drop-form button { background: #161b22; color: #e6edf3; border-color: #30363d; }
+  .task-row .promote-form button, .task-row .pull-form button, .task-row .close-form button, .task-row .reopen-form button, .task-row .drop-form button { background: #161b22; color: #e6edf3; border-color: #30363d; }
   .task-row .promote-form button:hover { background: #2e1a5e; color: #b392f0; border-color: #6639ba; }
   .task-row .promote-form.promote-fast button { color: #8d96a0; background: transparent; }
   .task-row .promote-form.promote-fast button:hover { color: #b392f0; background: #2e1a5e; border-color: #6639ba; }
@@ -180,6 +181,7 @@ body { max-width: 1600px; }
   .bulk-act-drop:hover { background: #5d1a1a; color: #ff7b72; border-color: #9e2c2c; }
   .bulk-reason { background: #0d1117; color: #e6edf3; border-color: #30363d; }
   .task-row .close-form button:hover { background: #0d2f1a; color: #4ac26b; border-color: #238636; }
+  .task-row .reopen-form button:hover { background: #0c2d4a; color: #54aeff; border-color: #1f6feb; }
   .task-row .drop-form button:hover { background: #3d1418; color: #ff7b72; border-color: #9e2c2c; }
   .sidebar dt { color: #8d96a0; }
   .body pre { background: #161b22; }
