@@ -64,8 +64,13 @@ export function start(task: Task, verb: string = "started"): MutateResult {
   return transition(task, "in-progress", verb);
 }
 
+// Promote clears the orchestrator retry counter: a human re-promoting an
+// auto-blocked (or just unlucky) task is the explicit "try again" signal.
+// `revert` (the orchestrator's own ready-flip on timeout/no-progress) goes
+// through transition() directly and does NOT clear — otherwise the retry cap
+// could never trip.
 export function ready(task: Task): MutateResult {
-  return transition(task, "ready", "promoted to ready");
+  return transition(task, "ready", "promoted to ready", { clearAttempts: true });
 }
 
 export function block(task: Task, reason: string): MutateResult {
@@ -77,11 +82,12 @@ export function block(task: Task, reason: string): MutateResult {
 
 // Reopen is the sanctioned exit from the terminal statuses (done/dropped) —
 // the transition table allows `open` as a target from everywhere, so this
-// verb never refuses.
+// verb never refuses. Clears the retry counter for the same reason `ready`
+// does: pulling a task back to open means a human is reshaping it.
 export function reopen(task: Task, reason?: string): MutateResult {
   const trimmed = reason?.trim();
   const verb = trimmed ? `reopened — ${trimmed}` : "reopened";
-  return transition(task, "open", verb);
+  return transition(task, "open", verb, { clearAttempts: true });
 }
 
 // Revert an in-progress task back to ready — used when the orchestrator
@@ -421,6 +427,38 @@ export function setAllowOrchestrator(task: Task, allow: boolean): MutateResult {
   atomicWriteFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
   return { message: `${task.slug}: allow_orchestrator -> ${allow}` };
+}
+
+// Orchestrator retry accounting. The counter lives in frontmatter
+// (`orchestrator_attempts`) so it survives process restarts and is visible
+// when reading the file. Lifecycle: bumped by the orchestrator at claim time,
+// cleared when a run ships (PR/report delivered) or when a human re-promotes
+// (`tpm ready` / `tpm reopen` — the explicit "try again" signals). The
+// orchestrator refuses to dispatch past the max_attempts cascade and
+// auto-blocks instead, so a perma-failing task can't burn an agent run on
+// every tick forever.
+export function readOrchestratorAttempts(data: Record<string, unknown>): number {
+  const v = data.orchestrator_attempts;
+  return typeof v === "number" && Number.isInteger(v) && v > 0 ? v : 0;
+}
+
+export function bumpOrchestratorAttempts(task: Task): number {
+  guardArchived(task);
+  const { data, body } = readParsed(task);
+  const next = readOrchestratorAttempts(data) + 1;
+  data.orchestrator_attempts = next;
+  atomicWriteFileSync(task.path, stringify(data, body));
+  syncInMemory(task, data, body);
+  return next;
+}
+
+export function clearOrchestratorAttempts(task: Task): void {
+  guardArchived(task);
+  const { data, body } = readParsed(task);
+  if (data.orchestrator_attempts === undefined) return; // nothing to clear, skip the write
+  delete data.orchestrator_attempts;
+  atomicWriteFileSync(task.path, stringify(data, body));
+  syncInMemory(task, data, body);
 }
 
 // Reclassify a task's `type:` (pr / investigation). Type drives
@@ -795,6 +833,9 @@ function appendProjectLog(body: string, line: string): string {
 
 interface TransitionOpts {
   force?: boolean; // bypass the legality table (tpm status --force repair path)
+  // Drop the orchestrator retry counter as part of this transition (human
+  // promote/reopen paths). Folded into the same write — no second I/O.
+  clearAttempts?: boolean;
 }
 
 function transition(task: Task, target: Status, logVerb: string, opts: TransitionOpts = {}): MutateResult {
@@ -806,6 +847,9 @@ function transition(task: Task, target: Status, logVerb: string, opts: Transitio
   }
   if (!opts.force) {
     assertTransition(task.slug, current, target);
+  }
+  if (opts.clearAttempts && data.orchestrator_attempts !== undefined) {
+    delete data.orchestrator_attempts;
   }
   data.status = target;
   if (target !== "done" && data.closed) {

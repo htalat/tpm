@@ -20,6 +20,8 @@ import {
   repoGuardAction,
   resolvePoolShape,
   resolveTimeBound,
+  resolveMaxAttempts,
+  DEFAULT_MAX_ATTEMPTS,
   runPool,
   runWithTimeout,
   shouldAutoRevert,
@@ -1814,4 +1816,19 @@ test("runPool: shouldStop (daemon shutdown) drains every worker and returns", as
   }
   assert.deepEqual(fake.spawned, [1, 2], "initial reconcile spawned both workers");
   assert.deepEqual([...fake.drainedAtExit].sort(), [1, 2], "stop marked every worker for drain");
+});
+
+// ---- retry cap (max_attempts cascade) -----------------------------------------
+
+test("resolveMaxAttempts: task > project > global > default 3", () => {
+  const mk = (taskMax?: unknown, projectMax?: unknown) => ({
+    task: { slug: "t", path: "/tmp/t.md", archived: false, body: "", data: taskMax === undefined ? {} : { max_attempts: taskMax } },
+    project: { slug: "p", path: "/tmp/p.md", dir: "/tmp/p", body: "", tasks: [], data: projectMax === undefined ? {} : { max_attempts: projectMax } },
+  });
+  assert.equal(resolveMaxAttempts(mk(), undefined), DEFAULT_MAX_ATTEMPTS);
+  assert.equal(resolveMaxAttempts(mk(), 7), 7);
+  assert.equal(resolveMaxAttempts(mk(undefined, 5), 7), 5);
+  assert.equal(resolveMaxAttempts(mk(2, 5), 7), 2);
+  // Non-positive / non-integer values fall through the cascade.
+  assert.equal(resolveMaxAttempts(mk(0, -1), 1.5 as number), DEFAULT_MAX_ATTEMPTS);
 });

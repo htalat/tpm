@@ -9,6 +9,7 @@ import {
   setAllowOrchestrator, reparent, addReport, requestReportChanges,
   pullFromQueue, appendLog, setSection, sectionHasContent, editTaskSection,
   editProjectSection, onStatusChange,
+  bumpOrchestratorAttempts, clearOrchestratorAttempts, readOrchestratorAttempts,
 } from "./mutate.ts";
 import type { StatusChange } from "./mutate.ts";
 import { parse } from "../util/frontmatter.ts";
@@ -2294,6 +2295,56 @@ test("onStatusChange: not fired on idempotent no-ops or refused transitions; lis
     assert.match(readFileSync(t.path, "utf8"), /status: in-progress/);
   } finally {
     onStatusChange(null);
+    rmTempDir(root);
+  }
+});
+
+// ---- orchestrator retry accounting -------------------------------------------
+
+test("orchestrator attempts: bump increments from unset; read parses; clear removes", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "ready");
+    const t = loadTask(root, "alpha", "001-a");
+    assert.equal(readOrchestratorAttempts(t.data), 0);
+    assert.equal(bumpOrchestratorAttempts(t), 1);
+    assert.equal(bumpOrchestratorAttempts(t), 2);
+    assert.match(readFileSync(t.path, "utf8"), /orchestrator_attempts: 2/);
+    assert.equal(readOrchestratorAttempts(t.data), 2);
+    clearOrchestratorAttempts(t);
+    assert.doesNotMatch(readFileSync(t.path, "utf8"), /orchestrator_attempts/);
+    // clear on an unset counter is a no-op (no write, no throw)
+    clearOrchestratorAttempts(t);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("orchestrator attempts: human promote (ready) and reopen clear; orchestrator revert keeps", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    bumpOrchestratorAttempts(t);
+    bumpOrchestratorAttempts(t);
+
+    // Orchestrator revert (timeout / no-progress) keeps the counter — the cap
+    // counts consecutive burned runs, and revert is exactly the burn path.
+    revert(t, "timed out");
+    assert.match(readFileSync(t.path, "utf8"), /orchestrator_attempts: 2/);
+
+    // Human re-promote is the explicit "try again" — counter drops.
+    setStatus(t, "blocked", "auto-blocked");
+    ready(t);
+    assert.doesNotMatch(readFileSync(t.path, "utf8"), /orchestrator_attempts/);
+
+    // Reopen clears too.
+    bumpOrchestratorAttempts(t);
+    reopen(t, "reshaping");
+    assert.doesNotMatch(readFileSync(t.path, "utf8"), /orchestrator_attempts/);
+  } finally {
     rmTempDir(root);
   }
 });

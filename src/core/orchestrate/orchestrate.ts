@@ -44,6 +44,23 @@ function posInt(v: unknown): number | null {
   return null;
 }
 
+// Retry cap cascade: task > project > config > default. Same shape as
+// resolveTimeBound. A task that has already burned this many runs without
+// shipping is auto-blocked at claim time instead of dispatched again.
+export const DEFAULT_MAX_ATTEMPTS = 3;
+export function resolveMaxAttempts(
+  input: { task: Task; project: Project },
+  globalMax?: number,
+): number {
+  const t = posInt(input.task.data.max_attempts);
+  if (t !== null) return t;
+  const p = posInt(input.project.data.max_attempts);
+  if (p !== null) return p;
+  const g = posInt(globalMax);
+  if (g !== null) return g;
+  return DEFAULT_MAX_ATTEMPTS;
+}
+
 // Did the spawned agent move the task forward? Classification happens after
 // the child exits, against a snapshot of the task taken before the spawn.
 //
@@ -979,6 +996,20 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
   // `blocked` so it surfaces in `tpm inbox` and drops off the queue (operator
   // clones, then `tpm ready <task>` to re-enter). repoGuardAction keeps a task
   // already blocked on a prior tick from being re-blocked / re-logged.
+  // Release the claim locks on any refuse-to-dispatch path (repo guard,
+  // retry cap, eager-flip failure) so the task is claimable once the
+  // blocker is resolved.
+  const releaseClaimLocks = () => {
+    try { lock.releaseTask(root, slug, agentId); } catch (e) {
+      log("ERROR", `lock release failed for ${slug}: ${(e as Error).message}`);
+    }
+    if (resolveSameRepoStrategy(pick.project) === "serialize") {
+      try { lock.releaseRepo(root, pick.project.slug, agentId); } catch (e) {
+        log("ERROR", `repo lock release failed for ${pick.project.slug}: ${(e as Error).message}`);
+      }
+    }
+  };
+
   const repo = resolveRepo(pick.project, pick.task);
   const repoCheck = checkProjectRepo(slug, repo, existsSync);
   const guard = repoGuardAction(String(pick.task.data.status ?? ""), repoCheck);
@@ -991,14 +1022,26 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
         log("ERROR", `block ${slug} failed: ${(e as Error).message}`);
       }
     }
-    try { lock.releaseTask(root, slug, agentId); } catch (e) {
-      log("ERROR", `lock release failed for ${slug}: ${(e as Error).message}`);
+    releaseClaimLocks();
+    return { exitCode: 1 };
+  }
+
+  // Retry cap: a task that already burned max_attempts runs without shipping
+  // gets auto-blocked, not re-dispatched — otherwise a perma-failing task
+  // costs an agent run on every tick forever. The counter clears when a run
+  // ships or a human re-promotes (`tpm ready` / `tpm reopen`), so blocking
+  // here is a one-way gate until a human looks at the run logs.
+  const attempts = mutate.readOrchestratorAttempts(pick.task.data);
+  const maxAttempts = resolveMaxAttempts({ task: pick.task, project: pick.project }, cfg.max_attempts);
+  if (attempts >= maxAttempts) {
+    const reason = `auto-blocked: ${attempts} orchestrator run${attempts === 1 ? "" : "s"} without shipping (max_attempts=${maxAttempts}); review the run logs, then \`tpm ready ${slug}\` to retry`;
+    try {
+      mutate.block(pick.task, reason);
+      log("WARN", `${slug}: ${reason}`);
+    } catch (e) {
+      log("ERROR", `retry-cap block ${slug} failed: ${(e as Error).message}`);
     }
-    if (resolveSameRepoStrategy(pick.project) === "serialize") {
-      try { lock.releaseRepo(root, pick.project.slug, agentId); } catch (e) {
-        log("ERROR", `repo lock release failed for ${pick.project.slug}: ${(e as Error).message}`);
-      }
-    }
+    releaseClaimLocks();
     return { exitCode: 1 };
   }
 
@@ -1072,15 +1115,18 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
     mutate.start(pick.task, ORCHESTRATOR_CLAIM_VERB);
   } catch (e) {
     log("ERROR", `${slug}: eager claim flip failed: ${(e as Error).message}`);
-    try { lock.releaseTask(root, slug, agentId); } catch (le) {
-      log("ERROR", `lock release failed for ${slug}: ${(le as Error).message}`);
-    }
-    if (resolveSameRepoStrategy(pick.project) === "serialize") {
-      try { lock.releaseRepo(root, pick.project.slug, agentId); } catch (le) {
-        log("ERROR", `repo lock release failed for ${pick.project.slug}: ${(le as Error).message}`);
-      }
-    }
+    releaseClaimLocks();
     return { exitCode: 1 };
+  }
+
+  // Count this dispatch against the retry cap. Bumped after the eager flip
+  // so a flip failure doesn't consume an attempt; cleared below when the
+  // disposition is `shipped`.
+  try {
+    const attemptNo = mutate.bumpOrchestratorAttempts(pick.task);
+    log("INFO", `${slug}: attempt ${attemptNo}/${maxAttempts}`);
+  } catch (e) {
+    log("WARN", `${slug}: could not record attempt: ${(e as Error).message}`);
   }
 
   let result: OrchestrateResult;
@@ -1187,6 +1233,17 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
   });
   const level = disposition === "stalled" ? "WARN" : "INFO";
   log(level, formatDispositionLine(slug, disposition, result.exitCode, before, after));
+
+  // A shipping run resets the retry counter: the cap is about consecutive
+  // burns, not lifetime dispatch count (a needs-feedback round after a
+  // shipped PR starts fresh).
+  if (disposition === "shipped" && matchAfter && !matchAfter.task.archived) {
+    try {
+      mutate.clearOrchestratorAttempts(matchAfter.task);
+    } catch (e) {
+      log("WARN", `${slug}: could not clear attempt counter: ${(e as Error).message}`);
+    }
+  }
 
   // Strand-on-exit safety net (task 063). If the agent left the task at
   // in-progress with no shipping signal, revert to ready so the next
