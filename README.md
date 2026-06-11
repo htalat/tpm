@@ -26,6 +26,7 @@ A tpm tree (data — lives wherever `tpm init` was run, e.g. `~/Documents/projec
 ```
 <root>/.tpm/templates/                          per-tree templates (copied from defaults)
 <root>/.tpm/locks/<project>--<slug>.lock        per-task orchestrator locks (gitignore if syncing)
+<root>/.tpm/events.ndjson                       append-only journal of status transitions (audit trail)
 <root>/reports/index.html                       generated rollup
 <root>/<slug>/project.md                        goals, context, notes, project log
 <root>/<slug>/tasks/NNN-*/task.md               folder-form task (default; task.md + supporting files)
@@ -198,6 +199,8 @@ stateDiagram-v2
 ```
 
 The poller that flips `in-progress` → `done` (inline auto-close on merge) / `needs-feedback` / `needs-review` is `tpm poll` — see [PR-signal poller](#pr-signal-poller) below.
+
+The diagram is enforced, not just documented: every status write goes through the allow-list transition table in `src/core/transitions.ts`. Terminals (`done` / `dropped`) have exactly one exit (`tpm reopen`), `open` can't jump straight to a `needs-*` state, and the in-flight statuses are fully connected (operator, agent, and poller all legitimately move tasks between them). `tpm status <task> <new-status> --force` bypasses the table for repairing hand-mangled frontmatter. Every transition is also journaled to `<root>/.tpm/events.ndjson` (one NDJSON line: timestamp, task, from → to, verb, actor) — the audit trail for "who moved what, when".
 
 ### Drain the agent queue: three flavors
 
@@ -405,7 +408,9 @@ tpm complete <task> [--outcome "..."] [--no-archive] [--archive]
 tpm block <task> "<reason>"               # set status: blocked, log the reason
 tpm reopen <task> ["<reason>"]            # set status: open, log reopened (optional reason)
 tpm revert <task> ["<reason>"]            # flip in-progress -> ready, log a timeout/revert (no-op otherwise)
-tpm status <task> <new-status>            # generic status setter (validated)
+tpm status <task> <new-status> [--force]  # generic status setter, validated against the
+                                          # transition table (src/core/transitions.ts);
+                                          # --force bypasses (repair hatch)
 tpm log <task> "<message>"                # append a single timestamped Log line
 tpm pr <task> <url>                       # add URL to prs:, log opened PR
 tpm report <task>                         # attach a report artifact to an investigation task

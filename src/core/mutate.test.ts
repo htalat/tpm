@@ -8,8 +8,9 @@ import {
   start, ready, block, reopen, revert, logEntry, addPr, setStatus, setType, complete, drop,
   setAllowOrchestrator, reparent, addReport, requestReportChanges,
   pullFromQueue, appendLog, setSection, sectionHasContent, editTaskSection,
-  editProjectSection,
+  editProjectSection, onStatusChange,
 } from "./mutate.ts";
+import type { StatusChange } from "./mutate.ts";
 import { parse } from "../util/frontmatter.ts";
 
 function projectMd(slug: string): string {
@@ -2182,6 +2183,117 @@ test("editProjectSection: seeds a ## Log section when the project has none", () 
     assert.match(text, /## Goal\nnew goal text\./);
     assert.match(text, /## Log\n- .*: edited Goal \(via serve\)/);
   } finally {
+    rmTempDir(root);
+  }
+});
+
+// ---- transition table enforcement (task: phase-1 hardening) ----------------
+
+test("status: terminal protection — done can only reopen, not jump back in flight", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "done");
+    const t = loadTask(root, "alpha", "001-a");
+    assert.throws(() => setStatus(t, "in-progress"), /from "done" to "in-progress".*reopen/);
+    assert.throws(() => setStatus(t, "ready"), /from "done" to "ready"/);
+    // file untouched on refusal
+    assert.match(readFileSync(t.path, "utf8"), /status: done/);
+    // reopen is the sanctioned exit
+    reopen(t);
+    assert.match(readFileSync(t.path, "utf8"), /status: open/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("status: cross-terminal moves refused (done <-> dropped)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "dropped");
+    const t = loadTask(root, "alpha", "001-a");
+    assert.throws(() => setStatus(t, "done"), /from "dropped" to "done"/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("status: open cannot jump to needs-review; --force overrides", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "open");
+    const t = loadTask(root, "alpha", "001-a");
+    assert.throws(() => setStatus(t, "needs-review"), /Legal targets from "open"/);
+    setStatus(t, "needs-review", undefined, { force: true });
+    assert.match(readFileSync(t.path, "utf8"), /status: needs-review/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("status: unknown current status is a repair wildcard (no refusal)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    // Hand-mangled frontmatter: a status outside the vocabulary.
+    writeTask(dir, "001-a.md", "wip");
+    const t = loadTask(root, "alpha", "001-a");
+    setStatus(t, "ready");
+    assert.match(readFileSync(t.path, "utf8"), /status: ready/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+// ---- onStatusChange listener ------------------------------------------------
+
+test("onStatusChange: fires on every status write path with from/to/verb", () => {
+  const root = mkTempDir();
+  const seen: Array<{ from: string; to: string; verb: string; slug: string }> = [];
+  onStatusChange((c: StatusChange) => seen.push({ from: c.from, to: c.to, verb: c.verb, slug: c.task.slug }));
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "open");
+    const t = loadTask(root, "alpha", "001-a");
+    ready(t);                      // transition() path
+    start(t);                      // transition() path
+    addPr(t, "https://github.com/o/r/pull/1");  // direct-writer path
+    complete(t, { archive: false });             // direct-writer path
+    assert.deepEqual(seen.map(e => `${e.from}->${e.to}`), [
+      "open->ready",
+      "ready->in-progress",
+      "in-progress->needs-review",
+      "needs-review->done",
+    ]);
+    assert.equal(seen[2].verb, "PR opened, awaiting review");
+    assert.ok(seen.every(e => e.slug === "001-a"));
+  } finally {
+    onStatusChange(null);
+    rmTempDir(root);
+  }
+});
+
+test("onStatusChange: not fired on idempotent no-ops or refused transitions; listener errors are swallowed", () => {
+  const root = mkTempDir();
+  let calls = 0;
+  onStatusChange(() => { calls++; throw new Error("listener boom"); });
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "ready");
+    const t = loadTask(root, "alpha", "001-a");
+    ready(t);                                  // already ready — no-op, no event
+    assert.equal(calls, 0);
+    writeTask(dir, "002-b.md", "done");
+    const t2 = loadTask(root, "alpha", "002-b");
+    assert.throws(() => setStatus(t2, "in-progress"));
+    assert.equal(calls, 0);
+    start(t);                                  // real flip — listener throws, mutation still lands
+    assert.equal(calls, 1);
+    assert.match(readFileSync(t.path, "utf8"), /status: in-progress/);
+  } finally {
+    onStatusChange(null);
     rmTempDir(root);
   }
 });

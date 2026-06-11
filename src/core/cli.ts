@@ -26,11 +26,23 @@ import { resolveRepo } from "./context.ts";
 import { checkDrift } from "./drift.ts";
 import { getScheduler } from "./scheduler/types.ts";
 import { refreshSkills } from "./refresh_skills.ts";
+import { appendStatusEvent } from "./events.ts";
 
 const VERSION = readVersion();
 
 const args = process.argv.slice(2);
 const cmd = args[0];
+
+// Journal every status transition to <root>/.tpm/events.ndjson. Registered
+// here rather than inside mutate because mutate is the single-task-file layer
+// with no root context. Pre-init commands (`tpm init`, `tpm help`) have no
+// root to journal into — skip silently.
+try {
+  const eventsRoot = findRoot();
+  mutate.onStatusChange(change => appendStatusEvent(eventsRoot, change));
+} catch {
+  // no tree yet — journaling off for this invocation
+}
 
 // Hoisted above the dispatch (not parked next to the other helpers below)
 // because the `help`, `config get`, and `config set` case branches all run
@@ -320,9 +332,19 @@ try {
       break;
     }
     case "status": {
-      const newStatus = args[2];
-      if (!args[1] || !newStatus) usage("tpm status <task> <new-status>");
-      const r = mutate.setStatus(resolveLiveTask(args[1], "tpm status <task> <new-status>"), newStatus);
+      // --force bypasses the transition legality table (transitions.ts) — the
+      // repair hatch for hand-mangled frontmatter or a flow the table doesn't
+      // model yet. Normal moves should go through the purpose-built verbs.
+      const force = args.includes("--force");
+      const positional = args.slice(1).filter(a => a !== "--force");
+      const newStatus = positional[1];
+      if (!positional[0] || !newStatus) usage("tpm status <task> <new-status> [--force]");
+      const r = mutate.setStatus(
+        resolveLiveTask(positional[0], "tpm status <task> <new-status> [--force]"),
+        newStatus,
+        undefined,
+        { force },
+      );
       console.log(r.message);
       break;
     }
@@ -1014,7 +1036,7 @@ Usage:
   tpm reopen <task> ["<reason>"]             set status: open, log it (optional reason on the Log)
   tpm pull <task>                            pull a queued or running task back into the human pile: ready/in-progress -> open, needs-feedback -> needs-review
   tpm revert <task> ["<reason>"]             flip in-progress -> ready, log a timeout/revert (no-op otherwise)
-  tpm status <task> <new-status>             generic status setter (validated)
+  tpm status <task> <new-status> [--force]   generic status setter (validated against the transition table; --force bypasses)
   tpm set-type <task> <pr|investigation>   reclassify a task's type: (validated); back-end for tpm serve's type dropdown
   tpm log <task> "<message>"                 append a single timestamped Log line
   tpm edit <task> <title|context|plan|outcome> "<value>" [--expect-mtime <ms>]
