@@ -29,6 +29,7 @@ import {
   parseRunLog,
 } from "../core/orchestrate/run_log.ts";
 import type { RunEvent } from "../core/orchestrate/run_log.ts";
+import type { AgentOutputFormat } from "../core/agent_cli.ts";
 import {
   CONFIG_PATH,
   DEFAULT_NOTIFICATIONS,
@@ -431,7 +432,13 @@ export interface RouteOpts {
   // empty (route() stays disk-free); `handleRequest` wires the events.ndjson
   // tail reader.
   recentEvents?: () => StatusEventRecord[];
+  // Incremental run-log tail for the live transcript endpoint. Returns the
+  // complete lines appended since `offset` plus the advanced offset, or null
+  // for an invalid/missing log. Defaults to the on-disk reader; tests stub.
+  runLogTail?: RunLogTailReader;
 }
+
+export type RunLogTailReader = (task: Task, name: string, offset: number) => { lines: string[]; offset: number } | null;
 
 // Default tail size for the `/logs` page. Big enough that the operator can
 // reconstruct an incident without paging; small enough that the page renders
@@ -569,6 +576,39 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     if (!match) return notFound(`No task: ${query}`);
     return ok("text/html; charset=utf-8", renderTaskReport(projects, match.project, match.task, opts));
   }
+  // Incremental transcript tail: `/t/<proj>/<slug>/runs/<basename>/tail
+  // ?offset=N&format=F` → JSON {html, offset, running}. The runs page's
+  // client polls this every couple of seconds while the task is in-progress
+  // and appends the server-rendered event fragments — same renderer as the
+  // full panel, so escaping and shape stay identical. Byte-offset framing
+  // comes from readJournalLinesFrom (complete lines only). `format` is the
+  // NDJSON dialect from the run header, embedded at first render — the tail
+  // chunk doesn't carry the header line itself.
+  const taskRunTailMatch = pathname.match(/^\/t\/(.+)\/runs\/([^/]+)\/tail\/?$/);
+  if (taskRunTailMatch) {
+    const query = decodeURIComponent(taskRunTailMatch[1]);
+    const name = decodeURIComponent(taskRunTailMatch[2]);
+    let match: { project: Project; task: Task } | null = null;
+    try { match = findTask(projects, query); } catch { match = null; }
+    if (!match) return notFound(`No task: ${query}`);
+    const tailReader = opts.runLogTail ?? defaultRunLogTailReader;
+    const offsetRaw = params.get("offset") ?? "";
+    // Garbage / missing offset skips to EOF (-1) instead of replaying a
+    // potentially huge file from 0.
+    const offset = /^\d+$/.test(offsetRaw) ? Number(offsetRaw) : -1;
+    const formatRaw = params.get("format") ?? "";
+    const format: AgentOutputFormat = formatRaw === "copilot-json" || formatRaw === "text"
+      ? formatRaw
+      : "claude-stream-json";
+    const tail = tailReader(match.task, name, offset);
+    if (!tail) return notFound(`No run log: ${name}`);
+    const { events } = parseRunLog(tail.lines.join("\n"), { format });
+    return ok("application/json", JSON.stringify({
+      html: events.map(renderRunEvent).join(""),
+      offset: tail.offset,
+      running: rollupStatus(match.task) === "in-progress",
+    }));
+  }
   // Per-task raw run-log viewer: `/t/<proj>/<slug>/runs/<basename>`. The
   // basename pattern depends on the task: top-level uses `<utc>.log`, child
   // uses `<child-slug>--<utc>.log` (children share the parent's runs/ on
@@ -656,6 +696,16 @@ function defaultRunLogRawReader(task: Task, name: string): string | null {
   } catch {
     return null;
   }
+}
+
+// On-disk incremental tail for the live-transcript endpoint: validate the
+// name (same gate as the raw viewer, so the join can't escape runs/), find
+// the file, and read complete lines from the byte offset.
+function defaultRunLogTailReader(task: Task, name: string, offset: number): { lines: string[]; offset: number } | null {
+  if (!isValidRunLogName(name, task)) return null;
+  const path = allRunLogs(task).find(p => basename(p) === name);
+  if (!path || !existsSync(path)) return null;
+  return readJournalLinesFrom(path, offset);
 }
 
 // Map a pre-095 flat-dir filename back to the per-task viewer URL. The
@@ -2361,9 +2411,11 @@ function renderTaskRuns(
 </section>`;
   }
   // Auto-refresh while in-progress so an operator camped on `/runs` sees the
-  // live run stream update without manual reload. Cadence matches the task
-  // detail page's old refresh from task 057.
+  // live run stream update without manual reload; the 2s live-tail appender
+  // (RUN_TAIL_SCRIPT) layers on top for event-level latency, and the slower
+  // full swap reconciles anything the appender missed.
   const autoRefresh = status === "in-progress" ? 10 : undefined;
+  const tailScript = status === "in-progress" ? `<script>${RUN_TAIL_SCRIPT}</script>` : "";
   const body = `
 ${projectChips(projects, project.slug)}
 ${breadcrumbFor(project, task, { suffix: "runs" })}
@@ -2374,7 +2426,7 @@ ${breadcrumbFor(project, task, { suffix: "runs" })}
 ${latestPanel}
 ${listSection}
 `;
-  return layout(`tpm · ${title} · runs`, body, { autoRefresh });
+  return layout(`tpm · ${title} · runs`, body, { autoRefresh, afterRoot: tailScript });
 }
 
 // On-disk run-log filenames: top-level is `<utc>.log`, child is
@@ -2410,9 +2462,15 @@ function renderRunPanel(task: Task, slugSegs: string, status: string, runLog: Ru
   <p class="run-empty">${esc(note)}</p>
 </section>`;
   }
-  const { events, parsed, skipped } = parseRunLog(snapshot.text);
+  const { events, parsed, skipped, format } = parseRunLog(snapshot.text);
   const tail = events.slice(-RUN_PANEL_EVENTS);
-  const rendered = tail.length === 0
+  const live = status === "in-progress";
+  // While in-progress, always render the <ol> (even empty) so the live-tail
+  // script has an append target, and stamp the tail endpoint + byte offset +
+  // NDJSON dialect on the section. The script re-reads these from the DOM on
+  // every tick, so a soft-poll swap (which re-renders the panel with a fresh
+  // offset) can't desync the appender.
+  const rendered = tail.length === 0 && !live
     ? `<p class="run-empty">Log file is empty — the agent hasn't written anything yet.</p>`
     : `<ol class="run-events">${tail.map(renderRunEvent).join("")}</ol>`;
   const truncated = events.length > tail.length
@@ -2422,7 +2480,10 @@ function renderRunPanel(task: Task, slugSegs: string, status: string, runLog: Ru
     ? `<p class="run-warning">${parsed} events parsed, ${skipped} skipped — file may have been truncated or partially written.</p>`
     : "";
   const rawLink = `<p class="run-meta"><a href="/t/${slugSegs}/runs/${encodeURIComponent(snapshot.name)}">View raw log →</a></p>`;
-  return `<section class="run-panel">
+  const tailAttrs = live
+    ? ` data-tail="/t/${slugSegs}/runs/${encodeURIComponent(snapshot.name)}/tail" data-offset="${Buffer.byteLength(snapshot.text)}" data-format="${escAttr(format)}"`
+    : "";
+  return `<section class="run-panel"${tailAttrs}>
   <h2>${esc(label)} <span class="meta">${esc(snapshot.name)}</span></h2>
   ${warning}
   ${rendered}
@@ -2430,6 +2491,38 @@ function renderRunPanel(task: Task, slugSegs: string, status: string, runLog: Ru
   ${rawLink}
 </section>`;
 }
+
+// Live transcript appender for the runs page. Lives OUTSIDE #poll-root (via
+// layout's afterRoot) so the page's soft-poll swaps never recreate the
+// interval. State (offset) lives on the panel's data attributes, which the
+// soft-poll replaces with a server-stamped value on every swap — the guard
+// below drops a response whose request offset no longer matches the DOM, so
+// swap + in-flight tail can't double-append.
+const RUN_TAIL_SCRIPT = `(function(){
+var timer=setInterval(tick,2000);
+function tick(){
+  // No tail-armed panel yet: the run log may not exist (orchestrator just
+  // spawned) — keep waiting; the soft-poll swap arms the panel once the
+  // first bytes land. A cheap no-op querySelector per tick otherwise.
+  var p=document.querySelector('.run-panel[data-tail]');
+  if(!p)return;
+  var off=p.getAttribute('data-offset');
+  fetch(p.getAttribute('data-tail')+'?offset='+encodeURIComponent(off)+'&format='+encodeURIComponent(p.getAttribute('data-format')||''))
+    .then(function(r){return r.ok?r.json():null;})
+    .then(function(j){
+      if(!j)return;
+      var p2=document.querySelector('.run-panel[data-tail]');
+      if(!p2)return;
+      if(p2.getAttribute('data-offset')!==off)return; // swapped mid-flight
+      if(j.html){
+        var ol=p2.querySelector('ol.run-events');
+        if(ol)ol.insertAdjacentHTML('beforeend',j.html);
+      }
+      p2.setAttribute('data-offset',String(j.offset));
+      if(!j.running)clearInterval(timer);
+    }).catch(function(){});
+}
+})();`;
 
 function renderRunEvent(ev: RunEvent): string {
   switch (ev.kind) {

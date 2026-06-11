@@ -3830,3 +3830,73 @@ test("route: every page's site header carries the search box", () => {
   const r = route("/p/alpha", new URLSearchParams(), [p], {});
   assert.match(r.body, /class="site-search"/);
 });
+
+// ---- live transcript tail (/t/<slug>/runs/<name>/tail) -------------------------
+
+test("route: runs tail returns rendered event fragments + advanced offset + running flag", () => {
+  const t = task("001-a", "in-progress");
+  const p = project("alpha", [t]);
+  const lines = [
+    '{"type":"assistant","message":{"content":[{"type":"text","text":"working on it"}]}}',
+  ];
+  const r = route("/t/alpha/001-a/runs/20260611T000000Z.log/tail", new URLSearchParams("offset=10&format=claude-stream-json"), [p], {
+    runLogTail: (_task, name, offset) => {
+      assert.equal(name, "20260611T000000Z.log");
+      assert.equal(offset, 10);
+      return { lines, offset: 99 };
+    },
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.contentType, "application/json");
+  const j = JSON.parse(r.body);
+  assert.match(j.html, /working on it/);
+  assert.match(j.html, /class="ev ev-text"/);
+  assert.equal(j.offset, 99);
+  assert.equal(j.running, true);
+});
+
+test("route: runs tail — garbage offset skips to EOF (-1); missing log 404s; finished task reports running:false", () => {
+  const t = task("001-a", "done");
+  const p = project("alpha", [t]);
+  let seenOffset: number | null = null;
+  const r = route("/t/alpha/001-a/runs/x.log/tail", new URLSearchParams("offset=banana"), [p], {
+    runLogTail: (_task, _name, offset) => {
+      seenOffset = offset;
+      return { lines: [], offset: 500 };
+    },
+  });
+  assert.equal(seenOffset, -1);
+  assert.equal(JSON.parse(r.body).running, false);
+  const missing = route("/t/alpha/001-a/runs/x.log/tail", new URLSearchParams(), [p], {
+    runLogTail: () => null,
+  });
+  assert.equal(missing.status, 404);
+});
+
+test("route: in-progress runs page arms the live-tail panel (data attrs + appender script outside poll-root)", () => {
+  const t = task("001-a", "in-progress");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a/runs", new URLSearchParams(), [p], {
+    runLogList: () => ["20260611T000000Z.log"],
+    runLog: () => ({ name: "20260611T000000Z.log", text: '# tpm-run agent=claude outputFormat=claude-stream-json\n' }),
+  });
+  assert.match(r.body, /data-tail="\/t\/alpha\/001-a\/runs\/20260611T000000Z\.log\/tail"/);
+  assert.match(r.body, /data-offset="\d+"/);
+  assert.match(r.body, /data-format="claude-stream-json"/);
+  assert.match(r.body, /<ol class="run-events">/, "empty live panel still renders the append target");
+  // The appender lives outside #poll-root (afterRoot) so soft-poll swaps
+  // never recreate its interval.
+  const afterRoot = r.body.slice(r.body.lastIndexOf("</div>"));
+  assert.match(afterRoot, /setInterval\(tick,2000\)/, "appender script present after poll-root");
+});
+
+test("route: completed runs page renders no tail attrs and no appender", () => {
+  const t = task("001-a", "done");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-a/runs", new URLSearchParams(), [p], {
+    runLogList: () => ["20260611T000000Z.log"],
+    runLog: () => ({ name: "20260611T000000Z.log", text: '# tpm-run agent=claude outputFormat=claude-stream-json\n' }),
+  });
+  assert.doesNotMatch(r.body, /data-tail=/);
+  assert.doesNotMatch(r.body, /setInterval\(tick,2000\)/);
+});
