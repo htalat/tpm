@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { execFileSync } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,7 +39,7 @@ import {
 } from "../core/config.ts";
 import type { Config } from "../core/config.ts";
 import type { HarnessSnapshot } from "../core/orchestrate/supervisor.ts";
-import { eventsPath, readRecentEvents } from "../core/events.ts";
+import { eventsPath, readJournalLinesFrom, readRecentEvents } from "../core/events.ts";
 import type { StatusEventRecord } from "../core/events.ts";
 import { taskPath } from "./serve_url.ts";
 import { defaultHarnessLogReader, parseTaskLogEntries } from "../core/harness_log.ts";
@@ -251,41 +251,18 @@ export function broadcastSse(event: string, data: string): void {
 
 function pumpSseTail(journalPath: string): void {
   if (sseClients.size === 0) return;
-  let size = 0;
-  try {
-    size = statSync(journalPath).size;
-  } catch {
-    size = 0; // journal not created yet
-  }
-  if (sseOffset === -1 || size < sseOffset) {
-    // First pump after a client connected, or the journal shrank (rotated /
-    // hand-truncated): skip to EOF rather than replaying history.
-    sseOffset = size;
-    return;
-  }
-  if (size === sseOffset) return;
-  let bytes: Buffer;
-  try {
-    const fd = openSync(journalPath, "r");
-    try {
-      const buf = Buffer.alloc(size - sseOffset);
-      const read = readSync(fd, buf, 0, buf.length, sseOffset);
-      bytes = buf.subarray(0, read);
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    return; // transient read failure — retry next tick from the same offset
-  }
-  // Byte-accurate framing: advance the offset only past the last complete
-  // line, so a partially-flushed line (or a multi-byte char split across the
-  // read boundary) is re-read whole on the next tick.
-  const lastNewline = bytes.lastIndexOf(0x0a);
-  if (lastNewline === -1) return;
-  sseOffset += lastNewline + 1;
-  for (const line of bytes.subarray(0, lastNewline).toString("utf8").split("\n")) {
-    if (line.trim()) broadcastSse("status", line);
-  }
+  const { lines, offset } = readJournalLinesFrom(journalPath, sseOffset);
+  sseOffset = offset;
+  for (const line of lines) broadcastSse("status", line);
+}
+
+function stopSseTimers(): void {
+  if (sseTailTimer) clearInterval(sseTailTimer);
+  if (sseHeartbeatTimer) clearInterval(sseHeartbeatTimer);
+  sseTailTimer = null;
+  sseHeartbeatTimer = null;
+  // Next client starts at EOF again — no replay of what happened in between.
+  sseOffset = -1;
 }
 
 function handleSse(req: IncomingMessage, res: ServerResponse, root: string): void {
@@ -296,7 +273,11 @@ function handleSse(req: IncomingMessage, res: ServerResponse, root: string): voi
   });
   res.write("retry: 3000\n\n");
   sseClients.add(res);
-  req.on("close", () => sseClients.delete(res));
+  req.on("close", () => {
+    sseClients.delete(res);
+    // Last tab closed: stop polling the journal until someone reconnects.
+    if (sseClients.size === 0) stopSseTimers();
+  });
   if (!sseTailTimer) {
     const journal = eventsPath(root);
     sseTailTimer = setInterval(() => pumpSseTail(journal), SSE_TAIL_INTERVAL_MS);
@@ -1111,11 +1092,13 @@ function renderHarnessPanel(harness: HarnessSnapshot | null, mutationsEnabled: b
       : `poll ${ago(lp.at)}: checked ${lp.summary?.checked ?? 0}, flipped ${lp.summary?.flipped ?? 0}` +
         ((lp.summary?.fetchFailed ?? 0) > 0 ? `, <span class="harness-error">${lp.summary?.fetchFailed} fetch-failed</span>` : "");
   const paused = harness.desiredWorkers === 0;
-  const stateChip = harness.stopping
-    ? `<span class="harness-chip harness-stopping">draining</span>`
-    : paused
-      ? `<span class="harness-chip harness-paused">paused</span>`
-      : `<span class="harness-chip harness-running">running</span>`;
+  const stateChip = harness.poolDied
+    ? `<span class="harness-chip harness-stopping" title="${escAttr(harness.poolDied)}">pool died</span>`
+    : harness.stopping
+      ? `<span class="harness-chip harness-stopping">draining</span>`
+      : paused
+        ? `<span class="harness-chip harness-paused">paused</span>`
+        : `<span class="harness-chip harness-running">running</span>`;
   // Scale form posts to /harness/workers -> `tpm config set workers N`; the
   // pool's reconcile tick picks the change up within ~10s, whether the pool
   // lives in this process or in an external cron orchestrate.

@@ -49,6 +49,45 @@ export function appendStatusEvent(root: string, change: StatusChange): void {
   }
 }
 
+// Incremental tail for streaming consumers (serve's SSE pump): read complete
+// lines appended since `offset`, returning the advanced offset. Byte-accurate
+// framing — the offset only moves past the last newline, so a partially-
+// flushed line (or a multi-byte char split at the read boundary) is re-read
+// whole on the next call. `offset: -1` (or a shrunken file: rotation/manual
+// truncation) skips to EOF without replaying history.
+export function readJournalLinesFrom(
+  path: string,
+  offset: number,
+): { lines: string[]; offset: number } {
+  let size = 0;
+  try {
+    size = statSync(path).size;
+  } catch {
+    size = 0; // journal not created yet
+  }
+  if (offset === -1 || size < offset) {
+    return { lines: [], offset: size };
+  }
+  if (size === offset) return { lines: [], offset };
+  let bytes: Buffer;
+  try {
+    const fd = openSync(path, "r");
+    try {
+      const buf = Buffer.alloc(size - offset);
+      const read = readSync(fd, buf, 0, buf.length, offset);
+      bytes = buf.subarray(0, read);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return { lines: [], offset }; // transient read failure — retry from the same offset
+  }
+  const lastNewline = bytes.lastIndexOf(0x0a);
+  if (lastNewline === -1) return { lines: [], offset };
+  const lines = bytes.subarray(0, lastNewline).toString("utf8").split("\n").filter(l => l.trim());
+  return { lines, offset: offset + lastNewline + 1 };
+}
+
 // How far back the tail reader looks. 64 KiB ≈ 300+ events — far more than
 // any feed renders — while keeping the read O(1) as the journal grows.
 const TAIL_READ_BYTES = 64 * 1024;

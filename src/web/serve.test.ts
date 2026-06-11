@@ -3664,6 +3664,7 @@ function harnessSnap(overrides: Record<string, unknown> = {}) {
     pollIntervalSec: 60,
     desiredWorkers: 2,
     stopping: false,
+    poolDied: null,
     lastPoll: {
       at: new Date(Date.now() - 5_000).toISOString(),
       summary: { checked: 4, flipped: 1, noSignal: 3, fetchFailed: 0, throttled: 0 },
@@ -3769,4 +3770,14 @@ test("route: index inbox lists needs-close stragglers first; agent queue omits t
   assert.ok(inboxSection.indexOf("001-a") < inboxSection.indexOf("002-b"), "needs-close ranks above needs-review");
   assert.doesNotMatch(agentSection, /001-a/);
   assert.match(agentSection, /003-c/);
+});
+
+test("route: harness panel surfaces a dead pool over the running chip", () => {
+  const p = project("alpha", []);
+  const r = route("/", new URLSearchParams(), [p], {
+    mutationsEnabled: true,
+    harness: harnessSnap({ poolDied: "pool exited unexpectedly (exit 1)" }),
+  });
+  assert.match(r.body, /pool died/);
+  assert.doesNotMatch(r.body, /harness-chip harness-running/);
 });

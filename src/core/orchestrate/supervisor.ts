@@ -49,6 +49,11 @@ export interface HarnessSnapshot {
   desiredWorkers: number; // config `workers` (or the bootstrap value)
   stopping: boolean;
   lastPoll: { at: string; summary?: PollSummary; error?: string } | null;
+  // Set when the orchestrate pool exited while the harness wasn't stopping —
+  // a crash (bad config, unexpected throw), not a drain. The UI renders it as
+  // a dead chip so the operator isn't staring at a panel that says "running"
+  // over a pool that died at bootstrap.
+  poolDied: string | null;
 }
 
 export interface Harness {
@@ -112,6 +117,7 @@ export function startHarness(opts: HarnessOpts): Harness {
   pollInFlight = pollTick().finally(schedulePoll);
 
   // ---- orchestrate pool (daemon mode) --------------------------------------
+  let poolDied: string | null = null;
   const poolDone = runOrchestrate({
     workers: opts.workers,
     agentName: opts.agentName,
@@ -120,7 +126,18 @@ export function startHarness(opts: HarnessOpts): Harness {
     stopRequested: () => stopping,
   }).catch(e => {
     logLine("ERROR", `orchestrate pool crashed: ${(e as Error).message}`);
-    return { exitCode: 1 };
+    return { exitCode: 1, error: (e as Error).message };
+  }).then(r => {
+    // A daemon pool only returns when asked to stop. Returning earlier (or
+    // with an error) means it died — surface that in the snapshot instead of
+    // letting the panel claim "running" over a dead pool.
+    if (!stopping) {
+      poolDied = ("error" in r && typeof r.error === "string" ? r.error : null)
+        ?? `pool exited unexpectedly (exit ${r.exitCode})`;
+      logLine("ERROR", `orchestrate pool exited while harness still running: ${poolDied}`);
+      emit({ type: "poll", at: new Date().toISOString(), error: poolDied });
+    }
+    return r;
   });
 
   emit({ type: "started", at: startedAt });
@@ -134,7 +151,7 @@ export function startHarness(opts: HarnessOpts): Harness {
       } catch {
         // unreadable config: report the bootstrap value
       }
-      return { startedAt, pollIntervalSec, desiredWorkers, stopping, lastPoll };
+      return { startedAt, pollIntervalSec, desiredWorkers, stopping, lastPoll, poolDied };
     },
     async stop(): Promise<void> {
       if (!stopping) {
