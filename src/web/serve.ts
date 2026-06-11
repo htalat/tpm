@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,6 +38,8 @@ import {
   DEFAULT_SERVE_PORT,
 } from "../core/config.ts";
 import type { Config } from "../core/config.ts";
+import type { HarnessSnapshot } from "../core/orchestrate/supervisor.ts";
+import { eventsPath } from "../core/events.ts";
 import { taskPath } from "./serve_url.ts";
 import { defaultHarnessLogReader, parseTaskLogEntries } from "../core/harness_log.ts";
 import type { HarnessLogReader, HarnessLogSource, HarnessLogLine } from "../core/harness_log.ts";
@@ -105,6 +107,10 @@ const PR_CACHE_STALE_MS = 60 * 60 * 1000;
 export interface ServeOpts {
   host?: string;
   port?: number;
+  // Live harness snapshot getter, wired by `tpm up` when the poll loop and
+  // orchestrate pool run in this same process. Plain `tpm serve` leaves it
+  // unset and the index renders no harness panel.
+  harness?: () => HarnessSnapshot | null;
 }
 
 // ── Canonical UI action vocabulary ──────────────────────────────────────────
@@ -189,7 +195,7 @@ export async function runServe(opts: ServeOpts = {}): Promise<void> {
   const port = opts.port ?? DEFAULT_SERVE_PORT;
   const mutationsEnabled = isLoopback(host);
 
-  const server = createServer((req, res) => handleRequest(req, res, { host, mutationsEnabled }));
+  const server = createServer((req, res) => handleRequest(req, res, { host, mutationsEnabled, harness: opts.harness }));
   server.listen(port, host, () => {
     const where = host === "127.0.0.1" ? "localhost" : host;
     console.error(`tpm serve: http://${where}:${port}/  (Ctrl-C to stop)`);
@@ -206,6 +212,97 @@ export async function runServe(opts: ServeOpts = {}): Promise<void> {
 interface ServeContext {
   host: string;
   mutationsEnabled: boolean;
+  harness?: () => HarnessSnapshot | null;
+}
+
+// ── Server-sent events (`/events`) ──────────────────────────────────────────
+// One stream per browser tab. Two sources fan into it:
+//   - the status-transition journal (<root>/.tpm/events.ndjson, written by
+//     every CLI mutation since the phase-1 hardening) — tailed by offset, so
+//     a flip made by ANY process (cron orchestrate, a manual `tpm done`, an
+//     agent's `tpm pr`) reaches the UI within a second;
+//   - in-process harness pulses (`broadcastSse` from `tpm up`'s supervisor).
+// The client treats every event identically: debounce, then re-run the same
+// fetch-and-swap the soft-poll interval uses. The interval stays on as the
+// fallback for missed events; SSE just collapses 30s of latency to ~1s.
+//
+// Tail-by-polling (1s stat) rather than fs.watch: the tree may live in
+// Dropbox/iCloud where watch events are unreliable, and one stat per second
+// is free. Only whole lines are forwarded; a partially-flushed last line
+// stays buffered until its newline lands.
+const SSE_TAIL_INTERVAL_MS = 1_000;
+const SSE_HEARTBEAT_MS = 25_000;
+const sseClients = new Set<ServerResponse>();
+let sseTailTimer: ReturnType<typeof setInterval> | null = null;
+let sseHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let sseOffset = -1; // -1 = first pump: start at EOF, don't replay history
+
+export function broadcastSse(event: string, data: string): void {
+  const payload = `event: ${event}\ndata: ${data}\n\n`;
+  for (const res of sseClients) {
+    try {
+      res.write(payload);
+    } catch {
+      sseClients.delete(res);
+    }
+  }
+}
+
+function pumpSseTail(journalPath: string): void {
+  if (sseClients.size === 0) return;
+  let size = 0;
+  try {
+    size = statSync(journalPath).size;
+  } catch {
+    size = 0; // journal not created yet
+  }
+  if (sseOffset === -1 || size < sseOffset) {
+    // First pump after a client connected, or the journal shrank (rotated /
+    // hand-truncated): skip to EOF rather than replaying history.
+    sseOffset = size;
+    return;
+  }
+  if (size === sseOffset) return;
+  let bytes: Buffer;
+  try {
+    const fd = openSync(journalPath, "r");
+    try {
+      const buf = Buffer.alloc(size - sseOffset);
+      const read = readSync(fd, buf, 0, buf.length, sseOffset);
+      bytes = buf.subarray(0, read);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return; // transient read failure — retry next tick from the same offset
+  }
+  // Byte-accurate framing: advance the offset only past the last complete
+  // line, so a partially-flushed line (or a multi-byte char split across the
+  // read boundary) is re-read whole on the next tick.
+  const lastNewline = bytes.lastIndexOf(0x0a);
+  if (lastNewline === -1) return;
+  sseOffset += lastNewline + 1;
+  for (const line of bytes.subarray(0, lastNewline).toString("utf8").split("\n")) {
+    if (line.trim()) broadcastSse("status", line);
+  }
+}
+
+function handleSse(req: IncomingMessage, res: ServerResponse, root: string): void {
+  res.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    "connection": "keep-alive",
+  });
+  res.write("retry: 3000\n\n");
+  sseClients.add(res);
+  req.on("close", () => sseClients.delete(res));
+  if (!sseTailTimer) {
+    const journal = eventsPath(root);
+    sseTailTimer = setInterval(() => pumpSseTail(journal), SSE_TAIL_INTERVAL_MS);
+    sseTailTimer.unref?.();
+    sseHeartbeatTimer = setInterval(() => broadcastSse("ping", "{}"), SSE_HEARTBEAT_MS);
+    sseHeartbeatTimer.unref?.();
+  }
 }
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: ServeContext): Promise<void> {
@@ -240,6 +337,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Ser
   }
   const url = new URL(req.url ?? "/", "http://localhost");
   const root = findRoot();
+  if (url.pathname === "/events") {
+    // SSE stream: held open, never goes through route()'s request/response shape.
+    handleSse(req, res, root);
+    return;
+  }
   // Always load archived so `/t/<project>/<slug>` resolves an archived task and
   // `/p/<slug>?archived=1` has them available. Filtering happens per-route.
   const projects = loadProjects(root, { archived: true });
@@ -248,6 +350,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Ser
     flash,
     mutationsEnabled: ctx.mutationsEnabled,
     taskLocks: () => snapshotTaskLocks(root),
+    harness: ctx.harness?.() ?? null,
   });
   if (result.location && result.status >= 300 && result.status < 400) {
     res.writeHead(result.status, { location: result.location });
@@ -337,6 +440,10 @@ export interface RouteOpts {
   // with a "🔒 working" / "unclaimed" chip so the UI never disagrees with
   // lock truth (task 109).
   taskLocks?: TaskLockReader;
+  // Live harness snapshot when serve runs inside `tpm up` (poll loop +
+  // orchestrate pool in this process). Null/absent under plain `tpm serve`:
+  // the index renders no harness panel and /api/harness reports running:false.
+  harness?: HarnessSnapshot | null;
 }
 
 // Default tail size for the `/logs` page. Big enough that the operator can
@@ -357,7 +464,11 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
   const taskLocks: Map<string, TaskLockSnapshotEntry> =
     (opts.taskLocks ?? (() => new Map<string, TaskLockSnapshotEntry>()))();
   if (pathname === "/" || pathname === "") {
-    return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project"), prCache, taskLocks, opts.flash, opts.mutationsEnabled !== false));
+    return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project"), prCache, taskLocks, opts.flash, opts.mutationsEnabled !== false, opts.harness ?? null));
+  }
+  if (pathname === "/api/harness") {
+    const h = opts.harness ?? null;
+    return ok("application/json", JSON.stringify(h ? { running: true, ...h } : { running: false }));
   }
   if (pathname === "/api/refresh") {
     return ok("application/json", renderRefresh(projects));
@@ -646,6 +757,23 @@ export function routeMutation(pathname: string, body: URLSearchParams, runner: C
   const bulkMatch = pathname.match(/^\/bulk\/([a-z][a-z0-9-]*)\/?$/);
   if (bulkMatch) {
     return routeBulk(bulkMatch[1], body, runner);
+  }
+  // Harness pool control: scale the worker count. Shells to `tpm config set
+  // workers N` — the same knob the CLI exposes — so the pool's reconcile tick
+  // applies it whether the pool runs in this process (tpm up) or in an
+  // external cron orchestrate. 0 = pause (drain all workers, pool keeps
+  // ticking and resumes on the next non-zero set).
+  if (pathname === "/harness/workers" || pathname === "/harness/workers/") {
+    const raw = (body.get("value") ?? "").trim();
+    const n = Number(raw);
+    if (!/^\d+$/.test(raw) || !Number.isInteger(n) || n > 16) {
+      return { status: 303, location: `/?flash=${encodeURIComponent("workers must be an integer 0-16")}` };
+    }
+    const result = runner(["config", "set", "workers", String(n)]);
+    const flash = result.ok
+      ? (result.stdout.trim() || `workers -> ${n}`)
+      : (result.stderr.trim() || "config set workers: failed");
+    return { status: 303, location: `/?flash=${encodeURIComponent(flash)}` };
   }
   // Match /t/<slugPath>/<action>. slugPath is greedy so it captures any
   // intermediate parent segments; action is the last path segment.
@@ -947,7 +1075,61 @@ function notFound(message: string): RouteResult {
 
 // ---- pages ----------------------------------------------------------------
 
-function renderIndex(projects: Project[], projectFilter: string | null, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, flash?: string, mutationsEnabled = false): string {
+// Relative-time hint for harness panel timestamps. Falls back to the raw
+// string when the input doesn't parse (defensive: snapshot data crosses the
+// pure-route boundary as plain JSON in tests).
+function ago(iso: string): string {
+  const ms = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(ms) || ms < 0) return iso;
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+// The `tpm up` control strip: pool size, poll cadence, last poll outcome.
+// Rendered only when the harness runs in this process — plain `tpm serve`
+// has nothing trustworthy to show (an external cron pool's state isn't
+// observable beyond the lock files already decorating the rows).
+function renderHarnessPanel(harness: HarnessSnapshot | null, mutationsEnabled: boolean): string {
+  if (!harness) return "";
+  const lp = harness.lastPoll;
+  const pollBit = !lp
+    ? "first poll pending"
+    : lp.error
+      ? `poll ${ago(lp.at)}: <span class="harness-error">${esc(lp.error)}</span>`
+      : `poll ${ago(lp.at)}: checked ${lp.summary?.checked ?? 0}, flipped ${lp.summary?.flipped ?? 0}` +
+        ((lp.summary?.fetchFailed ?? 0) > 0 ? `, <span class="harness-error">${lp.summary?.fetchFailed} fetch-failed</span>` : "");
+  const paused = harness.desiredWorkers === 0;
+  const stateChip = harness.stopping
+    ? `<span class="harness-chip harness-stopping">draining</span>`
+    : paused
+      ? `<span class="harness-chip harness-paused">paused</span>`
+      : `<span class="harness-chip harness-running">running</span>`;
+  // Scale form posts to /harness/workers -> `tpm config set workers N`; the
+  // pool's reconcile tick picks the change up within ~10s, whether the pool
+  // lives in this process or in an external cron orchestrate.
+  const controls = mutationsEnabled
+    ? `<form method="post" action="/harness/workers" class="harness-controls">
+  <label>workers <input type="number" name="value" min="0" max="16" value="${harness.desiredWorkers}"></label>
+  <button type="submit">Scale</button>
+</form>
+<form method="post" action="/harness/workers" class="harness-controls">
+  <input type="hidden" name="value" value="${paused ? 1 : 0}">
+  <button type="submit">${paused ? "Resume (1 worker)" : "Pause (drain to 0)"}</button>
+</form>`
+    : "";
+  return `<section class="harness" id="harness-panel">
+  <h2>Harness ${stateChip}</h2>
+  <p class="meta">up ${esc(ago(harness.startedAt))} · ${harness.desiredWorkers} worker${harness.desiredWorkers === 1 ? "" : "s"} · polls every ${harness.pollIntervalSec}s · ${pollBit}</p>
+  ${controls}
+</section>`;
+}
+
+function renderIndex(projects: Project[], projectFilter: string | null, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, flash?: string, mutationsEnabled = false, harness: HarnessSnapshot | null = null): string {
   const filtered = projectFilter ? projects.filter(p => p.slug === projectFilter) : projects;
 
   // Inbox = needs-review > blocked > open across the filtered set.
@@ -994,6 +1176,7 @@ ${flashBanner}
   <p class="meta">${esc(now())}  ·  ${projects.length} project${projects.length === 1 ? "" : "s"}</p>
   ${filterChip}
 </header>
+${renderHarnessPanel(harness, mutationsEnabled)}
 <section class="queue">
   <h2>Your inbox <span class="meta">(${inbox.length})</span></h2>
   ${inbox.length === 0 ? `<p class="queue-empty">Inbox empty.</p>` : inbox.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPromote: true, showClose: true, closeRedirect: "/", showReopenForAgent: true, reopenRedirect: "/", showDrop: true, dropRedirect: "/", selectable: mutationsEnabled })).join("")}
@@ -2961,8 +3144,13 @@ function renderFlashBanner(message: string | undefined, dismissHref: string): st
 // churn). The matching `<noscript>` meta-refresh in `layout` keeps no-JS
 // browsers working. Plain ES5 / built-in `fetch` + `DOMParser` — zero deps,
 // same style as FLASH_AUTO_DISMISS_SCRIPT.
+// The interval poll stays on as the fallback; when the browser supports
+// EventSource, the same tick also fires (debounced 300ms) the moment the
+// server pushes a status-journal line or harness pulse over `/events` — a
+// flip made by any process (agent, poller, another tab) lands on screen in
+// ~1s instead of waiting out the interval.
 function pollScript(seconds: number): string {
-  return `(function(){var ms=${seconds * 1000};var root=document.getElementById('poll-root');if(!root)return;var busy=false;function editing(){var a=document.activeElement;return!!a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.tagName==='SELECT');}function tick(){if(busy||document.hidden||editing())return;busy=true;fetch(location.href,{headers:{'X-Tpm-Poll':'1'}}).then(function(r){return r.ok?r.text():null;}).then(function(html){if(html){var next=new DOMParser().parseFromString(html,'text/html').getElementById('poll-root');if(next&&next.innerHTML!==root.innerHTML)root.innerHTML=next.innerHTML;}}).catch(function(){}).then(function(){busy=false;});}setInterval(tick,ms);})();`;
+  return `(function(){var ms=${seconds * 1000};var root=document.getElementById('poll-root');if(!root)return;var busy=false;function editing(){var a=document.activeElement;return!!a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.tagName==='SELECT');}function tick(){if(busy||document.hidden||editing())return;busy=true;fetch(location.href,{headers:{'X-Tpm-Poll':'1'}}).then(function(r){return r.ok?r.text():null;}).then(function(html){if(html){var next=new DOMParser().parseFromString(html,'text/html').getElementById('poll-root');if(next&&next.innerHTML!==root.innerHTML)root.innerHTML=next.innerHTML;}}).catch(function(){}).then(function(){busy=false;});}setInterval(tick,ms);if(window.EventSource){try{var es=new EventSource('/events');var deb=null;var bump=function(){clearTimeout(deb);deb=setTimeout(tick,300);};es.addEventListener('status',bump);es.addEventListener('harness',bump);}catch(e){}}})();`;
 }
 
 function layout(title: string, body: string, opts: { autoRefresh?: number; afterRoot?: string } = {}): string {

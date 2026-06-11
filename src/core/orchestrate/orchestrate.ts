@@ -425,6 +425,12 @@ export interface OrchestrateOpts {
   // `workers` when provided. Default: every worker uses `agentName` (or the
   // registry default).
   cliPerWorker?: string[];
+  // Daemon mode (`tpm up`): no pool deadline — the pool reconciles and the
+  // workers drain the queue until `stopRequested()` flips true, at which
+  // point every worker finishes its in-flight iteration and exits (same
+  // graceful path as a scale-down drain). Ignored in single-shot mode.
+  daemon?: boolean;
+  stopRequested?: () => boolean;
 }
 
 export interface OrchestrateResult {
@@ -467,7 +473,11 @@ function sleep(ms: number): Promise<void> {
 // the first reconcile tick, see task 113).
 export function resolvePoolShape(opts: OrchestrateOpts): { workers: number } {
   const workers = opts.workers ?? 1;
-  if (!Number.isInteger(workers) || workers <= 0) {
+  // 0 = start parked. Only meaningful for a daemon (tpm up), where the pool
+  // keeps ticking and a later `workers` config set un-parks it; a deadline-
+  // bounded cron orchestrate with 0 workers would just idle to its deadline.
+  const min = opts.daemon ? 0 : 1;
+  if (!Number.isInteger(workers) || workers < min) {
     throw new Error(`--workers must be a positive integer, got ${workers}`);
   }
   if (opts.cliPerWorker && opts.cliPerWorker.length !== workers) {
@@ -583,10 +593,12 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   // is unset.
   const { workers: bootstrapWorkers } = resolvePoolShape(opts);
   const deadlineMinutes = opts.minutesOverride ?? cfg.time_bound_minutes ?? DEFAULT_TIME_BOUND_MINUTES;
-  const deadlineMs = Date.now() + deadlineMinutes * 60_000;
+  // Daemon mode has no deadline: the pool runs until stopRequested() flips.
+  // Workers share deadlineMs, so MAX_SAFE_INTEGER means "never" for them too.
+  const deadlineMs = opts.daemon ? Number.MAX_SAFE_INTEGER : Date.now() + deadlineMinutes * 60_000;
   logLine(
     "INFO",
-    `pool start bootstrap-workers=${bootstrapWorkers} deadline=${deadlineMinutes}m`,
+    `pool start bootstrap-workers=${bootstrapWorkers} deadline=${opts.daemon ? "none (daemon)" : `${deadlineMinutes}m`}`,
   );
 
   await runPool({
@@ -594,6 +606,7 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     deadlineMs,
     reconcileIntervalMs: POOL_RECONCILE_INTERVAL_MS,
     readDesired: () => readDesiredWorkers(bootstrapWorkers),
+    shouldStop: opts.stopRequested,
     log: logLine,
     spawnWorker: (id, shouldDrain) => runWorkerLoop({
       root,
@@ -663,6 +676,10 @@ export interface RunPoolOpts {
   initialDesired: number;
   deadlineMs: number;
   reconcileIntervalMs: number;
+  // Daemon stop signal: checked once per reconcile tick. When it flips true,
+  // every live worker is marked for drain (finish in-flight iteration, then
+  // exit) and runPool returns after all workers settle.
+  shouldStop?: () => boolean;
   // Re-read the desired worker count each tick (typically from config.json).
   readDesired: () => number;
   // Spawn a worker with the given id. The returned promise should resolve
@@ -736,17 +753,27 @@ export async function runPool(opts: RunPoolOpts): Promise<void> {
   // dispatches workers immediately instead of waiting one reconcile interval.
   reconcile();
 
-  while (Date.now() < opts.deadlineMs) {
+  while (Date.now() < opts.deadlineMs && !opts.shouldStop?.()) {
     const remaining = opts.deadlineMs - Date.now();
     const sleepMs = Math.min(opts.reconcileIntervalMs, remaining);
     if (sleepMs <= 0) break;
-    await sleepFn(sleepMs);
-    if (Date.now() >= opts.deadlineMs) break;
+    // Wake early on a stop request so a daemon shutdown doesn't sit out the
+    // rest of a reconcile interval before starting to drain. An injected
+    // test sleep wins (tests control time explicitly).
+    if (opts.sleep) await sleepFn(sleepMs);
+    else if (opts.shouldStop) await sleepInterruptible(sleepMs, opts.shouldStop);
+    else await sleepFn(sleepMs);
+    if (Date.now() >= opts.deadlineMs || opts.shouldStop?.()) break;
     reconcile();
   }
 
-  // Deadline reached — every worker loop also checks Date.now() against the
-  // shared deadlineMs, so they'll exit on their own. Await to collect.
+  // Deadline reached or stop requested. On deadline every worker loop also
+  // checks Date.now() against the shared deadlineMs; on stop (daemon mode,
+  // where the deadline never fires) the drain flag is the exit signal — the
+  // worker's idle sleep wakes on it and an in-flight iteration finishes
+  // before the loop re-checks. Mark all workers either way (harmless when
+  // the deadline already passed) and await to collect.
+  for (const h of handles.values()) h.drain = true;
   await Promise.allSettled([...handles.values()].map(h => h.promise));
 }
 

@@ -1787,3 +1787,31 @@ test("runPool: a bad config value (clamped to 1) reconciles to a single worker",
   }
   assert.deepEqual(fake.spawned, [1], "bad value clamped to 1 should still spawn worker-1");
 });
+
+test("runPool: shouldStop (daemon shutdown) drains every worker and returns", async () => {
+  const fake = makeFakePool();
+  let stop = false;
+  // Real-timer pump: resolve fake workers once their drain flag flips, the
+  // way a real worker loop notices shouldDrain() between iterations.
+  const drainPump = setInterval(() => fake.flushDrained(), 5);
+  try {
+    let tick = 0;
+    await runPool({
+      initialDesired: 2,
+      deadlineMs: Date.now() + 60_000, // far future: stop drives the exit, not the deadline
+      reconcileIntervalMs: 10,
+      readDesired: () => 2,
+      shouldStop: () => stop,
+      spawnWorker: (id, shouldDrain) => fake.spawnWorker(id, shouldDrain),
+      log: () => {},
+      sleep: async () => {
+        tick++;
+        if (tick === 1) stop = true;
+      },
+    });
+  } finally {
+    clearInterval(drainPump);
+  }
+  assert.deepEqual(fake.spawned, [1, 2], "initial reconcile spawned both workers");
+  assert.deepEqual([...fake.drainedAtExit].sort(), [1, 2], "stop marked every worker for drain");
+});

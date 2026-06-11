@@ -381,4 +381,23 @@ a.report-chip:hover { text-decoration: none; opacity: .8; }
   .config-error pre { background: rgba(0, 0, 0, .3); }
   .config-raw summary { color: #ffdcd7; }
 }
+
+/* Harness panel (tpm up): pool state + controls on the index. */
+.harness { margin: 0 0 1.25rem; padding: .65rem .85rem; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; }
+.harness h2 { font-size: 1rem; margin: 0 0 .25rem; display: flex; gap: .5rem; align-items: center; }
+.harness .meta { margin: 0 0 .4rem; }
+.harness-chip { font-size: .7em; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; padding: .1rem .45rem; border-radius: 999px; }
+.harness-running { background: #dafbe1; color: #116329; }
+.harness-paused { background: #fff8c5; color: #7d4e00; }
+.harness-stopping { background: #ffebe9; color: #82071e; }
+.harness-error { color: #cf222e; }
+.harness-controls { display: inline-flex; gap: .4rem; align-items: center; margin-right: .9rem; font-size: .85em; }
+.harness-controls input[type="number"] { width: 3.5rem; }
+@media (prefers-color-scheme: dark) {
+  .harness { background: #161b22; border-color: #30363d; }
+  .harness-running { background: #12361f; color: #3fb950; }
+  .harness-paused { background: #4d3a00; color: #d4a72c; }
+  .harness-stopping { background: #5d1a1a; color: #ff7b72; }
+  .harness-error { color: #ff7b72; }
+}
 `;

@@ -18,7 +18,8 @@ import * as lock from "./orchestrate/lock.ts";
 import { runOrchestrate } from "./orchestrate/orchestrate.ts";
 import { runPoll } from "./orchestrate/poll.ts";
 import { runLoop, parseLoopArgs } from "./orchestrate/loop.ts";
-import { runServe } from "../web/serve.ts";
+import { startHarness } from "./orchestrate/supervisor.ts";
+import { runServe, broadcastSse } from "../web/serve.ts";
 import { shouldNotify, fireNotification, NOTIFY_EVENTS } from "./notify.ts";
 import { taskDeepLink } from "../web/serve_url.ts";
 import type { NotifyEvent } from "./notify.ts";
@@ -767,6 +768,63 @@ try {
       await runLoop(resolveTpmBin(), opts);
       break;
     }
+    case "up": {
+      // The whole harness in one process: web UI + PR-signal poll loop +
+      // daemon-mode orchestrate pool (no deadline; scaled live via the
+      // `workers` config knob / the UI's harness panel). Supersedes the
+      // serve-in-one-tmux-pane + loop-in-another pattern: a single supervisor
+      // knows the harness state, reports it at /api/harness, and pushes
+      // journal lines to the UI over /events.
+      const root = findRoot();
+      const portArg = parseFlag(args, "--port");
+      const hostArg = parseFlag(args, "--host");
+      const workersArg = parseFlag(args, "--workers");
+      const pollIntervalArg = parseFlag(args, "--poll-interval");
+      const agentArg = parseFlag(args, "--agent");
+      const serveOpts: { port?: number; host?: string } = {};
+      if (portArg !== undefined) {
+        const n = Number(portArg);
+        if (!Number.isInteger(n) || n <= 0 || n > 65535) usage("--port must be an integer 1..65535");
+        serveOpts.port = n;
+      }
+      if (hostArg !== undefined) serveOpts.host = hostArg;
+      let workers: number | undefined;
+      if (workersArg !== undefined) {
+        const n = Number(workersArg);
+        if (!Number.isInteger(n) || n < 0 || n > 16) usage("--workers must be an integer 0..16");
+        workers = n;
+      }
+      let pollIntervalSec: number | undefined;
+      if (pollIntervalArg !== undefined) {
+        const n = Number(pollIntervalArg);
+        if (!Number.isInteger(n) || n < 10) usage("--poll-interval must be an integer >= 10 (seconds)");
+        pollIntervalSec = n;
+      }
+      const harness = startHarness({
+        root,
+        workers,
+        pollIntervalSec,
+        agentName: agentArg,
+        onEvent: e => broadcastSse("harness", JSON.stringify(e)),
+      });
+      // Graceful on the first signal (stop picking work, drain in-flight
+      // iterations), force on the second (stale-lock sweep + stranded
+      // re-admission recover whatever the force-exit strands).
+      let stopRequested = false;
+      const onSignal = (sig: string) => {
+        if (stopRequested) {
+          console.error(`tpm up: ${sig} again — force exit (in-flight agents keep running; stale-lock sweep recovers their tasks)`);
+          process.exit(130);
+        }
+        stopRequested = true;
+        console.error(`tpm up: ${sig} — draining workers (in-flight tasks finish; ${sig} again to force exit)`);
+        harness.stop().then(() => process.exit(0));
+      };
+      process.on("SIGINT", () => onSignal("SIGINT"));
+      process.on("SIGTERM", () => onSignal("SIGTERM"));
+      await runServe({ ...serveOpts, harness: () => harness.snapshot() });
+      break;
+    }
     case "inbox": {
       const root = findRoot();
       const projects = loadProjects(root);
@@ -1085,6 +1143,9 @@ Usage:
   tpm notify <start|finish|fail> <task>      best-effort osascript notification (cascade: task > project > global)
   tpm refresh-skills                         install/refresh user-scoped skills into ~/.claude/skills/ (macOS/Linux: symlink, Windows: copy)
   tpm serve [--port 7777] [--host 127.0.0.1] start a localhost HTTP UI for the queues (read-only)
+  tpm up [--port 7777] [--workers N] [--poll-interval 60] [--agent <name>]
+                                             the whole harness in one process: web UI + PR poller +
+                                             orchestrate pool (no deadline; Ctrl-C drains, twice forces)
   tpm report [--md]                          generate a rollup of every project/task to reports/index.{html,md}
   tpm root                                   print the tree root
   tpm path <project | task | project/task>   print the local repo path

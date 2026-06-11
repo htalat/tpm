@@ -3653,3 +3653,80 @@ test("route: index inbox rows are selectable; parent containers render no checkb
   assert.match(r.body, /class="bulk-bar"/);
 });
 
+
+// ---- harness panel + /api/harness + /harness/workers (tpm up) ---------------
+
+function harnessSnap(overrides: Record<string, unknown> = {}) {
+  return {
+    startedAt: new Date(Date.now() - 90_000).toISOString(),
+    pollIntervalSec: 60,
+    desiredWorkers: 2,
+    stopping: false,
+    lastPoll: {
+      at: new Date(Date.now() - 5_000).toISOString(),
+      summary: { checked: 4, flipped: 1, noSignal: 3, fetchFailed: 0, throttled: 0 },
+    },
+    ...overrides,
+  };
+}
+
+test("route: index renders the harness panel when a snapshot is provided", () => {
+  const p = project("alpha", [task("001-a", "ready")]);
+  const r = route("/", new URLSearchParams(), [p], { mutationsEnabled: true, harness: harnessSnap() });
+  assert.match(r.body, /id="harness-panel"/);
+  assert.match(r.body, /harness-running/);
+  assert.match(r.body, /2 workers/);
+  assert.match(r.body, /checked 4, flipped 1/);
+  assert.match(r.body, /action="\/harness\/workers"/);
+  assert.match(r.body, /Pause \(drain to 0\)/);
+});
+
+test("route: index renders no harness panel under plain tpm serve (no snapshot)", () => {
+  const p = project("alpha", [task("001-a", "ready")]);
+  const r = route("/", new URLSearchParams(), [p], { mutationsEnabled: true });
+  assert.doesNotMatch(r.body, /id="harness-panel"/);
+});
+
+test("route: harness panel shows paused chip + Resume at workers 0; hides controls read-only", () => {
+  const p = project("alpha", []);
+  const paused = route("/", new URLSearchParams(), [p], { mutationsEnabled: true, harness: harnessSnap({ desiredWorkers: 0 }) });
+  assert.match(paused.body, /harness-paused/);
+  assert.match(paused.body, /Resume \(1 worker\)/);
+  const readOnly = route("/", new URLSearchParams(), [p], { mutationsEnabled: false, harness: harnessSnap() });
+  assert.match(readOnly.body, /id="harness-panel"/);
+  assert.doesNotMatch(readOnly.body, /action="\/harness\/workers"/);
+});
+
+test("route: /api/harness reports running:false without a snapshot, snapshot fields with one", () => {
+  const p = project("alpha", []);
+  const off = route("/api/harness", new URLSearchParams(), [p], {});
+  assert.deepEqual(JSON.parse(off.body), { running: false });
+  const snap = harnessSnap();
+  const on = route("/api/harness", new URLSearchParams(), [p], { harness: snap });
+  const parsed = JSON.parse(on.body);
+  assert.equal(parsed.running, true);
+  assert.equal(parsed.desiredWorkers, 2);
+  assert.equal(parsed.pollIntervalSec, 60);
+});
+
+test("routeMutation: /harness/workers shells to `tpm config set workers N`", () => {
+  const { runner, calls } = captureRunner();
+  const body = new URLSearchParams();
+  body.set("value", "3");
+  const r = routeMutation("/harness/workers", body, runner);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/\?flash=/);
+  assert.deepEqual(calls, [["config", "set", "workers", "3"]]);
+});
+
+test("routeMutation: /harness/workers rejects non-integer / negative / oversized values", () => {
+  for (const bad of ["abc", "-1", "99", "1.5", ""]) {
+    const { runner, calls } = captureRunner();
+    const body = new URLSearchParams();
+    body.set("value", bad);
+    const r = routeMutation("/harness/workers", body, runner);
+    assert.equal(r.status, 303, `value=${bad}`);
+    assert.match(decodeURIComponent(r.location ?? ""), /workers must be an integer 0-16/, `value=${bad}`);
+    assert.deepEqual(calls, [], `value=${bad}: must not shell out`);
+  }
+});
