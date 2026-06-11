@@ -454,6 +454,11 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const recentEvents = (opts.recentEvents ?? (() => []))();
     return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project"), prCache, taskLocks, opts.flash, opts.mutationsEnabled !== false, opts.harness ?? null, recentEvents));
   }
+  if (pathname === "/search") {
+    const q = (params.get("q") ?? "").trim();
+    const includeArchived = params.get("archived") === "1";
+    return ok("text/html; charset=utf-8", renderSearch(projects, q, includeArchived, prCache, taskLocks));
+  }
   if (pathname === "/api/harness") {
     const h = opts.harness ?? null;
     return ok("application/json", JSON.stringify(h ? { running: true, ...h } : { running: false }));
@@ -1135,6 +1140,93 @@ function renderActivityFeed(events: StatusEventRecord[]): string {
 ${rows}
   </ul>
 </section>`;
+}
+
+// Global task search: case-insensitive substring over slug, title, status,
+// tags, linked PR URLs, and the body. Title/slug hits rank above
+// status/tag/PR hits, which rank above body hits; ties keep tree order.
+// Archived tasks excluded unless ?archived=1 — same toggle the project page
+// uses. Server-rendered on each query: the tree is already loaded per
+// request, and a few hundred tasks is microseconds of substring scans.
+interface SearchHit {
+  project: Project;
+  task: Task;
+  rank: number;
+  snippet: string | null; // first matching body line, for body hits
+}
+
+function searchTasks(projects: Project[], q: string, includeArchived: boolean): SearchHit[] {
+  const needle = q.toLowerCase();
+  const hits: SearchHit[] = [];
+  for (const p of projects) {
+    for (const t of flatTasks(p.tasks)) {
+      if (isParent(t)) continue;
+      if (!includeArchived && t.archived) continue;
+      const title = String(t.data.title ?? "");
+      const tags = Array.isArray(t.data.tags) ? (t.data.tags as unknown[]).map(String) : [];
+      const prs = Array.isArray(t.data.prs) ? (t.data.prs as unknown[]).map(String) : [];
+      if (t.slug.toLowerCase().includes(needle) || title.toLowerCase().includes(needle)) {
+        hits.push({ project: p, task: t, rank: 0, snippet: null });
+        continue;
+      }
+      const meta = [String(t.data.status ?? ""), ...tags, ...prs];
+      if (meta.some(v => v.toLowerCase().includes(needle))) {
+        hits.push({ project: p, task: t, rank: 1, snippet: null });
+        continue;
+      }
+      const bodyLine = t.body.split("\n").find(l => l.toLowerCase().includes(needle));
+      if (bodyLine !== undefined) {
+        hits.push({ project: p, task: t, rank: 2, snippet: bodyLine.trim().slice(0, 160) });
+      }
+    }
+  }
+  hits.sort((a, b) => a.rank - b.rank);
+  return hits;
+}
+
+// Highlight the query inside an already-escaped snippet. Escapes first, then
+// marks — so the regex runs over entity-encoded text using the entity-encoded
+// needle, never raw user input.
+function markMatches(text: string, q: string): string {
+  const escaped = esc(text);
+  const needle = esc(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return escaped.replace(new RegExp(needle, "ig"), m => `<mark>${m}</mark>`);
+}
+
+function renderSearch(projects: Project[], q: string, includeArchived: boolean, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>): string {
+  const hits = q ? searchTasks(projects, q, includeArchived) : [];
+  const archivedToggle = q
+    ? includeArchived
+      ? ` · <a href="/search?q=${encodeURIComponent(q)}">hide archived</a>`
+      : ` · <a href="/search?q=${encodeURIComponent(q)}&archived=1">include archived</a>`
+    : "";
+  const results = !q
+    ? ""
+    : hits.length === 0
+      ? `<p class="queue-empty">No tasks match <code>${esc(q)}</code>.</p>`
+      : hits.map(h => {
+          const row = taskRow(h.project, h.task, String(h.task.data.status ?? "?"), prCache, taskLocks, {});
+          const snippet = h.snippet !== null
+            ? `<p class="search-snippet">${markMatches(h.snippet, q)}</p>`
+            : "";
+          return row + snippet;
+        }).join("");
+  const body = `
+${projectChips(projects, null)}
+<header>
+  <h1>Search</h1>
+</header>
+<section class="queue">
+  <form method="get" action="/search" class="search-form">
+    <input type="search" name="q" value="${escAttr(q)}" placeholder="slug, title, status, tag, PR URL, body…" autofocus>
+    ${includeArchived ? `<input type="hidden" name="archived" value="1">` : ""}
+    <button type="submit">Search</button>
+  </form>
+  ${q ? `<p class="meta">${hits.length} result${hits.length === 1 ? "" : "s"} for <code>${esc(q)}</code>${archivedToggle}</p>` : ""}
+  ${results}
+</section>
+`;
+  return layout(`search — tpm`, body);
 }
 
 function renderIndex(projects: Project[], projectFilter: string | null, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, flash?: string, mutationsEnabled = false, harness: HarnessSnapshot | null = null, recentEvents: StatusEventRecord[] = []): string {
@@ -3186,7 +3278,7 @@ ${fallback}
 <style>${BASE_CSS}${SERVE_CSS}</style>
 </head>
 <body>
-<header class="site-header"><a class="home" href="/">tpm</a></header>
+<header class="site-header"><a class="home" href="/">tpm</a><form method="get" action="/search" class="site-search"><input type="search" name="q" placeholder="search tasks…" aria-label="Search tasks"></form></header>
 <div id="poll-root">${body}</div>${afterRoot}${poller}
 </body>
 </html>`;

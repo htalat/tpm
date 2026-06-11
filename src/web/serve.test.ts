@@ -3162,7 +3162,9 @@ test("renderTask: child task rail link points to parent-qualified /log path", ()
 // Mirror of the persistent masthead in serve.ts: a `tpm` wordmark linking home,
 // emitted by `layout()` so it rides every page. The tests lock the exact markup,
 // so changing the home affordance is a deliberate edit here.
-const SITE_HOME = '<header class="site-header"><a class="home" href="/">tpm</a></header>';
+// The header also carries the global search box, so assert the home anchor
+// rather than the full element markup.
+const SITE_HOME = '<header class="site-header"><a class="home" href="/">tpm</a>';
 // Home now lives in the masthead, so breadcrumbs open on the project (or
 // sub-resource) segment — no leading home crumb (task 105 dropped it).
 const crumbs = (...inner: string[]) => `<nav class="crumbs">${inner.join("")}</nav>`;
@@ -3780,4 +3782,51 @@ test("route: harness panel surfaces a dead pool over the running chip", () => {
   });
   assert.match(r.body, /pool died/);
   assert.doesNotMatch(r.body, /harness-chip harness-running/);
+});
+
+// ---- /search ------------------------------------------------------------------
+
+test("route: /search matches slug/title above status, body hits get a marked snippet", () => {
+  const p = project("alpha", [
+    task("001-auth-refactor", "open", { title: "Refactor auth middleware" }),
+    task("002-unrelated", "ready", { title: "Other thing" }),
+  ]);
+  p.tasks[1].body = "## Context\nTouches the auth token flow.\n\n## Plan\n- step\n";
+  const r = route("/search", new URLSearchParams("q=auth"), [p], {});
+  assert.equal(r.status, 200);
+  // Slug/title hit ranks first; body hit follows with a highlighted snippet.
+  const first = r.body.indexOf("001-auth-refactor");
+  const second = r.body.indexOf("002-unrelated");
+  assert.ok(first !== -1 && second !== -1 && first < second);
+  assert.match(r.body, /<mark>auth<\/mark> token flow/);
+  assert.match(r.body, /2 results for <code>auth<\/code>/);
+});
+
+test("route: /search excludes archived by default; ?archived=1 includes; empty q renders just the form", () => {
+  const arch = task("001-old-auth", "done", { title: "auth cleanup" });
+  arch.archived = true;
+  const p = project("alpha", [arch]);
+  const without = route("/search", new URLSearchParams("q=auth"), [p], {});
+  assert.match(without.body, /No tasks match/);
+  const withArch = route("/search", new URLSearchParams("q=auth&archived=1"), [p], {});
+  assert.match(withArch.body, /001-old-auth/);
+  const empty = route("/search", new URLSearchParams(), [p], {});
+  assert.match(empty.body, /name="q"/);
+  assert.doesNotMatch(empty.body, /results for/);
+});
+
+test("route: /search escapes the query and regex metachars safely", () => {
+  const p = project("alpha", [task("001-a", "open")]);
+  p.tasks[0].body = "## Context\nweird (.*) chars here\n";
+  const r = route("/search", new URLSearchParams("q=(.*)"), [p], {});
+  assert.equal(r.status, 200);
+  assert.match(r.body, /<mark>\(\.\*\)<\/mark>/);
+  const xss = route("/search", new URLSearchParams("q=<script>x</script>"), [p], {});
+  assert.doesNotMatch(xss.body, /<script>x<\/script>/);
+});
+
+test("route: every page's site header carries the search box", () => {
+  const p = project("alpha", [task("001-a", "open")]);
+  const r = route("/p/alpha", new URLSearchParams(), [p], {});
+  assert.match(r.body, /class="site-search"/);
 });

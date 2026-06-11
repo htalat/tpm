@@ -63,9 +63,14 @@ a.repo:hover { background: #eaeef2; text-decoration: none; }
 // Layout/markdown styles only `tpm serve` uses (the static report doesn't
 // render bodies and doesn't need the sidebar layout).
 export const SERVE_CSS = `
-header.site-header { margin: 0 0 1rem; padding: .4rem .75rem; border: 0; background: #f6f8fa; border-radius: 6px; }
+header.site-header { margin: 0 0 1rem; padding: .4rem .75rem; border: 0; background: #f6f8fa; border-radius: 6px; display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
 header.site-header a.home { font-weight: 700; font-size: 1.05rem; letter-spacing: -.02em; color: #1f2328; }
 header.site-header a.home:hover { color: #0969da; text-decoration: none; }
+.site-search input { font-size: .85em; padding: .15rem .5rem; border: 1px solid #d0d7de; border-radius: 6px; background: #fff; width: 11rem; }
+.search-form { display: flex; gap: .5rem; margin: .25rem 0 .75rem; }
+.search-form input { flex: 1; max-width: 28rem; padding: .3rem .6rem; border: 1px solid #d0d7de; border-radius: 6px; }
+.search-snippet { margin: -.2rem 0 .6rem; padding-left: .5rem; color: #57606a; font-size: .82em; }
+.search-snippet mark { background: #fff8c5; border-radius: 2px; padding: 0 .1em; }
 nav.crumbs { font-size: .9em; color: #57606a; margin-bottom: 1rem; }
 nav.crumbs a + a::before { content: " \\203A "; color: #8d96a0; padding: 0 .25rem; }
 nav.project-chips { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; padding-bottom: .75rem; border-bottom: 1px solid #eaeef2; }
@@ -157,6 +162,8 @@ body { max-width: 1600px; }
 @media (prefers-color-scheme: dark) {
   header.site-header { background: #161b22; }
   header.site-header a.home { color: #e6edf3; }
+  .site-search input, .search-form input { background: #0d1117; border-color: #30363d; color: #e6edf3; }
+  .search-snippet mark { background: #4d3a00; color: #e6edf3; }
   nav.project-chips { border-color: #21262d; }
   .chip-group-views { border-color: #30363d; }
   .chip { background: #161b22; border-color: #30363d; color: #79c0ff; }
