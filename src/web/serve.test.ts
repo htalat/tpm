@@ -599,21 +599,23 @@ test("renderTask: needs-close offers Complete prominently + Log + Block", () => 
   assert.match(r.body, /action="\/t\/alpha\/001-nc\/block"/);
 });
 
-test("route: index agent queue includes needs-close, sorted needs-feedback > needs-close > ready", () => {
+test("route: index inbox owns needs-close (auto-close failure alert); agent queue sorts needs-feedback > ready", () => {
+  // needs-close moved from the agent queue to the inbox: the orchestrator
+  // never dispatches it — a task parked there is waiting on a human `tpm done`.
   const p = project("alpha", [
     task("001-old-ready",   "ready",          { created: "2026-01-01 00:00 PDT" }),
     task("002-nc",          "needs-close",    { created: "2026-05-01 00:00 PDT" }),
     task("003-nf",          "needs-feedback", { created: "2026-05-09 00:00 PDT" }),
   ]);
   const r = route("/", new URLSearchParams(), [p]);
-  for (const slug of ["001-old-ready", "002-nc", "003-nf"]) {
-    assert.match(r.body, new RegExp(slug));
-  }
-  const idxFeedback = r.body.indexOf("003-nf");
-  const idxClose    = r.body.indexOf("002-nc");
-  const idxReady    = r.body.indexOf("001-old-ready");
-  assert.ok(idxFeedback < idxClose, "needs-feedback should render before needs-close");
-  assert.ok(idxClose < idxReady, "needs-close should render before ready");
+  const inboxSection = r.body.slice(r.body.indexOf("Your inbox"), r.body.indexOf("Agent queue"));
+  const agentSection = r.body.slice(r.body.indexOf("Agent queue"), r.body.indexOf("In flight"));
+  assert.match(inboxSection, /002-nc/);
+  assert.doesNotMatch(agentSection, /002-nc/);
+  const idxFeedback = agentSection.indexOf("003-nf");
+  const idxReady    = agentSection.indexOf("001-old-ready");
+  assert.ok(idxFeedback !== -1 && idxReady !== -1, "agent queue keeps needs-feedback + ready");
+  assert.ok(idxFeedback < idxReady, "needs-feedback should render before ready");
 });
 
 test("renderTask: parent container renders no action forms", () => {
@@ -3729,4 +3731,42 @@ test("routeMutation: /harness/workers rejects non-integer / negative / oversized
     assert.match(decodeURIComponent(r.location ?? ""), /workers must be an integer 0-16/, `value=${bad}`);
     assert.deepEqual(calls, [], `value=${bad}: must not shell out`);
   }
+});
+
+// ---- activity feed (status-journal tail on the index) ------------------------
+
+test("route: index renders the activity feed from injected journal events", () => {
+  const p = project("alpha", [task("001-a", "ready")]);
+  const events = [
+    { at: new Date(Date.now() - 30_000).toISOString(), task: "alpha/001-a", from: "open", to: "ready", verb: "promoted to ready", actor: "cli" },
+    { at: new Date(Date.now() - 90_000).toISOString(), task: "alpha/002-b", from: "in-progress", to: "needs-review", verb: "PR opened, awaiting review", actor: "worker-1" },
+  ];
+  const r = route("/", new URLSearchParams(), [p], { recentEvents: () => events });
+  assert.match(r.body, /<h2>Activity <span class="meta">\(2\)<\/span><\/h2>/);
+  assert.match(r.body, /open → ready/);
+  assert.match(r.body, /href="\/t\/alpha\/001-a"/);
+  assert.match(r.body, /PR opened, awaiting review/);
+  assert.match(r.body, /worker-1/);
+});
+
+test("route: index renders no activity section when the journal is empty", () => {
+  const p = project("alpha", []);
+  const r = route("/", new URLSearchParams(), [p], { recentEvents: () => [] });
+  assert.doesNotMatch(r.body, /<h2>Activity/);
+});
+
+test("route: index inbox lists needs-close stragglers first; agent queue omits them", () => {
+  const p = project("alpha", [
+    task("001-a", "needs-close"),
+    task("002-b", "needs-review"),
+    task("003-c", "ready"),
+  ]);
+  const r = route("/", new URLSearchParams(), [p], {});
+  const inboxSection = r.body.slice(r.body.indexOf("Your inbox"), r.body.indexOf("Agent queue"));
+  const agentSection = r.body.slice(r.body.indexOf("Agent queue"), r.body.indexOf("In flight"));
+  assert.match(inboxSection, /001-a/);
+  assert.match(inboxSection, /002-b/);
+  assert.ok(inboxSection.indexOf("001-a") < inboxSection.indexOf("002-b"), "needs-close ranks above needs-review");
+  assert.doesNotMatch(agentSection, /001-a/);
+  assert.match(agentSection, /003-c/);
 });

@@ -25,7 +25,7 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
   - `ready` = agent's queue (Plan is well-specified, an agent can pick it up). Promoted via the **shape an open task** action.
   - `in-progress` = work in flight; for `type: pr` tasks this includes the period after the PR is opened, awaiting merge.
   - `needs-feedback` = agent's queue for in-flight PRs — merge conflict, CI red, branch behind main, or open review threads with a fixable suggestion. Routed to the **handle PR feedback** action. Set by the PR-signal poller (`tpm poll`) or by the agent during a feedback round.
-  - `needs-close` = transient/escape-hatch state for merged PRs. The PR-signal poller flips a task to `needs-close` and immediately calls `tpm complete --outcome "<derived from PR title + body>"` in the same tick, so under normal operation the task is `done` by the time anyone looks. A task only lingers at `needs-close` when the inline auto-close fails (PR body empty, `Outcome` already filled, lock contention) — surface those with `tpm ls --status needs-close` and run the **close out** action manually.
+  - `needs-close` = transient/escape-hatch state for merged PRs. The PR-signal poller flips a task to `needs-close` and immediately calls `tpm complete --outcome "<derived from PR title + body>"` in the same tick, so under normal operation the task is `done` by the time anyone looks. A task only lingers at `needs-close` when the inline auto-close fails (PR body empty, `Outcome` already filled, lock contention) — those surface in `tpm inbox` (top-ranked) and via `tpm ls --status needs-close`; run the **close out** action manually.
   - `needs-review` = human's queue — agent escalated (e.g. design pushback on a thread, `CHANGES_REQUESTED`, a merge conflict the agent couldn't resolve cleanly). Surfaced via `tpm inbox`.
   - `blocked` = human's queue, external dep. Surfaced via `tpm inbox`.
   - Parent containers display a roll-up status (all children done → done; any in-progress → in-progress; else parent's declared status). The roll-up is display only — never written to frontmatter.
@@ -50,7 +50,7 @@ Statuses split into two queues. The agent works `ready` and `needs-feedback`; th
 | `open`            | human       | `tpm inbox` / manual triage       |
 | `ready`           | agent       | `tpm next` → start a task         |
 | `needs-feedback`  | agent       | `tpm next` → handle PR feedback   |
-| `needs-close`     | (transient) | poller auto-closes inline; manual `/tpm done <slug>` for stragglers |
+| `needs-close`     | human (alert) | poller auto-closes inline; stragglers land in `tpm inbox` for manual `/tpm done <slug>` |
 | `in-progress`     | passive     | (work happening or waiting on review) |
 | `needs-review`    | human       | `tpm inbox` (agent escalated)     |
 | `blocked`         | human       | `tpm inbox` (external dep)        |

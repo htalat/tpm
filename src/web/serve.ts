@@ -39,7 +39,8 @@ import {
 } from "../core/config.ts";
 import type { Config } from "../core/config.ts";
 import type { HarnessSnapshot } from "../core/orchestrate/supervisor.ts";
-import { eventsPath } from "../core/events.ts";
+import { eventsPath, readRecentEvents } from "../core/events.ts";
+import type { StatusEventRecord } from "../core/events.ts";
 import { taskPath } from "./serve_url.ts";
 import { defaultHarnessLogReader, parseTaskLogEntries } from "../core/harness_log.ts";
 import type { HarnessLogReader, HarnessLogSource, HarnessLogLine } from "../core/harness_log.ts";
@@ -351,6 +352,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Ser
     mutationsEnabled: ctx.mutationsEnabled,
     taskLocks: () => snapshotTaskLocks(root),
     harness: ctx.harness?.() ?? null,
+    recentEvents: () => readRecentEvents(root, 12),
   });
   if (result.location && result.status >= 300 && result.status < 400) {
     res.writeHead(result.status, { location: result.location });
@@ -444,6 +446,10 @@ export interface RouteOpts {
   // orchestrate pool in this process). Null/absent under plain `tpm serve`:
   // the index renders no harness panel and /api/harness reports running:false.
   harness?: HarnessSnapshot | null;
+  // Recent status-journal events for the index activity feed. Defaults to
+  // empty (route() stays disk-free); `handleRequest` wires the events.ndjson
+  // tail reader.
+  recentEvents?: () => StatusEventRecord[];
 }
 
 // Default tail size for the `/logs` page. Big enough that the operator can
@@ -464,7 +470,8 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
   const taskLocks: Map<string, TaskLockSnapshotEntry> =
     (opts.taskLocks ?? (() => new Map<string, TaskLockSnapshotEntry>()))();
   if (pathname === "/" || pathname === "") {
-    return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project"), prCache, taskLocks, opts.flash, opts.mutationsEnabled !== false, opts.harness ?? null));
+    const recentEvents = (opts.recentEvents ?? (() => []))();
+    return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project"), prCache, taskLocks, opts.flash, opts.mutationsEnabled !== false, opts.harness ?? null, recentEvents));
   }
   if (pathname === "/api/harness") {
     const h = opts.harness ?? null;
@@ -1129,18 +1136,38 @@ function renderHarnessPanel(harness: HarnessSnapshot | null, mutationsEnabled: b
 </section>`;
 }
 
-function renderIndex(projects: Project[], projectFilter: string | null, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, flash?: string, mutationsEnabled = false, harness: HarnessSnapshot | null = null): string {
+// Recent-activity feed from the status journal: who moved what, when. Each
+// line is a transition the audit trail recorded — from any process, not just
+// this server. Hidden entirely when the journal is empty (pre-journal trees).
+function renderActivityFeed(events: StatusEventRecord[]): string {
+  if (events.length === 0) return "";
+  const rows = events.map(e => {
+    const segs = e.task.split("/").map(encodeURIComponent).join("/");
+    const arrow = e.from ? `${esc(e.from)} → ${esc(e.to)}` : esc(e.to);
+    return `<li class="activity-row"><span class="activity-when">${esc(ago(e.at))}</span> <a href="/t/${segs}"><code>${esc(e.task)}</code></a> <span class="activity-arrow status-${cls(e.to)}">${arrow}</span> <span class="activity-verb">${esc(e.verb)}</span> <span class="activity-actor">${esc(e.actor)}</span></li>`;
+  }).join("\n");
+  return `<section class="queue activity">
+  <h2>Activity <span class="meta">(${events.length})</span></h2>
+  <ul class="activity-list">
+${rows}
+  </ul>
+</section>`;
+}
+
+function renderIndex(projects: Project[], projectFilter: string | null, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, flash?: string, mutationsEnabled = false, harness: HarnessSnapshot | null = null, recentEvents: StatusEventRecord[] = []): string {
   const filtered = projectFilter ? projects.filter(p => p.slug === projectFilter) : projects;
 
-  // Inbox = needs-review > blocked > open across the filtered set.
+  // Inbox = needs-close > needs-review > blocked > open across the filtered
+  // set. needs-close moved here from the agent queue: the orchestrator never
+  // dispatches it — a task parked there is an auto-close failure waiting on a
+  // human `tpm done`, which is inbox semantics.
   const inbox = inboxItems(filtered);
-  // Agent queue = next-eligible (needs-feedback > needs-close > ready). Show
-  // all candidates, not just the head, so the page is a useful overview.
+  // Agent queue = next-eligible (needs-feedback > ready). Show all
+  // candidates, not just the head, so the page is a useful overview.
   const agentItems: Array<{ project: Project; task: Task; status: string }> = [];
   const agentStatuses: Record<string, number> = {
     "needs-feedback": 0,
-    "needs-close": 1,
-    "ready": 2,
+    "ready": 1,
   };
   for (const p of filtered) {
     for (const t of flatTasks(p.tasks)) {
@@ -1183,12 +1210,13 @@ ${renderHarnessPanel(harness, mutationsEnabled)}
 </section>
 <section class="queue">
   <h2>Agent queue <span class="meta">(${agentItems.length})</span></h2>
-  ${agentItems.length === 0 ? `<p class="queue-empty">Nothing ready, needing feedback, or awaiting close.</p>` : agentItems.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPull: true, pullRedirect: "/", showClose: true, closeRedirect: "/", showDrop: true, dropRedirect: "/" })).join("")}
+  ${agentItems.length === 0 ? `<p class="queue-empty">Nothing ready or needing feedback.</p>` : agentItems.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPull: true, pullRedirect: "/", showClose: true, closeRedirect: "/", showDrop: true, dropRedirect: "/" })).join("")}
 </section>
 <section class="queue">
   <h2>In flight <span class="meta">(${inFlight.length})</span></h2>
   ${inFlight.length === 0 ? `<p class="queue-empty">No in-progress tasks.</p>` : inFlight.map(it => taskRow(it.project, it.task, "in-progress", prCache, taskLocks, { showPull: true, pullRedirect: "/", showClose: true, closeRedirect: "/", showDrop: true, dropRedirect: "/" })).join("")}
 </section>
+${renderActivityFeed(recentEvents)}
 `;
   return layout("tpm", body, { autoRefresh: 30, afterRoot: bulkBar("/", mutationsEnabled) });
 }

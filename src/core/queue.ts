@@ -87,11 +87,16 @@ export function selectNext(projects: Project[], opts: SelectNextOpts = {}): Queu
   return candidates[0] ?? null;
 }
 
-export const INBOX_STATUSES = ["needs-review", "blocked", "open"] as const;
+// `needs-close` is in the human inbox because a task only *stays* there when
+// the poller's inline auto-close failed (PR body empty, Outcome already
+// filled, lock contention) — i.e. it's an alert needing a human `tpm done`,
+// not a queue state. Under normal operation the status is transient and never
+// renders here.
+export const INBOX_STATUSES = ["needs-close", "needs-review", "blocked", "open"] as const;
 
 // `tpm inbox` listing. Human-queue tasks across all projects, ordered with
-// the most actionable status first (needs-review > blocked > open), then
-// oldest by created within each bucket.
+// the most actionable status first (needs-close > needs-review > blocked >
+// open), then oldest by created within each bucket.
 export function inboxItems(projects: Project[]): Array<QueueItem & { status: string }> {
   const items: Array<QueueItem & { status: string }> = [];
   for (const p of projects) {

@@ -382,6 +382,18 @@ a.report-chip:hover { text-decoration: none; opacity: .8; }
   .config-raw summary { color: #ffdcd7; }
 }
 
+/* Activity feed: status-journal tail on the index. */
+.activity-list { list-style: none; margin: 0; padding: 0; font-size: .85em; }
+.activity-row { padding: .25rem 0; border-bottom: 1px solid #eaeef2; display: flex; gap: .55rem; align-items: baseline; flex-wrap: wrap; }
+.activity-when { color: #8d96a0; min-width: 4.5rem; }
+.activity-arrow { font-weight: 600; }
+.activity-verb { color: #57606a; }
+.activity-actor { color: #8d96a0; font-size: .85em; margin-left: auto; }
+@media (prefers-color-scheme: dark) {
+  .activity-row { border-color: #21262d; }
+  .activity-verb { color: #8d96a0; }
+}
+
 /* Harness panel (tpm up): pool state + controls on the index. */
 .harness { margin: 0 0 1.25rem; padding: .65rem .85rem; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; }
 .harness h2 { font-size: 1rem; margin: 0 0 .25rem; display: flex; gap: .5rem; align-items: center; }

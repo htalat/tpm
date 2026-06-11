@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { StatusChange } from "./mutate.ts";
 
@@ -47,4 +47,48 @@ export function appendStatusEvent(root: string, change: StatusChange): void {
   } catch {
     // best-effort: never let journaling break the mutation that already landed
   }
+}
+
+// How far back the tail reader looks. 64 KiB ≈ 300+ events — far more than
+// any feed renders — while keeping the read O(1) as the journal grows.
+const TAIL_READ_BYTES = 64 * 1024;
+
+// Newest-first tail of the journal for the activity feed. Reads only the
+// last TAIL_READ_BYTES, drops the leading partial line when the read didn't
+// start at offset 0, and skips lines that don't parse (hand-edited or
+// torn writes) rather than failing the page.
+export function readRecentEvents(root: string, limit: number): StatusEventRecord[] {
+  const path = eventsPath(root);
+  let chunk: string;
+  try {
+    const size = statSync(path).size;
+    const start = Math.max(0, size - TAIL_READ_BYTES);
+    const fd = openSync(path, "r");
+    try {
+      const buf = Buffer.alloc(size - start);
+      const read = readSync(fd, buf, 0, buf.length, start);
+      chunk = buf.subarray(0, read).toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
+    if (start > 0) {
+      const firstNewline = chunk.indexOf("\n");
+      chunk = firstNewline === -1 ? "" : chunk.slice(firstNewline + 1);
+    }
+  } catch {
+    return []; // no journal yet
+  }
+  const out: StatusEventRecord[] = [];
+  const lines = chunk.split("\n");
+  for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    try {
+      const rec = JSON.parse(line) as StatusEventRecord;
+      if (typeof rec.task === "string" && typeof rec.to === "string") out.push(rec);
+    } catch {
+      // skip unparseable lines
+    }
+  }
+  return out;
 }

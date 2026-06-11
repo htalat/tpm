@@ -1,8 +1,8 @@
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
-import { appendStatusEvent, eventsPath } from "./events.ts";
+import { appendFileSync, readFileSync, existsSync } from "node:fs";
+import { appendStatusEvent, eventsPath, readRecentEvents } from "./events.ts";
 import type { Task } from "./tree.ts";
 
 function fakeTask(overrides: Partial<Task> = {}): Task {
@@ -68,6 +68,34 @@ test("appendStatusEvent: appends, never truncates; creates .tpm dir on demand", 
     assert.equal(lines.length, 2);
     assert.equal(JSON.parse(lines[0]).to, "ready");
     assert.equal(JSON.parse(lines[1]).to, "in-progress");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("readRecentEvents: empty when no journal exists", () => {
+  const root = mkTempDir();
+  try {
+    assert.deepEqual(readRecentEvents(root, 5), []);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("readRecentEvents: newest-first, honors limit, skips unparseable lines", () => {
+  const root = mkTempDir();
+  try {
+    for (let i = 1; i <= 5; i++) {
+      appendStatusEvent(root, { task: fakeTask(), from: "open", to: "ready", verb: `v${i}` });
+    }
+    // Torn / hand-edited line in the middle of the journal must not break the tail.
+    appendFileSync(eventsPath(root), "not json\n");
+    appendStatusEvent(root, { task: fakeTask(), from: "ready", to: "in-progress", verb: "v6" });
+
+    const recent = readRecentEvents(root, 3);
+    assert.equal(recent.length, 3);
+    assert.deepEqual(recent.map(e => e.verb), ["v6", "v5", "v4"], "newest first");
+    assert.equal(recent[0].to, "in-progress");
   } finally {
     rmTempDir(root);
   }
