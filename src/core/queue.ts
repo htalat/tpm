@@ -20,7 +20,7 @@ export interface QueueItem {
 }
 
 // Priority order for `tpm next` (lower rank = higher priority):
-//   needs-feedback        — in-flight PR signal, time-sensitive.
+//   rework        — in-flight PR signal, time-sensitive.
 //   stranded in-progress  — status is `in-progress` but no per-task lock is
 //                           held. The lock is the source of truth for "is
 //                           someone working on this"; if it's free the task is
@@ -30,13 +30,13 @@ export interface QueueItem {
 //   ready                 — fresh queue.
 // Within each bucket, oldest by `created` first. Parents and archived excluded.
 //
-// `needs-close` is intentionally absent: task 045 made the poller auto-close
+// `closing` is intentionally absent: task 045 made the poller auto-close
 // inline (`mutate.complete` from `tpm poll`) right after the
-// `needs-close` flip, so under normal operation the status is transient and
+// `closing` flip, so under normal operation the status is transient and
 // already gone by the next tick. Stragglers (auto-close failed — body empty,
-// lock contention, Outcome pre-filled) stay at `needs-close` for the manual
+// lock contention, Outcome pre-filled) stay at `closing` for the manual
 // `/tpm done <slug>` escape hatch; surface them with `tpm ls --status
-// needs-close` if you want a sweep.
+// closing` if you want a sweep.
 const RANK_NEEDS_FEEDBACK = 0;
 const RANK_STRANDED       = 1;
 const RANK_READY          = 2;
@@ -44,7 +44,7 @@ const RANK_INELIGIBLE     = 99;
 
 function rankFor(task: Task, qualifiedSlug: string, opts: SelectNextOpts): number {
   const status = String(task.data.status ?? "");
-  if (status === "needs-feedback") return RANK_NEEDS_FEEDBACK;
+  if (status === "rework") return RANK_NEEDS_FEEDBACK;
   if (status === "ready") return RANK_READY;
   if (status === "in-progress" && opts.hasTaskLock && !opts.hasTaskLock(qualifiedSlug)) {
     return RANK_STRANDED;
@@ -87,15 +87,15 @@ export function selectNext(projects: Project[], opts: SelectNextOpts = {}): Queu
   return candidates[0] ?? null;
 }
 
-// `needs-close` is in the human inbox because a task only *stays* there when
+// `closing` is in the human inbox because a task only *stays* there when
 // the poller's inline auto-close failed (PR body empty, Outcome already
 // filled, lock contention) — i.e. it's an alert needing a human `tpm done`,
 // not a queue state. Under normal operation the status is transient and never
 // renders here.
-export const INBOX_STATUSES = ["needs-close", "needs-review", "blocked", "open"] as const;
+export const INBOX_STATUSES = ["closing", "review", "blocked", "open"] as const;
 
 // `tpm inbox` listing. Human-queue tasks across all projects, ordered with
-// the most actionable status first (needs-close > needs-review > blocked >
+// the most actionable status first (closing > review > blocked >
 // open), then oldest by created within each bucket.
 export function inboxItems(projects: Project[]): Array<QueueItem & { status: string }> {
   const items: Array<QueueItem & { status: string }> = [];

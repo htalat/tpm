@@ -554,18 +554,18 @@ test("pull: in-progress -> open, stops a running task (off the agent, not re-que
   }
 });
 
-test("pull: needs-feedback -> needs-review, logs pulled-from-queue", () => {
+test("pull: rework -> review, logs pulled-from-queue", () => {
   // Escalation to the human queue: feedback flow already routes ambiguous
   // signal there, so the demote target stays consistent (task 117 plan, step 2).
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
-    writeTask(dir, "001-a.md", "needs-feedback");
+    writeTask(dir, "001-a.md", "rework");
     const t = loadTask(root, "alpha", "001-a");
     pullFromQueue(t);
     const text = readFileSync(t.path, "utf8");
-    assert.match(text, /status: needs-review/);
-    assert.match(text, /: pulled from queue \(needs-feedback -> needs-review\)$/m);
+    assert.match(text, /status: review/);
+    assert.match(text, /: pulled from queue \(rework -> review\)$/m);
   } finally {
     rmTempDir(root);
   }
@@ -591,11 +591,11 @@ test("pull: leaves allow_orchestrator: true alone when pulling a ready task back
   }
 });
 
-test("pull: refuses statuses outside ready / in-progress / needs-feedback", () => {
+test("pull: refuses statuses outside ready / in-progress / rework", () => {
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
-    for (const s of ["open", "needs-review", "needs-close", "blocked", "done", "dropped"]) {
+    for (const s of ["open", "review", "closing", "blocked", "done", "dropped"]) {
       writeTask(dir, `001-${s}.md`, s);
       const t = loadTask(root, "alpha", `001-${s}`);
       assert.throws(() => pullFromQueue(t), /pull only applies to ready/, `expected refusal on ${s}`);
@@ -660,7 +660,7 @@ test("pr: dedupes — same URL is a no-op", () => {
     const t = loadTask(root, "alpha", "001-a");
     addPr(t, "https://github.com/x/y/pull/1");
     const before = readFileSync(t.path, "utf8");
-    // Reload — the first call mutated the task in place (to needs-review).
+    // Reload — the first call mutated the task in place (to review).
     const t2 = loadTask(root, "alpha", "001-a");
     const r = addPr(t2, "https://github.com/x/y/pull/1");
     assert.match(r.message, /already linked/);
@@ -670,35 +670,35 @@ test("pr: dedupes — same URL is a no-op", () => {
   }
 });
 
-test("pr: in-progress task flips to needs-review with a status-flip log line", () => {
+test("pr: in-progress task flips to review with a status-flip log line", () => {
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
     writeTask(dir, "001-a.md", "in-progress");
     const t = loadTask(root, "alpha", "001-a");
     const r = addPr(t, "https://github.com/x/y/pull/1");
-    assert.match(r.message, /-> needs-review/);
+    assert.match(r.message, /-> review/);
     const text = readFileSync(t.path, "utf8");
-    assert.match(text, /status: needs-review/);
+    assert.match(text, /status: review/);
     assert.match(text, /opened PR https:\/\/github\.com\/x\/y\/pull\/1$/m);
-    assert.match(text, /status -> needs-review \(PR opened, awaiting review\)$/m);
+    assert.match(text, /status -> review \(PR opened, awaiting review\)$/m);
   } finally {
     rmTempDir(root);
   }
 });
 
-test("pr: needs-feedback task — addPr links URL but does NOT flip status", () => {
+test("pr: rework task — addPr links URL but does NOT flip status", () => {
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
-    writeTask(dir, "001-a.md", "needs-feedback");
+    writeTask(dir, "001-a.md", "rework");
     const t = loadTask(root, "alpha", "001-a");
     const r = addPr(t, "https://github.com/x/y/pull/2");
-    assert.doesNotMatch(r.message, /needs-review/);
+    assert.doesNotMatch(r.message, /review/);
     const text = readFileSync(t.path, "utf8");
-    assert.match(text, /status: needs-feedback/);
+    assert.match(text, /status: rework/);
     assert.match(text, /opened PR https:\/\/github\.com\/x\/y\/pull\/2$/m);
-    assert.doesNotMatch(text, /status -> needs-review/);
+    assert.doesNotMatch(text, /status -> review/);
   } finally {
     rmTempDir(root);
   }
@@ -713,7 +713,7 @@ test("pr: ready task — addPr links URL but does NOT flip status (only in-progr
     addPr(t, "https://github.com/x/y/pull/3");
     const text = readFileSync(t.path, "utf8");
     assert.match(text, /status: ready/);
-    assert.doesNotMatch(text, /status -> needs-review/);
+    assert.doesNotMatch(text, /status -> review/);
   } finally {
     rmTempDir(root);
   }
@@ -723,7 +723,7 @@ test("pr: flip branch emits a louder terminus line; non-flip branch does not", (
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
-    // Flip branch: in-progress -> needs-review carries the terminus.
+    // Flip branch: in-progress -> review carries the terminus.
     writeTask(dir, "001-a.md", "in-progress");
     const t1 = loadTask(root, "alpha", "001-a");
     const r1 = addPr(t1, "https://github.com/x/y/pull/1");
@@ -753,7 +753,7 @@ test("pr: duplicate URL on already-flipped task — no extra status flip, no ext
     addPr(t2, "https://github.com/x/y/pull/1");
     assert.equal(readFileSync(t.path, "utf8"), afterFirst);
     // Exactly one status-flip log line — re-flipping would append another.
-    const flipCount = (afterFirst.match(/status -> needs-review/g) ?? []).length;
+    const flipCount = (afterFirst.match(/status -> review/g) ?? []).length;
     assert.equal(flipCount, 1);
   } finally {
     rmTempDir(root);
@@ -771,7 +771,7 @@ test("report: auto-folds file-form task, creates report.md inside task folder, l
     const r = addReport(t);
     assert.match(r.message, /created tasks\/001-finding\/report\.md/);
     assert.match(r.message, /folded task/);
-    assert.match(r.message, /-> needs-review/);
+    assert.match(r.message, /-> review/);
     // File-form was folded: original path is gone, task.md exists in the folder.
     assert.equal(existsSync(oldPath), false);
     const newTaskPath = join(dir, "tasks", "001-finding", "task.md");
@@ -780,9 +780,9 @@ test("report: auto-folds file-form task, creates report.md inside task folder, l
     const { data } = parse(text);
     // No `report:` frontmatter — presence of report.md IS the report.
     assert.equal("report" in data, false);
-    assert.match(text, /status: needs-review/);
+    assert.match(text, /status: review/);
     assert.match(text, /opened report tasks\/001-finding\/report\.md$/m);
-    assert.match(text, /status -> needs-review \(report attached, awaiting review\)$/m);
+    assert.match(text, /status -> review \(report attached, awaiting review\)$/m);
     const reportPath = join(dir, "tasks", "001-finding", "report.md");
     assert.ok(existsSync(reportPath));
     const reportText = readFileSync(reportPath, "utf8");
@@ -837,19 +837,19 @@ test("report: idempotent re-attach on already-flipped task — no extra log line
     const t2 = loadTask(root, "alpha", "001-a");
     addReport(t2);
     assert.equal(readFileSync(newTaskPath, "utf8"), afterFirst);
-    const flipCount = (afterFirst.match(/status -> needs-review/g) ?? []).length;
+    const flipCount = (afterFirst.match(/status -> review/g) ?? []).length;
     assert.equal(flipCount, 1);
   } finally {
     rmTempDir(root);
   }
 });
 
-test("report: re-attach on needs-feedback (post-feedback round) re-fires the flip", () => {
-  // After request-changes flips needs-review -> needs-feedback, the agent
+test("report: re-attach on rework (post-feedback round) re-fires the flip", () => {
+  // After request-changes flips review -> rework, the agent
   // re-attaches via `tpm report <slug>`. The folder + file are already
   // there so no creation log lines fire, but the status flip should still
   // happen when status is in-progress. Simulate: agent ran `tpm start`
-  // (needs-feedback -> in-progress) before re-running `tpm report`.
+  // (rework -> in-progress) before re-running `tpm report`.
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
@@ -859,16 +859,16 @@ test("report: re-attach on needs-feedback (post-feedback round) re-fires the fli
     // Reviewer requests changes — re-load and flip.
     const t2 = loadTask(root, "alpha", "001-a");
     requestReportChanges(t2, "needs more context");
-    // Agent runs `tpm start` (needs-feedback -> in-progress) and re-attaches.
+    // Agent runs `tpm start` (rework -> in-progress) and re-attaches.
     const t3 = loadTask(root, "alpha", "001-a");
     start(t3);
     const t4 = loadTask(root, "alpha", "001-a");
     const r = addReport(t4);
-    assert.match(r.message, /-> needs-review/);
+    assert.match(r.message, /-> review/);
     const newTaskPath = join(dir, "tasks", "001-a", "task.md");
     const text = readFileSync(newTaskPath, "utf8");
-    assert.match(text, /status: needs-review/);
-    const flipCount = (text.match(/status -> needs-review/g) ?? []).length;
+    assert.match(text, /status: review/);
+    const flipCount = (text.match(/status -> review/g) ?? []).length;
     assert.equal(flipCount, 2);
   } finally {
     rmTempDir(root);
@@ -882,11 +882,11 @@ test("report: non-in-progress status leaves status alone (e.g. ready)", () => {
     writeTask(dir, "001-a.md", "ready", "investigation");
     const t = loadTask(root, "alpha", "001-a");
     const r = addReport(t);
-    assert.doesNotMatch(r.message, /needs-review/);
+    assert.doesNotMatch(r.message, /review/);
     const newTaskPath = join(dir, "tasks", "001-a", "task.md");
     const text = readFileSync(newTaskPath, "utf8");
     assert.match(text, /status: ready/);
-    assert.doesNotMatch(text, /status -> needs-review/);
+    assert.doesNotMatch(text, /status -> review/);
   } finally {
     rmTempDir(root);
   }
@@ -952,22 +952,22 @@ test("report: refuses on archived task", () => {
 
 // ---- requestReportChanges -------------------------------------------------
 
-test("requestReportChanges: flips needs-review -> needs-feedback, appends ## Reviewer feedback, logs", () => {
+test("requestReportChanges: flips review -> rework, appends ## Reviewer feedback, logs", () => {
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
     writeTask(dir, "001-a.md", "in-progress", "investigation");
     const t = loadTask(root, "alpha", "001-a");
     addReport(t);
-    // Status is now needs-review.
+    // Status is now review.
     const t2 = loadTask(root, "alpha", "001-a");
     const r = requestReportChanges(t2, "missing context on commit X");
-    assert.match(r.message, /review requested.*-> needs-feedback/);
+    assert.match(r.message, /review requested.*-> rework/);
     const newTaskPath = join(dir, "tasks", "001-a", "task.md");
     const text = readFileSync(newTaskPath, "utf8");
-    assert.match(text, /status: needs-feedback/);
+    assert.match(text, /status: rework/);
     assert.match(text, /: review requested — missing context on commit X$/m);
-    assert.match(text, /status -> needs-feedback \(review requested\)$/m);
+    assert.match(text, /status -> rework \(review requested\)$/m);
     const reportText = readFileSync(join(dir, "tasks", "001-a", "report.md"), "utf8");
     assert.match(reportText, /## Reviewer feedback/);
     assert.match(reportText, /missing context on commit X/);
@@ -984,7 +984,7 @@ test("requestReportChanges: multiple rounds accumulate under one ## Reviewer fee
     const t = loadTask(root, "alpha", "001-a");
     addReport(t);
     requestReportChanges(loadTask(root, "alpha", "001-a"), "round 1 feedback");
-    // Agent re-attaches: needs-feedback -> in-progress (via start) -> needs-review.
+    // Agent re-attaches: rework -> in-progress (via start) -> review.
     start(loadTask(root, "alpha", "001-a"));
     addReport(loadTask(root, "alpha", "001-a"));
     // Second round of changes.
@@ -1005,7 +1005,7 @@ test("requestReportChanges: refuses when no report attached", () => {
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
-    writeTask(dir, "001-a.md", "needs-review", "investigation");
+    writeTask(dir, "001-a.md", "review", "investigation");
     const t = loadTask(root, "alpha", "001-a");
     assert.throws(() => requestReportChanges(t, "..."), /no report attached/);
   } finally {
@@ -1013,7 +1013,7 @@ test("requestReportChanges: refuses when no report attached", () => {
   }
 });
 
-test("requestReportChanges: refuses when status is not needs-review", () => {
+test("requestReportChanges: refuses when status is not review", () => {
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
@@ -1023,7 +1023,7 @@ test("requestReportChanges: refuses when status is not needs-review", () => {
     // Manually flip to in-progress to simulate an out-of-band state.
     start(loadTask(root, "alpha", "001-a"));
     const t2 = loadTask(root, "alpha", "001-a");
-    assert.throws(() => requestReportChanges(t2, "..."), /requires status=needs-review/);
+    assert.throws(() => requestReportChanges(t2, "..."), /requires status=review/);
   } finally {
     rmTempDir(root);
   }
@@ -1367,39 +1367,39 @@ test("status: omitted verb still writes the generic 'status -> X' Log line (defa
   }
 });
 
-test("status: in-progress -> needs-feedback (poller path) is accepted", () => {
+test("status: in-progress -> rework (poller path) is accepted", () => {
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
     writeTask(dir, "001-a.md", "in-progress");
     const t = loadTask(root, "alpha", "001-a");
-    setStatus(t, "needs-feedback");
+    setStatus(t, "rework");
     const text = readFileSync(t.path, "utf8");
-    assert.match(text, /status: needs-feedback/);
+    assert.match(text, /status: rework/);
   } finally {
     rmTempDir(root);
   }
 });
 
-test("status: in-progress -> needs-close (poller path on merged PR) is accepted", () => {
+test("status: in-progress -> closing (poller path on merged PR) is accepted", () => {
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
     writeTask(dir, "001-a.md", "in-progress");
     const t = loadTask(root, "alpha", "001-a");
-    setStatus(t, "needs-close");
+    setStatus(t, "closing");
     const text = readFileSync(t.path, "utf8");
-    assert.match(text, /status: needs-close/);
+    assert.match(text, /status: closing/);
   } finally {
     rmTempDir(root);
   }
 });
 
-test("complete: needs-close -> done (close-out from poller-flagged task)", () => {
+test("complete: closing -> done (close-out from poller-flagged task)", () => {
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
-    const livePath = writeTask(dir, "001-a.md", "needs-close", "pr");
+    const livePath = writeTask(dir, "001-a.md", "closing", "pr");
     const t = loadTask(root, "alpha", "001-a");
     const r = complete(t, { outcome: "shipped via PR #1" });
     assert.match(r.message, /-> done/);
@@ -1411,15 +1411,15 @@ test("complete: needs-close -> done (close-out from poller-flagged task)", () =>
   }
 });
 
-test("status: needs-feedback -> needs-review (agent escalation) is accepted", () => {
+test("status: rework -> review (agent escalation) is accepted", () => {
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
-    writeTask(dir, "001-a.md", "needs-feedback");
+    writeTask(dir, "001-a.md", "rework");
     const t = loadTask(root, "alpha", "001-a");
-    setStatus(t, "needs-review");
+    setStatus(t, "review");
     const text = readFileSync(t.path, "utf8");
-    assert.match(text, /status: needs-review/);
+    assert.match(text, /status: review/);
   } finally {
     rmTempDir(root);
   }
@@ -2220,15 +2220,15 @@ test("status: cross-terminal moves refused (done <-> dropped)", () => {
   }
 });
 
-test("status: open cannot jump to needs-review; --force overrides", () => {
+test("status: open cannot jump to review; --force overrides", () => {
   const root = mkTempDir();
   try {
     const dir = setupProject(root, "alpha");
     writeTask(dir, "001-a.md", "open");
     const t = loadTask(root, "alpha", "001-a");
-    assert.throws(() => setStatus(t, "needs-review"), /Legal targets from "open"/);
-    setStatus(t, "needs-review", undefined, { force: true });
-    assert.match(readFileSync(t.path, "utf8"), /status: needs-review/);
+    assert.throws(() => setStatus(t, "review"), /Legal targets from "open"/);
+    setStatus(t, "review", undefined, { force: true });
+    assert.match(readFileSync(t.path, "utf8"), /status: review/);
   } finally {
     rmTempDir(root);
   }
@@ -2265,8 +2265,8 @@ test("onStatusChange: fires on every status write path with from/to/verb", () =>
     assert.deepEqual(seen.map(e => `${e.from}->${e.to}`), [
       "open->ready",
       "ready->in-progress",
-      "in-progress->needs-review",
-      "needs-review->done",
+      "in-progress->review",
+      "review->done",
     ]);
     assert.equal(seen[2].verb, "PR opened, awaiting review");
     assert.ok(seen.every(e => e.slug === "001-a"));

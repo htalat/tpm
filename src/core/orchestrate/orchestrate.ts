@@ -65,13 +65,13 @@ export function resolveMaxAttempts(
 // the child exits, against a snapshot of the task taken before the spawn.
 //
 //   shipped  — the agent delivered: prs grew, status reached a delivery state
-//              (needs-review, needs-close, done, dropped, blocked), or the task
+//              (review, closing, done, dropped, blocked), or the task
 //              disappeared from the live tree (archived mid-run by the poller).
 //              Credited regardless of exit code — a SIGTERM at the time bound
 //              after `tpm pr` is a *timing* signal, not a *delivery* signal.
 //   stalled  — exit 0 but the task didn't make meaningful progress. Includes
 //              the case where the agent flipped to `in-progress` from `ready`
-//              or `needs-feedback` and exited without opening a PR or further
+//              or `rework` and exited without opening a PR or further
 //              advancing — that flip is `tpm start`'s entry, not progress.
 //              The case the "ship the smaller change" rule is meant to
 //              eliminate; worth counting.
@@ -107,11 +107,11 @@ export interface ClassifyDispositionInput {
 
 // Statuses that signal the agent delivered something this run. Excludes
 // `in-progress` (still mid-work), `ready` (self-revert handing back to the
-// queue), `needs-feedback` (round incomplete — more agent work needed), and
+// queue), `rework` (round incomplete — more agent work needed), and
 // `open` (pre-shaping).
 const DELIVERY_STATES = new Set([
-  "needs-review",
-  "needs-close",
+  "review",
+  "closing",
   "done",
   "dropped",
   "blocked",
@@ -129,12 +129,12 @@ export function classifyDisposition(input: ClassifyDispositionInput): Dispositio
   const prsGrew = after.prs > input.before.prs;
   const reportAppeared = (after.report ?? false) && !(input.before.report ?? false);
   const statusChanged = after.status !== input.before.status;
-  // `tpm start` flips `ready -> in-progress` or `needs-feedback -> in-progress`
+  // `tpm start` flips `ready -> in-progress` or `rework -> in-progress`
   // on entry. Without further progress (no PR, no report, no delivery-state
   // advance), that's claim-not-progress — per task 064.
   const entryFlip =
     after.status === "in-progress" &&
-    (input.before.status === "ready" || input.before.status === "needs-feedback") &&
+    (input.before.status === "ready" || input.before.status === "rework") &&
     !prsGrew &&
     !reportAppeared;
   // Did the agent ship? PR opened, report attached, or status reached a
@@ -142,7 +142,7 @@ export function classifyDisposition(input: ClassifyDispositionInput): Dispositio
   const shippedFlip =
     !entryFlip && (prsGrew || reportAppeared || (statusChanged && DELIVERY_STATES.has(after.status)));
 
-  // Delivery wins over timeout: the 057 trace was `status=ready->needs-review
+  // Delivery wins over timeout: the 057 trace was `status=ready->review
   // prs=0->1 exit=124` and got reported as `timeout`. Per task 068, that's the
   // symmetric inverse of 064 — the agent shipped, then lingered past the time
   // bound. Headline disposition should track what landed, not the SIGTERM.
@@ -157,7 +157,7 @@ export function classifyDisposition(input: ClassifyDispositionInput): Dispositio
 
 // Does the task look like it has hit a terminal state externally? Returns the
 // reason string ("archived" / "done" / "dropped") or null if the orchestrator
-// should keep running. `needs-close` is *not* terminal — it's a transient
+// should keep running. `closing` is *not* terminal — it's a transient
 // state the poller sets just before its inline auto-close, and killing the
 // agent during that window would race the close-out for no benefit.
 export type TerminalReason = "archived" | "done" | "dropped" | "pulled";
@@ -218,9 +218,9 @@ export interface AutoRevertInput {
 //   - the child exited cleanly (exit 0, no orchestrator-initiated SIGTERM)
 //   - the task still exists in the tree (wasn't archived)
 //   - status is `in-progress` after the run
-//   - prs count didn't grow (a PR opened would have flipped to needs-review)
-//   - report.md didn't appear (a report attach would have flipped to needs-review)
-//   - `before.status` wasn't `needs-feedback` — a feedback round legitimately
+//   - prs count didn't grow (a PR opened would have flipped to review)
+//   - report.md didn't appear (a report attach would have flipped to review)
+//   - `before.status` wasn't `rework` — a feedback round legitimately
 //     ends at `in-progress` with unchanged prs after addressing CI/threads.
 export function shouldAutoRevert(input: AutoRevertInput): boolean {
   if (input.exitCode !== 0) return false;
@@ -229,7 +229,7 @@ export function shouldAutoRevert(input: AutoRevertInput): boolean {
   if (input.after.status !== "in-progress") return false;
   if (input.after.prs !== input.before.prs) return false;
   if ((input.after.report ?? false) && !(input.before.report ?? false)) return false;
-  if (input.before.status === "needs-feedback") return false;
+  if (input.before.status === "rework") return false;
   return true;
 }
 
@@ -256,16 +256,16 @@ You are executing this task. Rules:
 - If \`prs:\` is non-empty and any linked PR is OPEN, fetch its comments and reviews via the host CLI (dispatch on \`Host:\` in the briefing) before any other discovery. Unaddressed comments are almost certainly why you're seeing this task — address them first.
 - Before cutting your feature branch, refresh \`main\`: \`git checkout main && git pull --ff-only\`. If the working tree is dirty or the pull doesn't fast-forward, run \`tpm block <slug> "stale checkout — needs human reconcile"\` and exit — don't rebase, stash, or push through. (PR #120 failure mode: branched off stale main, conflicted at merge.)
 - Follow the Plan above.
-- If type=pr: after opening a PR, run \`tpm pr <slug> <url>\` (CLI auto-flips to needs-review). Stop.
-- If type=investigation: your deliverable is a **report**, not a PR. Run \`tpm report <slug>\` to fold the task into a folder and scaffold \`<project>/tasks/<slug>/report.md\` from the template. Write findings into that file. When done, re-run \`tpm report <slug>\` — the CLI auto-flips to needs-review. Don't run \`tpm pr\`.
+- If type=pr: after opening a PR, run \`tpm pr <slug> <url>\` (CLI auto-flips to review). Stop.
+- If type=investigation: your deliverable is a **report**, not a PR. Run \`tpm report <slug>\` to fold the task into a folder and scaffold \`<project>/tasks/<slug>/report.md\` from the template. Write findings into that file. When done, re-run \`tpm report <slug>\` — the CLI auto-flips to review. Don't run \`tpm pr\`.
 - Can't proceed? \`tpm revert <slug> "<reason>"\` (back to ready) or \`tpm block <slug> "<reason>"\` (human queue). Never exit at in-progress.
 - Unanticipated decision? Ship the smaller / more local change, file follow-ups, don't halt.`;
 }
 
 // Feedback-mode prompt for tasks that re-enter the orchestrator at
-// `needs-feedback` (the poller flagged a signal, or a human bounced a
-// needs-review task via serve's "Reopen for agent" — post-087 those land at
-// needs-feedback). The prompt embeds the PR JSON inline so the agent's first
+// `rework` (the poller flagged a signal, or a human bounced a
+// review task via serve's "Reopen for agent" — post-087 those land at
+// rework). The prompt embeds the PR JSON inline so the agent's first
 // action can be a code Edit instead of a `gh pr view` round-trip.
 //
 // 089 is the structural follow-up to 088's instruction-only rule: if the
@@ -290,7 +290,7 @@ You are addressing feedback on the PR(s) above. Rules:
 - For concrete code-suggestion threads: apply the fix, commit, push. Resolve the thread if the fix matches the suggestion exactly.
 - For CI failures: fetch the failed run log (\`gh run view <id> --log-failed\` for github), fix, commit, push.
 - For rebase needs (BEHIND / DIRTY): rebase against the default branch; on a conflict you can't resolve cleanly, escalate (don't commit a resolution you can't verify with the workflow doc's tests).
-- For ambiguous / design-level threads: flip to \`needs-review\` with a Log entry naming what's unclear, or \`tpm block <slug> "<reason>"\` for a hard blocker.
+- For ambiguous / design-level threads: flip to \`review\` with a Log entry naming what's unclear, or \`tpm block <slug> "<reason>"\` for a hard blocker.
 - The PR is already open; don't run \`tpm pr\` again. After pushing, the poller re-flags on the next signal.
 - When the round is done: \`tpm log <slug> "addressed feedback — <one-line summary>"\` then \`tpm status <slug> in-progress\`. Never exit at in-progress without that explicit flip, a delivery state, or \`tpm revert\` / \`tpm block\`.
 - Never ask questions in your output. Take the smaller / safer action and log what you did.`;
@@ -328,7 +328,7 @@ export async function fetchFeedbackContexts(urls: string[]): Promise<string> {
 }
 
 // Verb written to the task body Log section when the orchestrator eager-flips
-// `ready` (or `needs-feedback`) to `in-progress` *before* spawning the agent.
+// `ready` (or `rework`) to `in-progress` *before* spawning the agent.
 // Distinct from the agent's own `tpm start` verb ("started") so the audit
 // trail differentiates the orchestrator-side claim from the agent's self-
 // claim. Exported so the spawn-failure-revert message can name the same
@@ -398,7 +398,7 @@ export function checkProjectRepo(
 //   - repo usable                  → spawn (cwd is the clone)
 //   - repo missing, task !blocked  → block: flip to `blocked` so it surfaces in
 //                                    `tpm inbox` and drops off the ready /
-//                                    needs-feedback queue instead of re-failing
+//                                    rework queue instead of re-failing
 //                                    (and re-logging) on every tick
 //   - repo missing, task blocked   → skip: already blocked on a prior tick;
 //                                    don't double-block or double-log
@@ -465,7 +465,7 @@ export function noPickLogEntry(candidatesCount: number): { level: "INFO" | "WARN
   if (candidatesCount === 0) {
     return {
       level: "INFO",
-      message: "no eligible tasks (no ready/needs-feedback with allow_orchestrator: true)",
+      message: "no eligible tasks (no ready/rework with allow_orchestrator: true)",
     };
   }
   return {
@@ -925,7 +925,7 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
     // the next candidate if a sibling task is already running in this repo.
     // Pass `hasTaskLock` so stranded in-progress tasks (status didn't flip out
     // on a prior agent exit; lock since released) get admitted alongside ready
-    // / needs-feedback. The stale-lock sweep above guarantees a lock file we
+    // / rework. The stale-lock sweep above guarantees a lock file we
     // see at this point is current, not a leftover from a dead pid.
     const candidates = selectCandidates(projects, {
       autonomous: true,
@@ -1048,7 +1048,7 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
   const beforeStatus = String(pick.task.data.status ?? "");
   const before = snapshotTask(pick.task);
   const prUrls = parsePrUrls(pick.task);
-  const useFeedbackPrompt = beforeStatus === "needs-feedback" && prUrls.length > 0;
+  const useFeedbackPrompt = beforeStatus === "rework" && prUrls.length > 0;
 
   // Per-run log: capture the agent's session output so `tpm serve` can show
   // what the agent is doing live, and so a post-mortem after a failed run has
@@ -1088,7 +1088,7 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
   // followed by the execution rules. The agent reads the Plan and starts
   // working — no skill discovery, no `tpm context` round-trip first.
   //
-  // For tasks arriving at `needs-feedback` with linked PRs, swap in the
+  // For tasks arriving at `rework` with linked PRs, swap in the
   // feedback-mode prompt (task 089): pre-fetch PR comments + reviews via the
   // host registry and inject the JSON so the agent's first tool call can be a
   // code Edit, not a `gh pr view`. Falls back to the execution prompt if the
@@ -1235,7 +1235,7 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
   log(level, formatDispositionLine(slug, disposition, result.exitCode, before, after));
 
   // A shipping run resets the retry counter: the cap is about consecutive
-  // burns, not lifetime dispatch count (a needs-feedback round after a
+  // burns, not lifetime dispatch count (a rework round after a
   // shipped PR starts fresh).
   if (disposition === "shipped" && matchAfter && !matchAfter.task.archived) {
     try {

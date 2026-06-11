@@ -58,9 +58,9 @@ function project(slug: string, tasks: Task[], extra: Record<string, unknown> = {
 test("route: / renders index with queue sections", () => {
   const p = project("alpha", [
     task("001-r", "ready"),
-    task("002-nf", "needs-feedback"),
+    task("002-nf", "rework"),
     task("003-ip", "in-progress"),
-    task("004-nr", "needs-review"),
+    task("004-nr", "review"),
   ]);
   const r = route("/", new URLSearchParams(), [p]);
   assert.equal(r.status, 200);
@@ -100,13 +100,13 @@ test("route: /api/refresh returns JSON with counts and timestamp", () => {
 test("route: /p/<project> renders project view with tasks grouped by status", () => {
   const p = project("alpha", [
     task("001-ready",   "ready"),
-    task("002-needs",   "needs-feedback"),
+    task("002-needs",   "rework"),
     task("003-blocked", "blocked"),
   ]);
   const r = route("/p/alpha", new URLSearchParams(), [p]);
   assert.equal(r.status, 200);
   assert.match(r.body, /alpha/);
-  assert.match(r.body, /needs-feedback/);
+  assert.match(r.body, /rework/);
   assert.match(r.body, /blocked/);
   for (const slug of ["001-ready", "002-needs", "003-blocked"]) {
     assert.match(r.body, new RegExp(slug));
@@ -492,7 +492,7 @@ test("renderTask: Complete (Close) form renders for every non-terminal status", 
   // Closing is a first-class UI action: no status should force the user to the
   // shell to run `tpm complete`. Terminal states (done/dropped) render no
   // actions at all — covered by the done/dropped test below.
-  for (const status of ["open", "ready", "in-progress", "needs-feedback", "needs-close", "needs-review", "blocked"]) {
+  for (const status of ["open", "ready", "in-progress", "rework", "closing", "review", "blocked"]) {
     const t = task("001-a", status);
     const p = project("alpha", [t]);
     const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
@@ -536,7 +536,7 @@ test("renderTask: done/dropped tasks render the Archive button but no transition
 test("renderTask: non-terminal tasks don't offer the Archive button", () => {
   // Archive is only for retiring an already-closed task; live statuses must
   // close first (the button shows up once status is done/dropped).
-  for (const status of ["open", "ready", "in-progress", "needs-feedback", "needs-close", "needs-review", "blocked"]) {
+  for (const status of ["open", "ready", "in-progress", "rework", "closing", "review", "blocked"]) {
     const t = task("001-a", status);
     const p = project("alpha", [t]);
     const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
@@ -556,7 +556,7 @@ test("renderTask: allow_orchestrator toggle renders for every promoted non-termi
   // Settings live outside the action-verb switch — every promotable,
   // non-parent, non-archived task should expose the toggle. `open` is the lone
   // exception (covered below): its only promotion path already sets the flag.
-  for (const status of ["ready", "in-progress", "needs-feedback", "needs-close", "needs-review", "blocked"]) {
+  for (const status of ["ready", "in-progress", "rework", "closing", "review", "blocked"]) {
     const t = task("001-a", status);
     const p = project("alpha", [t]);
     const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
@@ -589,9 +589,9 @@ test("renderTask: archived task renders no settings or Archive forms", () => {
   assert.doesNotMatch(r.body, /action="\/t\/alpha\/099-old\/archive"/);
 });
 
-test("renderTask: needs-close offers Complete prominently + Log + Block", () => {
+test("renderTask: closing offers Complete prominently + Log + Block", () => {
   // Merged-PR sweep state: Complete is the dominant action.
-  const t = task("001-nc", "needs-close");
+  const t = task("001-nc", "closing");
   const p = project("alpha", [t]);
   const r = route("/t/alpha/001-nc", new URLSearchParams(), [p], { mutationsEnabled: true });
   assert.match(r.body, /action="\/t\/alpha\/001-nc\/complete"/);
@@ -599,13 +599,13 @@ test("renderTask: needs-close offers Complete prominently + Log + Block", () => 
   assert.match(r.body, /action="\/t\/alpha\/001-nc\/block"/);
 });
 
-test("route: index inbox owns needs-close (auto-close failure alert); agent queue sorts needs-feedback > ready", () => {
-  // needs-close moved from the agent queue to the inbox: the orchestrator
+test("route: index inbox owns closing (auto-close failure alert); agent queue sorts rework > ready", () => {
+  // closing moved from the agent queue to the inbox: the orchestrator
   // never dispatches it — a task parked there is waiting on a human `tpm done`.
   const p = project("alpha", [
     task("001-old-ready",   "ready",          { created: "2026-01-01 00:00 PDT" }),
-    task("002-nc",          "needs-close",    { created: "2026-05-01 00:00 PDT" }),
-    task("003-nf",          "needs-feedback", { created: "2026-05-09 00:00 PDT" }),
+    task("002-nc",          "closing",    { created: "2026-05-01 00:00 PDT" }),
+    task("003-nf",          "rework", { created: "2026-05-09 00:00 PDT" }),
   ]);
   const r = route("/", new URLSearchParams(), [p]);
   const inboxSection = r.body.slice(r.body.indexOf("Your inbox"), r.body.indexOf("Agent queue"));
@@ -614,8 +614,8 @@ test("route: index inbox owns needs-close (auto-close failure alert); agent queu
   assert.doesNotMatch(agentSection, /002-nc/);
   const idxFeedback = agentSection.indexOf("003-nf");
   const idxReady    = agentSection.indexOf("001-old-ready");
-  assert.ok(idxFeedback !== -1 && idxReady !== -1, "agent queue keeps needs-feedback + ready");
-  assert.ok(idxFeedback < idxReady, "needs-feedback should render before ready");
+  assert.ok(idxFeedback !== -1 && idxReady !== -1, "agent queue keeps rework + ready");
+  assert.ok(idxFeedback < idxReady, "rework should render before ready");
 });
 
 test("renderTask: parent container renders no action forms", () => {
@@ -1081,11 +1081,11 @@ test("renderIndex: open row uses the muted fast-path style; blocked row uses the
   assert.doesNotMatch(blockedMatch![1], /promote-fast/);
 });
 
-test("renderIndex: needs-review row in inbox does NOT render a play button", () => {
-  // The "Reopen for agent" affordance on the task page targets needs-feedback
+test("renderIndex: review row in inbox does NOT render a play button", () => {
+  // The "Reopen for agent" affordance on the task page targets rework
   // (task 088). A one-click promote here would silently mis-route a review
   // bounce through `ready` and skip the feedback flow entirely.
-  const p = project("alpha", [task("001-nr", "needs-review")]);
+  const p = project("alpha", [task("001-nr", "review")]);
   const r = route("/", new URLSearchParams(), [p]);
   assert.doesNotMatch(
     r.body,
@@ -1098,7 +1098,7 @@ test("renderIndex: agent queue and in-flight rows do NOT render the play button"
   // feedback / in-progress rows have nothing useful to promote into.
   const p = project("alpha", [
     task("001-r", "ready"),
-    task("002-nf", "needs-feedback"),
+    task("002-nf", "rework"),
     task("003-ip", "in-progress"),
   ]);
   const r = route("/", new URLSearchParams(), [p]);
@@ -1170,12 +1170,12 @@ test("renderTask: ready task surfaces a Pull-from-queue action (→ open)", () =
   assert.match(r.body, /Pull from queue \(→ open\)/);
 });
 
-test("renderTask: needs-feedback task surfaces a Pull-from-queue action (→ needs-review)", () => {
-  const t = task("001-nf", "needs-feedback");
+test("renderTask: rework task surfaces a Pull-from-queue action (→ review)", () => {
+  const t = task("001-nf", "rework");
   const p = project("alpha", [t]);
   const r = route("/t/alpha/001-nf", new URLSearchParams(), [p], { mutationsEnabled: true });
   assert.match(r.body, /action="\/t\/alpha\/001-nf\/pull"/);
-  assert.match(r.body, /Pull from queue \(→ needs-review\)/);
+  assert.match(r.body, /Pull from queue \(→ review\)/);
 });
 
 test("renderTask: in-progress task surfaces a Pull-from-queue action (→ open) to stop the run", () => {
@@ -1188,9 +1188,9 @@ test("renderTask: in-progress task surfaces a Pull-from-queue action (→ open) 
 
 test("renderTask: non-pullable statuses don't surface a Pull-from-queue action", () => {
   // Other statuses: hide the button. Open/blocked already are in the human pile;
-  // needs-close / needs-review have their own exit paths (complete, log,
+  // closing / review have their own exit paths (complete, log,
   // request-changes).
-  for (const status of ["open", "needs-close", "needs-review", "blocked"]) {
+  for (const status of ["open", "closing", "review", "blocked"]) {
     const t = task("001-a", status);
     const p = project("alpha", [t]);
     const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
@@ -1198,10 +1198,10 @@ test("renderTask: non-pullable statuses don't surface a Pull-from-queue action",
   }
 });
 
-test("renderIndex: agent-queue ready and needs-feedback rows render the inline pull button (redirect=/)", () => {
+test("renderIndex: agent-queue ready and rework rows render the inline pull button (redirect=/)", () => {
   const p = project("alpha", [
     task("001-r", "ready"),
-    task("002-nf", "needs-feedback"),
+    task("002-nf", "rework"),
   ]);
   const r = route("/", new URLSearchParams(), [p]);
   assert.match(
@@ -1225,11 +1225,11 @@ test("renderIndex: in-flight rows (in-progress) render the inline pull button to
   );
 });
 
-test("renderIndex: inbox rows (needs-review / blocked / open) do NOT render the pull button", () => {
+test("renderIndex: inbox rows (review / blocked / open) do NOT render the pull button", () => {
   // Inbox status set never overlaps with the pullable set; the showPromote
   // call site doesn't pass showPull either. Defensive double-check.
   const p = project("alpha", [
-    task("001-nr", "needs-review"),
+    task("001-nr", "review"),
     task("002-b", "blocked"),
     task("003-o", "open"),
   ]);
@@ -1237,10 +1237,10 @@ test("renderIndex: inbox rows (needs-review / blocked / open) do NOT render the 
   assert.doesNotMatch(r.body, /class="pull-form"/);
 });
 
-test("renderProject: project-page ready / needs-feedback rows render the inline pull button (redirect=/p/<slug>)", () => {
+test("renderProject: project-page ready / rework rows render the inline pull button (redirect=/p/<slug>)", () => {
   const p = project("alpha", [
     task("001-r", "ready"),
-    task("002-nf", "needs-feedback"),
+    task("002-nf", "rework"),
   ]);
   const r = route("/p/alpha", new URLSearchParams(), [p]);
   assert.match(
@@ -1319,7 +1319,7 @@ test("renderIndex: parent container rows do NOT render the close button", () => 
 test("renderProject: project-page rows render the inline close button (redirect=/p/<slug>)", () => {
   const p = project("alpha", [
     task("001-o", "open"),
-    task("002-nf", "needs-feedback"),
+    task("002-nf", "rework"),
     task("003-d", "done", { closed: "2026-04-01 12:00 PDT" }),
   ]);
   const r = route("/p/alpha", new URLSearchParams("archived=1"), [p]);
@@ -1347,19 +1347,19 @@ test("routeMutation: row close posts `complete` and honors redirect=/ so the que
 
 // ---- per-row "Reopen for agent" button (task 146) -------------------------
 
-test("renderIndex: an inbox needs-review row renders the inline Reopen-for-agent button (status=needs-feedback, redirect=/)", () => {
-  // The per-row analogue of the detail-page "Reopen for agent (→ needs-feedback)"
+test("renderIndex: an inbox review row renders the inline Reopen-for-agent button (status=rework, redirect=/)", () => {
+  // The per-row analogue of the detail-page "Reopen for agent (→ rework)"
   // form — one click bounces a review back to the agent from the inbox without
-  // clicking through. Posts to the `status` mutation with status=needs-feedback.
-  const p = project("alpha", [task("001-nr", "needs-review")]);
+  // clicking through. Posts to the `status` mutation with status=rework.
+  const p = project("alpha", [task("001-nr", "review")]);
   const r = route("/", new URLSearchParams(), [p]);
   assert.match(
     r.body,
-    /<form[^>]*method="POST"[^>]*action="\/t\/alpha\/001-nr\/status"[^>]*class="reopen-form"[\s\S]*?name="status"[^>]*value="needs-feedback"[\s\S]*?name="redirect"[^>]*value="\/"/,
+    /<form[^>]*method="POST"[^>]*action="\/t\/alpha\/001-nr\/status"[^>]*class="reopen-form"[\s\S]*?name="status"[^>]*value="rework"[\s\S]*?name="redirect"[^>]*value="\/"/,
   );
 });
 
-test("renderIndex: non-needs-review rows do NOT render the Reopen-for-agent button", () => {
+test("renderIndex: non-review rows do NOT render the Reopen-for-agent button", () => {
   // Self-gating: the button only makes sense on a review awaiting the human, so
   // it never appears on open/blocked (inbox), ready (agent queue), or
   // in-progress (in flight) rows.
@@ -1373,11 +1373,11 @@ test("renderIndex: non-needs-review rows do NOT render the Reopen-for-agent butt
   assert.doesNotMatch(r.body, /class="reopen-form"/);
 });
 
-test("renderIndex: a parent container needs-review row does NOT render the Reopen-for-agent button", () => {
+test("renderIndex: a parent container review row does NOT render the Reopen-for-agent button", () => {
   // Reopening a container for the agent isn't meaningful — self-gates on parents.
-  const child = task("002-child", "needs-review", { parent: "001-parent" });
+  const child = task("002-child", "review", { parent: "001-parent" });
   child.parent = "001-parent";
-  const parent = task("001-parent", "needs-review");
+  const parent = task("001-parent", "review");
   parent.children = [child];
   const p = project("alpha", [parent]);
   const r = route("/", new URLSearchParams(), [p]);
@@ -1386,10 +1386,10 @@ test("renderIndex: a parent container needs-review row does NOT render the Reope
   assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-parent\/status"[^>]*class="reopen-form"/);
 });
 
-test("routeMutation: row Reopen-for-agent posts `status needs-feedback` and honors redirect=/", () => {
+test("routeMutation: row Reopen-for-agent posts `status rework` and honors redirect=/", () => {
   const { runner, calls } = captureRunner();
-  const r = routeMutation("/t/alpha/001-nr/status", new URLSearchParams("status=needs-feedback&redirect=/"), runner);
-  assert.deepEqual(calls, [["status", "alpha/001-nr", "needs-feedback"]]);
+  const r = routeMutation("/t/alpha/001-nr/status", new URLSearchParams("status=rework&redirect=/"), runner);
+  assert.deepEqual(calls, [["status", "alpha/001-nr", "rework"]]);
   assert.equal(r.status, 303);
   assert.match(r.location ?? "", /^\/\?flash=/);
 });
@@ -1400,7 +1400,7 @@ test("renderTask: Drop form renders on every non-terminal status, posting to /dr
   // Drop is a first-class action at every stage (task 140) — not just open/
   // ready. The form POSTs to the dedicated /drop endpoint with an optional
   // reason textarea (fills ## Outcome), never the old /status round-trip.
-  for (const status of ["open", "ready", "in-progress", "needs-feedback", "needs-close", "needs-review", "blocked"]) {
+  for (const status of ["open", "ready", "in-progress", "rework", "closing", "review", "blocked"]) {
     const t = task("001-a", status);
     const p = project("alpha", [t]);
     const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
@@ -1502,13 +1502,13 @@ test("renderTask: no Report panel when report.md is absent", () => {
   }
 });
 
-test("renderTask: needs-review task rail no longer renders LGTM/request-changes (moved to report page)", () => {
+test("renderTask: review task rail no longer renders LGTM/request-changes (moved to report page)", () => {
   // Task 083 moved the report-shaped review verbs to the report page itself
   // so the reviewer doesn't switch contexts to act. The rail keeps log/
   // block/reopen for both report-shaped and PR-shaped reviews.
   const root = mkTempDir();
   try {
-    const t = folderTask(root, "001-a", "needs-review", { hasReport: true, extra: { type: "investigation" } });
+    const t = folderTask(root, "001-a", "review", { hasReport: true, extra: { type: "investigation" } });
     const p = project("alpha", [t]);
     const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
     assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
@@ -1536,8 +1536,8 @@ test("renderTask: blocked task's Reopen form carries an optional (not required) 
   assert.doesNotMatch(textarea, /\brequired\b/, "reopen reason must not be required");
 });
 
-test("renderTask: needs-review PR-shaped task rail also lacks LGTM/request-changes", () => {
-  const t = task("001-a", "needs-review", { type: "pr", prs: ["https://github.com/x/y/pull/1"] });
+test("renderTask: review PR-shaped task rail also lacks LGTM/request-changes", () => {
+  const t = task("001-a", "review", { type: "pr", prs: ["https://github.com/x/y/pull/1"] });
   const p = project("alpha", [t]);
   const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
   assert.doesNotMatch(r.body, /action="\/t\/alpha\/001-a\/lgtm"/);
@@ -1546,24 +1546,24 @@ test("renderTask: needs-review PR-shaped task rail also lacks LGTM/request-chang
   assert.match(r.body, /action="\/t\/alpha\/001-a\/block"/);
 });
 
-test("renderTask: needs-review 'Reopen for agent' flips to needs-feedback (not ready)", () => {
+test("renderTask: review 'Reopen for agent' flips to rework (not ready)", () => {
   // ready is the wrong target — execute-the-Plan mode doesn't know to read
-  // review comments. needs-feedback routes through /tpm feedback, which is
+  // review comments. rework routes through /tpm feedback, which is
   // built around addressing PR signals.
-  const t = task("001-a", "needs-review", { type: "pr", prs: ["https://github.com/x/y/pull/1"] });
+  const t = task("001-a", "review", { type: "pr", prs: ["https://github.com/x/y/pull/1"] });
   const p = project("alpha", [t]);
   const r = route("/t/alpha/001-a", new URLSearchParams(), [p], { mutationsEnabled: true });
   assert.match(
     r.body,
-    /<form[^>]*action="\/t\/alpha\/001-a\/status"[^>]*>\s*<input[^>]*name="status"[^>]*value="needs-feedback"/,
+    /<form[^>]*action="\/t\/alpha\/001-a\/status"[^>]*>\s*<input[^>]*name="status"[^>]*value="rework"/,
   );
   assert.doesNotMatch(r.body, /name="status"[^>]*value="ready"/);
 });
 
-test("renderTaskReport: needs-review with report attached renders sticky LGTM + Request-changes bar", () => {
+test("renderTaskReport: review with report attached renders sticky LGTM + Request-changes bar", () => {
   const root = mkTempDir();
   try {
-    const t = folderTask(root, "001-a", "needs-review", { hasReport: true, extra: { type: "investigation" } });
+    const t = folderTask(root, "001-a", "review", { hasReport: true, extra: { type: "investigation" } });
     const p = project("alpha", [t]);
     const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: true });
     assert.match(r.body, /class="report-actions-bar"/);
@@ -1574,11 +1574,11 @@ test("renderTaskReport: needs-review with report attached renders sticky LGTM + 
   }
 });
 
-test("renderTaskReport: bar appears for report-attached non-investigation task at needs-review", () => {
+test("renderTaskReport: bar appears for report-attached non-investigation task at review", () => {
   // Same OR gate the rail had previously: report presence is enough.
   const root = mkTempDir();
   try {
-    const t = folderTask(root, "001-a", "needs-review", { hasReport: true, extra: { type: "pr" } });
+    const t = folderTask(root, "001-a", "review", { hasReport: true, extra: { type: "pr" } });
     const p = project("alpha", [t]);
     const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: true });
     assert.match(r.body, /class="report-actions-bar"/);
@@ -1589,7 +1589,7 @@ test("renderTaskReport: bar appears for report-attached non-investigation task a
   }
 });
 
-test("renderTaskReport: no bar when status is not needs-review", () => {
+test("renderTaskReport: no bar when status is not review", () => {
   const root = mkTempDir();
   try {
     const t = folderTask(root, "001-a", "in-progress", { hasReport: true, extra: { type: "investigation" } });
@@ -1605,7 +1605,7 @@ test("renderTaskReport: no bar when status is not needs-review", () => {
 test("renderTaskReport: no bar when report.md is absent (no deliverable to review)", () => {
   const root = mkTempDir();
   try {
-    const t = folderTask(root, "001-a", "needs-review", { extra: { type: "investigation" } });
+    const t = folderTask(root, "001-a", "review", { extra: { type: "investigation" } });
     const p = project("alpha", [t]);
     const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: true });
     assert.doesNotMatch(r.body, /class="report-actions-bar"/);
@@ -1617,7 +1617,7 @@ test("renderTaskReport: no bar when report.md is absent (no deliverable to revie
 test("renderTaskReport: no bar when mutations are disabled (non-loopback bind)", () => {
   const root = mkTempDir();
   try {
-    const t = folderTask(root, "001-a", "needs-review", { hasReport: true, extra: { type: "investigation" } });
+    const t = folderTask(root, "001-a", "review", { hasReport: true, extra: { type: "investigation" } });
     const p = project("alpha", [t]);
     const r = route("/t/alpha/001-a/report", new URLSearchParams(), [p], { mutationsEnabled: false });
     assert.doesNotMatch(r.body, /class="report-actions-bar"/);
@@ -2076,7 +2076,7 @@ const PR1 = "https://github.com/htalat/tpm/pull/1";
 const PR2 = "https://github.com/htalat/tpm/pull/2";
 
 test("renderTask: PR panel renders state / CI / review / mergeable badges + GitHub link from cache", () => {
-  const t = task("050-pr", "needs-review", { prs: [PR1] });
+  const t = task("050-pr", "review", { prs: [PR1] });
   const p = project("alpha", [t]);
   const prCache = prCacheOf({
     [PR1]: { pr: {
@@ -2103,7 +2103,7 @@ test("renderTask: PR panel renders state / CI / review / mergeable badges + GitH
 });
 
 test("renderTask: failing CI / changes-requested / merge-conflict states map to the right labels", () => {
-  const t = task("051-pr", "needs-feedback", { prs: [PR1] });
+  const t = task("051-pr", "rework", { prs: [PR1] });
   const p = project("alpha", [t]);
   const prCache = prCacheOf({
     [PR1]: { pr: {
@@ -2146,7 +2146,7 @@ test("renderTask: PR panel treats a >1h-old cache entry as no-data (placeholder 
 });
 
 test("renderTask: multiple linked PRs render one card each", () => {
-  const t = task("054-pr", "needs-review", { prs: [PR1, PR2] });
+  const t = task("054-pr", "review", { prs: [PR1, PR2] });
   const p = project("alpha", [t]);
   const prCache = prCacheOf({
     [PR1]: { pr: { url: PR1, state: "MERGED" } },
@@ -2168,7 +2168,7 @@ test("renderTask: no PR panel when the task has no linked PRs", () => {
 });
 
 test("taskRow: queue rows show a [PR #N <state>] chip linking to GitHub when cached", () => {
-  const t = task("056-pr", "needs-review", { prs: [PR1] });
+  const t = task("056-pr", "review", { prs: [PR1] });
   const p = project("alpha", [t]);
   const prCache = prCacheOf({ [PR1]: { pr: { url: PR1, state: "OPEN" } } });
   const r = route("/", new URLSearchParams(), [p], { prCache });
@@ -2177,7 +2177,7 @@ test("taskRow: queue rows show a [PR #N <state>] chip linking to GitHub when cac
 });
 
 test("taskRow: PR chip renders without a state label on a cache miss (still a link)", () => {
-  const t = task("057-pr", "needs-review", { prs: [PR1] });
+  const t = task("057-pr", "review", { prs: [PR1] });
   const p = project("alpha", [t]);
   const r = route("/", new URLSearchParams(), [p], { prCache: prCacheOf({}) });
   assert.match(r.body, /class="pr-chip[^"]*"[^>]*href="https:\/\/github\.com\/htalat\/tpm\/pull\/1"/);
@@ -2230,7 +2230,7 @@ test("route: /t/<proj>/<slug>/runs renders 'Current run' on an in-progress task 
 });
 
 test("route: /t/<proj>/<slug>/runs labels 'Last run' on a non-in-progress task", () => {
-  const t = task("001-foo", "needs-review");
+  const t = task("001-foo", "review");
   const p = project("alpha", [t]);
   const text = JSON.stringify({ type: "system", subtype: "init" });
   const r = route("/t/alpha/001-foo/runs", new URLSearchParams(), [p], {
@@ -2361,7 +2361,7 @@ test("route: /t/<proj>/<slug>/runs escapes user-controlled text in events (no HT
 });
 
 test("route: /t/<proj>/<slug>/runs lists every run for the task newest-first with a per-file link", () => {
-  const t = task("001-foo", "needs-review");
+  const t = task("001-foo", "review");
   const p = project("alpha", [t]);
   const r = route("/t/alpha/001-foo/runs", new URLSearchParams(), [p], {
     // No inline run panel — focus the test on the list itself.
@@ -3004,7 +3004,7 @@ test("route: /t/<proj>/<slug>/log merges task body Log entries with envelope lin
       "2026-05-15T13:59:00-07:00  INFO   orchestrate      disposition tpm/064-foo shipped exit=0",
     ]),
     harnessSource("recurring-check-pr-signal", [
-      "2026-05-15T14:13:00-07:00  INFO   check-pr-signal  flipped tpm/064-foo -> needs-close",
+      "2026-05-15T14:13:00-07:00  INFO   check-pr-signal  flipped tpm/064-foo -> closing",
     ]),
   ];
   const r = route("/t/tpm/064-foo/log", new URLSearchParams(), [p], { harnessLog: reader });
@@ -3022,7 +3022,7 @@ test("route: /t/<proj>/<slug>/log merges task body Log entries with envelope lin
   // Envelope messages present.
   assert.match(r.body, /start tpm\/064-foo as laptop/);
   // `->` is HTML-escaped in the rendered body, so match the escaped form.
-  assert.match(r.body, /flipped tpm\/064-foo -&gt; needs-close/);
+  assert.match(r.body, /flipped tpm\/064-foo -&gt; closing/);
   // Chronological order: started (13:56) < start envelope (13:56:11) <
   // opened PR (13:58) < disposition (13:59) < flipped (14:13) < closed (14:13).
   const ord = ["started", "start tpm\\/064-foo as laptop", "opened PR", "disposition tpm\\/064-foo shipped", "flipped tpm\\/064-foo", ">closed<"];
@@ -3259,7 +3259,7 @@ test("renderTaskRuns: /runs breadcrumb walks project → task → runs", () => {
 test("renderTaskReport: /report breadcrumb walks project → task → report", () => {
   const root = mkTempDir();
   try {
-    const t = folderTask(root, "075-foo", "needs-review", { hasReport: true, extra: { type: "investigation" } });
+    const t = folderTask(root, "075-foo", "review", { hasReport: true, extra: { type: "investigation" } });
     const p = project("tpm", [t]);
     const r = route("/t/tpm/075-foo/report", new URLSearchParams(), [p]);
     assert.ok(r.body.includes(crumbs(
@@ -3742,7 +3742,7 @@ test("route: index renders the activity feed from injected journal events", () =
   const p = project("alpha", [task("001-a", "ready")]);
   const events = [
     { at: new Date(Date.now() - 30_000).toISOString(), task: "alpha/001-a", from: "open", to: "ready", verb: "promoted to ready", actor: "cli" },
-    { at: new Date(Date.now() - 90_000).toISOString(), task: "alpha/002-b", from: "in-progress", to: "needs-review", verb: "PR opened, awaiting review", actor: "worker-1" },
+    { at: new Date(Date.now() - 90_000).toISOString(), task: "alpha/002-b", from: "in-progress", to: "review", verb: "PR opened, awaiting review", actor: "worker-1" },
   ];
   const r = route("/", new URLSearchParams(), [p], { recentEvents: () => events });
   assert.match(r.body, /<h2>Activity <span class="meta">\(2\)<\/span><\/h2>/);
@@ -3758,10 +3758,10 @@ test("route: index renders no activity section when the journal is empty", () =>
   assert.doesNotMatch(r.body, /<h2>Activity/);
 });
 
-test("route: index inbox lists needs-close stragglers first; agent queue omits them", () => {
+test("route: index inbox lists closing stragglers first; agent queue omits them", () => {
   const p = project("alpha", [
-    task("001-a", "needs-close"),
-    task("002-b", "needs-review"),
+    task("001-a", "closing"),
+    task("002-b", "review"),
     task("003-c", "ready"),
   ]);
   const r = route("/", new URLSearchParams(), [p], {});
@@ -3769,7 +3769,7 @@ test("route: index inbox lists needs-close stragglers first; agent queue omits t
   const agentSection = r.body.slice(r.body.indexOf("Agent queue"), r.body.indexOf("In flight"));
   assert.match(inboxSection, /001-a/);
   assert.match(inboxSection, /002-b/);
-  assert.ok(inboxSection.indexOf("001-a") < inboxSection.indexOf("002-b"), "needs-close ranks above needs-review");
+  assert.ok(inboxSection.indexOf("001-a") < inboxSection.indexOf("002-b"), "closing ranks above review");
   assert.doesNotMatch(agentSection, /001-a/);
   assert.match(agentSection, /003-c/);
 });

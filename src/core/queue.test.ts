@@ -38,25 +38,25 @@ test("selectNext: returns ready when only ready exists", () => {
   assert.equal(pick?.task.slug, "001-r");
 });
 
-test("selectNext: needs-feedback wins over ready (priority)", () => {
+test("selectNext: rework wins over ready (priority)", () => {
   const p = project("a", [
     task("001-old-ready",   "ready",          "2026-01-01 10:00 PDT"),
-    task("002-new-feedback", "needs-feedback", "2026-05-01 10:00 PDT"),
+    task("002-new-feedback", "rework", "2026-05-01 10:00 PDT"),
   ]);
   const pick = selectNext([p]);
   assert.equal(pick?.task.slug, "002-new-feedback");
 });
 
-test("selectNext: within needs-feedback bucket, oldest first", () => {
+test("selectNext: within rework bucket, oldest first", () => {
   const p = project("a", [
-    task("001-newer", "needs-feedback", "2026-05-09 10:00 PDT"),
-    task("002-older", "needs-feedback", "2026-05-01 10:00 PDT"),
+    task("001-newer", "rework", "2026-05-09 10:00 PDT"),
+    task("002-older", "rework", "2026-05-01 10:00 PDT"),
   ]);
   const pick = selectNext([p]);
   assert.equal(pick?.task.slug, "002-older");
 });
 
-test("selectNext: within ready bucket, oldest first (when no needs-feedback)", () => {
+test("selectNext: within ready bucket, oldest first (when no rework)", () => {
   const p = project("a", [
     task("001-newer", "ready", "2026-05-09 10:00 PDT"),
     task("002-older", "ready", "2026-05-01 10:00 PDT"),
@@ -115,24 +115,24 @@ test("selectCandidates: returns full sorted list (used by tpm next --claim fall-
   const p = project("a", [
     task("001-newer-ready",   "ready",          "2026-05-01 10:00 PDT"),
     task("002-older-ready",   "ready",          "2026-04-01 10:00 PDT"),
-    task("003-feedback",      "needs-feedback", "2026-05-09 10:00 PDT"),
+    task("003-feedback",      "rework", "2026-05-09 10:00 PDT"),
     task("004-skipped",       "in-progress",    "2026-05-09 10:00 PDT"),
   ]);
   const list = selectCandidates([p]);
   assert.deepEqual(list.map(c => c.task.slug), [
-    "003-feedback",        // needs-feedback bucket first
+    "003-feedback",        // rework bucket first
     "002-older-ready",     // then ready, oldest first
     "001-newer-ready",
   ]);
 });
 
-test("selectNext: needs-close is NOT in tpm next priority (poller auto-closes inline)", () => {
-  // Task 045: the poller calls `tpm complete` right after the needs-close
-  // flip, so `tpm next` no longer routes needs-close work to an agent. Any
-  // task that lingers at needs-close (auto-close failed — body empty, lock
+test("selectNext: closing is NOT in tpm next priority (poller auto-closes inline)", () => {
+  // Task 045: the poller calls `tpm complete` right after the closing
+  // flip, so `tpm next` no longer routes closing work to an agent. Any
+  // task that lingers at closing (auto-close failed — body empty, lock
   // contention) is a manual `/tpm done <slug>` case.
   const p = project("a", [
-    task("001-close",    "needs-close",    "2026-01-01 10:00 PDT"),
+    task("001-close",    "closing",    "2026-01-01 10:00 PDT"),
     task("002-ready",    "ready",          "2026-05-09 10:00 PDT"),
   ]);
   const list = selectCandidates([p]);
@@ -140,11 +140,11 @@ test("selectNext: needs-close is NOT in tpm next priority (poller auto-closes in
   assert.equal(selectNext([p])?.task.slug, "002-ready");
 });
 
-test("selectNext: needs-feedback > ready when both are present", () => {
+test("selectNext: rework > ready when both are present", () => {
   // Regression guard for the simplified priority after task 045.
   const p = project("a", [
     task("001-ready",     "ready",          "2026-01-01 10:00 PDT"),
-    task("002-feedback",  "needs-feedback", "2026-05-09 10:00 PDT"),
+    task("002-feedback",  "rework", "2026-05-09 10:00 PDT"),
   ]);
   const list = selectCandidates([p]);
   assert.deepEqual(list.map(c => c.task.slug), [
@@ -160,13 +160,13 @@ test("selectCandidates: empty when no eligible tasks", () => {
 
 // ---- task 065: stranded in-progress reclaim --------------------------------
 
-test("selectNext: stranded in-progress (no lock) is admitted, ranked between needs-feedback and ready", () => {
+test("selectNext: stranded in-progress (no lock) is admitted, ranked between rework and ready", () => {
   const p = project("a", [
     task("001-ip-stranded", "in-progress",    "2026-05-15 10:00 PDT"),
     task("002-ready",       "ready",          "2026-01-01 10:00 PDT"),
-    task("003-feedback",    "needs-feedback", "2026-05-01 10:00 PDT"),
+    task("003-feedback",    "rework", "2026-05-01 10:00 PDT"),
   ]);
-  // No lock for any task → stranded admitted; needs-feedback still wins.
+  // No lock for any task → stranded admitted; rework still wins.
   const noLocks = () => false;
   const list = selectCandidates([p], { hasTaskLock: noLocks });
   assert.deepEqual(list.map(c => c.task.slug), [
@@ -243,20 +243,20 @@ test("inboxItems: empty when nothing in human queue", () => {
   assert.deepEqual(inboxItems([p]), []);
 });
 
-test("inboxItems: needs-review > blocked > open ordering", () => {
+test("inboxItems: review > blocked > open ordering", () => {
   const p = project("a", [
     task("001-open",   "open",         "2026-01-01 10:00 PDT"),
     task("002-block",  "blocked",      "2026-01-02 10:00 PDT"),
-    task("003-review", "needs-review", "2026-01-03 10:00 PDT"),
+    task("003-review", "review", "2026-01-03 10:00 PDT"),
   ]);
   const items = inboxItems([p]);
-  assert.deepEqual(items.map(i => i.status), ["needs-review", "blocked", "open"]);
+  assert.deepEqual(items.map(i => i.status), ["review", "blocked", "open"]);
 });
 
 test("inboxItems: within bucket oldest first", () => {
   const p = project("a", [
-    task("001-newer", "needs-review", "2026-05-09 10:00 PDT"),
-    task("002-older", "needs-review", "2026-05-01 10:00 PDT"),
+    task("001-newer", "review", "2026-05-09 10:00 PDT"),
+    task("002-older", "review", "2026-05-01 10:00 PDT"),
   ]);
   const items = inboxItems([p]);
   assert.deepEqual(items.map(i => i.task.slug), ["002-older", "001-newer"]);

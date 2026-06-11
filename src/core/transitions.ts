@@ -11,12 +11,12 @@
 //   - `open` is pre-deliverable: it can enter the queue (ready), start
 //     directly (in-progress), block, or close — but never jump straight to a
 //     needs-* state, which would imply a deliverable already in flight.
-//   - The queue / in-flight statuses (ready, in-progress, needs-feedback,
-//     needs-review, needs-close) are fully connected: the operator, the
+//   - The queue / in-flight statuses (ready, in-progress, rework,
+//     review, closing) are fully connected: the operator, the
 //     agent, and the PR-signal poller all legitimately move tasks between
 //     any pair (e.g. a reverted `ready` task whose PR merges flips straight
-//     to needs-close; a needs-close straggler with CI red flips to
-//     needs-feedback).
+//     to closing; a closing straggler with CI red flips to
+//     rework).
 //   - `blocked` re-enters via open / ready / in-progress, or closes. The
 //     poller skips blocked tasks, so needs-* targets aren't reachable here.
 //   - Terminals (done, dropped) have exactly one exit: reopen to `open`.
@@ -26,9 +26,9 @@ export const VALID_STATUSES = [
   "open",
   "ready",
   "in-progress",
-  "needs-feedback",
-  "needs-close",
-  "needs-review",
+  "rework",
+  "closing",
+  "review",
   "blocked",
   "done",
   "dropped",
@@ -43,9 +43,9 @@ export const TRANSITIONS: Record<Status, readonly Status[]> = {
   open: ["ready", "in-progress", "blocked", "done", "dropped"],
   ready: allExcept("ready"),
   "in-progress": allExcept("in-progress"),
-  "needs-feedback": allExcept("needs-feedback"),
-  "needs-review": allExcept("needs-review"),
-  "needs-close": allExcept("needs-close"),
+  "rework": allExcept("rework"),
+  "review": allExcept("review"),
+  "closing": allExcept("closing"),
   blocked: ["open", "ready", "in-progress", "done", "dropped"],
   done: ["open"],
   dropped: ["open"],

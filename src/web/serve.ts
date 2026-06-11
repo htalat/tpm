@@ -167,7 +167,7 @@ const BULK_ACTIONS: Record<string, { verb: string; label: string; needsReason?: 
 // just surfaces as a "refused" in the summary rather than corrupting state.
 // Mirrors the single-row action rails (renderActions / promoteButton /
 // renderArchiveAction): every non-terminal status can be closed, dropped, or
-// blocked; `ready`/`in-progress`/`needs-feedback` can be pulled; `open`/`blocked` promoted;
+// blocked; `ready`/`in-progress`/`rework` can be pulled; `open`/`blocked` promoted;
 // `blocked` reopened; terminal (done/dropped) only archived. A row is
 // selectable iff its status appears here (so corrupt/unknown statuses render no
 // checkbox).
@@ -176,9 +176,9 @@ const BULK_CAPS: Record<string, string[]> = {
   ready: ["pull", "close", "drop", "block"],
   blocked: ["promote", "reopen", "close", "drop"],
   "in-progress": ["pull", "close", "drop", "block"],
-  "needs-feedback": ["pull", "close", "drop", "block"],
-  "needs-close": ["close", "drop", "block"],
-  "needs-review": ["close", "drop", "block"],
+  "rework": ["pull", "close", "drop", "block"],
+  "closing": ["close", "drop", "block"],
+  "review": ["close", "drop", "block"],
   done: ["archive"],
   dropped: ["archive"],
 };
@@ -1232,16 +1232,16 @@ ${projectChips(projects, null)}
 function renderIndex(projects: Project[], projectFilter: string | null, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, flash?: string, mutationsEnabled = false, harness: HarnessSnapshot | null = null, recentEvents: StatusEventRecord[] = []): string {
   const filtered = projectFilter ? projects.filter(p => p.slug === projectFilter) : projects;
 
-  // Inbox = needs-close > needs-review > blocked > open across the filtered
-  // set. needs-close moved here from the agent queue: the orchestrator never
+  // Inbox = closing > review > blocked > open across the filtered
+  // set. closing moved here from the agent queue: the orchestrator never
   // dispatches it — a task parked there is an auto-close failure waiting on a
   // human `tpm done`, which is inbox semantics.
   const inbox = inboxItems(filtered);
-  // Agent queue = next-eligible (needs-feedback > ready). Show all
+  // Agent queue = next-eligible (rework > ready). Show all
   // candidates, not just the head, so the page is a useful overview.
   const agentItems: Array<{ project: Project; task: Task; status: string }> = [];
   const agentStatuses: Record<string, number> = {
-    "needs-feedback": 0,
+    "rework": 0,
     "ready": 1,
   };
   for (const p of filtered) {
@@ -1307,7 +1307,7 @@ function renderProject(project: Project, allProjects: Project[], showArchived: b
     byStatus.set(s, arr);
   }
   // Live queues first, archived terminal states last.
-  const order = ["needs-review", "needs-feedback", "needs-close", "in-progress", "blocked", "ready", "open", "done", "dropped"];
+  const order = ["review", "rework", "closing", "in-progress", "blocked", "ready", "open", "done", "dropped"];
   const sectionsHtml = order
     .filter(s => byStatus.has(s))
     .map(s => {
@@ -1591,7 +1591,7 @@ function renderArtifactRow(
   const archivedTag = task.archived ? `<span class="archived-tag">archived</span>` : "";
   const prChips = prChipsFor(task, prCache);
   const reportChip = hasReport
-    ? `<a class="report-chip badge s-needs-review" href="${href}/report">[report]</a>`
+    ? `<a class="report-chip badge s-review" href="${href}/report">[report]</a>`
     : "";
   return `<div class="${classes.join(" ")}">
     <span class="badge s-${cls(status)}${task.archived ? " s-archived" : ""}">${esc(status)}</span>
@@ -1934,13 +1934,13 @@ function renderTaskReport(projects: Project[], project: Project, task: Task, opt
 // Sticky LGTM / Request-changes bar at the top of the report page. The bar is
 // where the reviewer's attention is when they decide — task 083 moved these
 // verbs off the task rail to remove the back-and-forth context switch. Gated
-// on needs-review + a report file: other statuses (in-progress, done, etc.)
+// on review + a report file: other statuses (in-progress, done, etc.)
 // shouldn't surface review verbs at all.
 function renderReportActionsBar(project: Project, task: Task, hasReport: boolean, opts: RouteOpts): string {
   if (opts.mutationsEnabled === false) return "";
   if (task.archived) return "";
   if (!hasReport) return "";
-  if (rollupStatus(task) !== "needs-review") return "";
+  if (rollupStatus(task) !== "review") return "";
   const href = taskHref(project, task);
   return `<div class="report-actions-bar">
   ${lgtmForm(href)}
@@ -2506,14 +2506,14 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       forms.push(prForm(href));
       forms.push(dropForm(href));
       break;
-    case "needs-feedback":
-      forms.push(pullForm(href, "needs-feedback"));
+    case "rework":
+      forms.push(pullForm(href, "rework"));
       forms.push(logForm(href));
       forms.push(completeForm(href));
       forms.push(blockForm(href));
       forms.push(dropForm(href));
       break;
-    case "needs-close":
+    case "closing":
       // Merged-PR sweep: the dominant action is closing out. Keep log/block
       // as escape hatches if the user needs to annotate or pause.
       forms.push(completeForm(href));
@@ -2521,7 +2521,7 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       forms.push(blockForm(href));
       forms.push(dropForm(href));
       break;
-    case "needs-review": {
+    case "review": {
       // Report-shaped reviews surface LGTM + Request-changes on the report
       // page itself (see `renderReportActionsBar`) — the reviewer's attention
       // is there, not on the task page. The rail keeps log/block/reopen as
@@ -2531,7 +2531,7 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       forms.push(logForm(href));
       forms.push(completeForm(href));
       forms.push(blockForm(href));
-      forms.push(statusForm(href, "needs-feedback", "Reopen for agent (→ needs-feedback)"));
+      forms.push(statusForm(href, "rework", "Reopen for agent (→ rework)"));
       forms.push(dropForm(href));
       break;
     }
@@ -2584,7 +2584,7 @@ function renderSettings(project: Project, task: Task, status: string, opts: Rout
   // promoting it). Self-contained dropdown, so it's not gated like the toggle.
   parts.push(typeForm(href, strOr(task.data.type, "")));
   // `open` tasks aren't claimable regardless of the flag (the queue gate skips
-  // anything not ready/needs-feedback/stranded), and "Promote to ready" already
+  // anything not ready/rework/stranded), and "Promote to ready" already
   // sets allow_orchestrator: true — so a separate "Enable autonomous" toggle
   // here is the exact two-clicks-for-one-intent friction we avoid. The toggle
   // returns once the task is promoted, for the supervised-only override.
@@ -2687,11 +2687,11 @@ function statusForm(href: string, value: string, label: string): string {
 // "Pull from queue" — symmetric inverse of the inbox promote button. The label
 // names the destination so the operator sees the intended landing slot before
 // clicking (ready -> open is a re-shape moment; in-progress -> open stops a
-// running task; needs-feedback -> needs-review is an escalation to the human
+// running task; rework -> review is an escalation to the human
 // queue). Server-side `tpm pull` is the only thing that enforces the status ->
 // target mapping; the form text just labels.
 function pullForm(href: string, status: string): string {
-  const dest = status === "needs-feedback" ? "needs-review" : "open";
+  const dest = status === "rework" ? "review" : "open";
   return `<form method="POST" action="${href}/pull" class="action-form">
     <button type="submit">Pull from queue (→ ${esc(dest)})</button>
   </form>`;
@@ -2729,13 +2729,13 @@ function archiveForm(href: string): string {
 interface TaskRowOpts {
   // Render an inline "promote to ready" button for open/blocked rows. Only the
   // inbox section opts in — task 110: one-click promote without leaving the
-  // landing page. needs-review rows skip the button because the dominant action
-  // there is "Reopen for agent (→ needs-feedback)", which now has its own
+  // landing page. review rows skip the button because the dominant action
+  // there is "Reopen for agent (→ rework)", which now has its own
   // per-row button (`showReopenForAgent` — task 146); a one-click
   // promote-to-ready would silently mis-route a review bounce through the wrong
   // queue.
   showPromote?: boolean;
-  // Render an inline "pull from queue" button for ready / needs-feedback rows
+  // Render an inline "pull from queue" button for ready / rework rows
   // (symmetric inverse of the promote button — task 117). Callers in the
   // agent-queue contexts (index page agent queue, project page queues, task
   // page rail) opt in; the button is self-gating on status so other contexts
@@ -2772,11 +2772,11 @@ interface TaskRowOpts {
   // Where to land the operator after the drop mutation, same contract as
   // `closeRedirect`. Defaults to the task page when omitted.
   dropRedirect?: string;
-  // Render an inline "Reopen for agent" button (→ needs-feedback) for
-  // needs-review rows — task 146. The per-row analogue of the detail-page
-  // `statusForm(href, "needs-feedback", "Reopen for agent …")` so a review
+  // Render an inline "Reopen for agent" button (→ rework) for
+  // review rows — task 146. The per-row analogue of the detail-page
+  // `statusForm(href, "rework", "Reopen for agent …")` so a review
   // bounce-back is one click from the inbox instead of a click-through.
-  // Self-gating on status (needs-review only) / parent so opting in can't
+  // Self-gating on status (review only) / parent so opting in can't
   // surface the button on any other row.
   showReopenForAgent?: boolean;
   // Where to land the operator after the reopen mutation, same contract as
@@ -2838,7 +2838,7 @@ function promoteButton(href: string, task: Task, status: string, opts: TaskRowOp
   if (task.archived) return "";
   if (isParent(task)) return "";
   // open: deliberate "skip discuss" fast-path. blocked: blocker resolved,
-  // bounce back. needs-review: skipped — see TaskRowOpts comment above.
+  // bounce back. review: skipped — see TaskRowOpts comment above.
   const fastPath = status === "open";
   if (status !== "open" && status !== "blocked") return "";
   const cls = fastPath ? "promote-form promote-fast" : "promote-form";
@@ -2850,18 +2850,18 @@ function promoteButton(href: string, task: Task, status: string, opts: TaskRowOp
 }
 
 // Inline "pull from queue" affordance (task 117) — symmetric inverse of the
-// promote button. Self-gating on status (ready / in-progress / needs-feedback
+// promote button. Self-gating on status (ready / in-progress / rework
 // only) so the button can't escape into unsafe contexts even if a caller opts
 // in without per-row filtering. The destination differs by source: ready -> open
 // is a pause/re-shape; in-progress -> open stops a running task (the in-flight
-// section's "off the agent" control); needs-feedback -> needs-review escalates
+// section's "off the agent" control); rework -> review escalates
 // ambiguous agent signal to the human queue.
 function pullButton(href: string, task: Task, status: string, opts: TaskRowOpts): string {
   if (!opts.showPull) return "";
   if (task.archived) return "";
   if (isParent(task)) return "";
-  if (status !== "ready" && status !== "in-progress" && status !== "needs-feedback") return "";
-  const dest = status === "needs-feedback" ? "needs-review" : "open";
+  if (status !== "ready" && status !== "in-progress" && status !== "rework") return "";
+  const dest = status === "rework" ? "review" : "open";
   const label = `Pull from queue (→ ${dest})`;
   const redirectInput = opts.pullRedirect
     ? `<input type="hidden" name="redirect" value="${escAttr(opts.pullRedirect)}">`
@@ -2974,24 +2974,24 @@ function dropButton(href: string, task: Task, status: string, opts: TaskRowOpts)
 }
 
 // Inline "Reopen for agent" affordance (task 146) — the per-row analogue of the
-// detail-page `statusForm(href, "needs-feedback", "Reopen for agent …")`.
+// detail-page `statusForm(href, "rework", "Reopen for agent …")`.
 // Bouncing a review back to the agent was one click on the task page but
 // required clicking through from the inbox first; this puts it next to the
 // row's Close button. Posts to the `status` mutation with
-// `status=needs-feedback`. Self-gating: only ever shown on needs-review rows
+// `status=rework`. Self-gating: only ever shown on review rows
 // (a review awaiting the human) and hidden on parents/archived, so opting in
 // can't escape the one status where a review bounce-back makes sense.
 function reopenForAgentButton(href: string, task: Task, status: string, opts: TaskRowOpts): string {
   if (!opts.showReopenForAgent) return "";
   if (task.archived) return "";
   if (isParent(task)) return "";
-  if (status !== "needs-review") return "";
-  const label = "Reopen for agent (→ needs-feedback)";
+  if (status !== "review") return "";
+  const label = "Reopen for agent (→ rework)";
   const redirectInput = opts.reopenRedirect
     ? `<input type="hidden" name="redirect" value="${escAttr(opts.reopenRedirect)}">`
     : "";
   return `<form method="POST" action="${href}/status" class="reopen-form">
-    <input type="hidden" name="status" value="needs-feedback">
+    <input type="hidden" name="status" value="rework">
     ${redirectInput}<button type="submit" title="${esc(label)}" aria-label="${esc(label)}">↩</button>
   </form>`;
 }
@@ -3144,7 +3144,7 @@ function reviewClass(review: string): string {
   switch (review.toUpperCase()) {
     case "APPROVED": return "s-done";
     case "CHANGES_REQUESTED": return "s-blocked";
-    case "COMMENTED": return "s-needs-feedback";
+    case "COMMENTED": return "s-rework";
     default: return "s-dropped";
   }
 }
@@ -3166,8 +3166,8 @@ function mergeClass(m: string): string {
     case "HAS_HOOKS": return "s-done";
     case "BEHIND": return "s-in-progress";
     case "DIRTY": return "s-blocked";
-    case "BLOCKED": return "s-needs-feedback";
-    case "UNSTABLE": return "s-needs-feedback";
+    case "BLOCKED": return "s-rework";
+    case "UNSTABLE": return "s-rework";
     default: return "s-dropped";
   }
 }

@@ -29,9 +29,9 @@ test("terminals have exactly one exit: reopen to open", () => {
 });
 
 test("open is pre-deliverable: no jump to needs-* states", () => {
-  assert.equal(canTransition("open", "needs-review"), false);
-  assert.equal(canTransition("open", "needs-feedback"), false);
-  assert.equal(canTransition("open", "needs-close"), false);
+  assert.equal(canTransition("open", "review"), false);
+  assert.equal(canTransition("open", "rework"), false);
+  assert.equal(canTransition("open", "closing"), false);
   // But the legitimate entries are all there.
   for (const to of ["ready", "in-progress", "blocked", "done", "dropped"] as const) {
     assert.equal(canTransition("open", to), true, `open -> ${to}`);
@@ -39,7 +39,7 @@ test("open is pre-deliverable: no jump to needs-* states", () => {
 });
 
 test("queue / in-flight statuses are fully connected", () => {
-  const inFlight = ["ready", "in-progress", "needs-feedback", "needs-review", "needs-close"] as const;
+  const inFlight = ["ready", "in-progress", "rework", "review", "closing"] as const;
   for (const from of inFlight) {
     for (const to of inFlight) {
       if (from === to) continue;
@@ -55,7 +55,7 @@ test("queue / in-flight statuses are fully connected", () => {
 
 test("blocked re-enters via open/ready/in-progress or closes; poller targets unreachable", () => {
   assert.deepEqual([...TRANSITIONS.blocked], ["open", "ready", "in-progress", "done", "dropped"]);
-  assert.equal(canTransition("blocked", "needs-review"), false);
+  assert.equal(canTransition("blocked", "review"), false);
 });
 
 test("unknown or empty `from` is a repair wildcard", () => {
@@ -71,7 +71,7 @@ test("assertTransition: passes on legal, throws with hint on illegal", () => {
     /Cannot transition alpha\/001-a from "done" to "in-progress"\. done is terminal — `tpm reopen` is the only exit\./,
   );
   assert.throws(
-    () => assertTransition("t", "open", "needs-review"),
+    () => assertTransition("t", "open", "review"),
     /Legal targets from "open": ready, in-progress, blocked, done, dropped\./,
   );
 });

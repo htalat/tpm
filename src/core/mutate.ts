@@ -125,7 +125,7 @@ export function setStatus(
 // running — task back into the human pile. Status-aware:
 //   - ready          -> open          (operator wants to pause / reshape the Plan)
 //   - in-progress    -> open          (stop a running task; pull it off the agent)
-//   - needs-feedback -> needs-review  (escalate ambiguous agent signal to the human)
+//   - rework -> review  (escalate ambiguous agent signal to the human)
 // Other statuses are refused — the caller (web or CLI) should hide / gate the
 // button so a refusal only fires on a stale form replay.
 //
@@ -150,11 +150,11 @@ export function pullFromQueue(task: Task): MutateResult {
   const current = String(data.status ?? "");
   const target = current === "ready" || current === "in-progress"
     ? "open"
-    : current === "needs-feedback"
-      ? "needs-review"
+    : current === "rework"
+      ? "review"
       : null;
   if (!target) {
-    throw new Error(`${task.slug}: pull only applies to ready / in-progress / needs-feedback (status=${current || "?"})`);
+    throw new Error(`${task.slug}: pull only applies to ready / in-progress / rework (status=${current || "?"})`);
   }
   const r = transition(task, target, `pulled from queue (${current} -> ${target})`);
   // Tell the operator what to expect when they stop a running task: the agent
@@ -195,22 +195,22 @@ export function addPr(task: Task, url: string): MutateResult {
   data.prs = [...existing, trimmed];
   let newBody = appendLog(body, `${now()}: opened PR ${trimmed}`);
   // Attaching a PR is the agent's handoff: next move is on the human
-  // (review + merge). Flip in-progress -> needs-review so the task lands in
-  // `tpm inbox`. Other statuses are left alone — needs-feedback means a
-  // round is still in flight, needs-review/blocked are already on the
+  // (review + merge). Flip in-progress -> review so the task lands in
+  // `tpm inbox`. Other statuses are left alone — rework means a
+  // round is still in flight, review/blocked are already on the
   // human side, terminal states shouldn't transition.
   const current = String(data.status ?? "");
   let flipped = false;
   if (current === "in-progress") {
-    assertTransition(task.slug, current, "needs-review");
-    data.status = "needs-review";
-    newBody = appendLog(newBody, `${now()}: status -> needs-review (PR opened, awaiting review)`);
+    assertTransition(task.slug, current, "review");
+    data.status = "review";
+    newBody = appendLog(newBody, `${now()}: status -> review (PR opened, awaiting review)`);
     flipped = true;
   }
   atomicWriteFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
-  if (flipped) emitStatusChange(task, current, "needs-review", "PR opened, awaiting review");
-  const suffix = flipped ? " — status -> needs-review" : "";
+  if (flipped) emitStatusChange(task, current, "review", "PR opened, awaiting review");
+  const suffix = flipped ? " — status -> review" : "";
   const terminus = flipped
     ? "\n✓ PR opened. Your turn is complete — exit. The poller closes the task when the PR merges; do not poll CI from this run."
     : "";
@@ -236,7 +236,7 @@ export function addPr(task: Task, url: string): MutateResult {
 //     if it doesn't exist yet — agent gets a skeleton to fill in.
 //   - Logs `opened report <relpath>` on first creation (or on the fold-then-
 //     attach path where the file existed but wasn't co-located yet).
-//   - Auto-flips `in-progress -> needs-review` (mirrors `addPr`), re-fires
+//   - Auto-flips `in-progress -> review` (mirrors `addPr`), re-fires
 //     on every call so a re-attach after a feedback round bounces the task
 //     back into the human queue.
 export function addReport(task: Task): MutateResult {
@@ -282,9 +282,9 @@ export function addReport(task: Task): MutateResult {
   const current = String(data.status ?? "");
   let flipped = false;
   if (current === "in-progress") {
-    assertTransition(task.slug, current, "needs-review");
-    data.status = "needs-review";
-    newBody = appendLog(newBody, `${now()}: status -> needs-review (report attached, awaiting review)`);
+    assertTransition(task.slug, current, "review");
+    data.status = "review";
+    newBody = appendLog(newBody, `${now()}: status -> review (report attached, awaiting review)`);
     flipped = true;
   }
 
@@ -293,7 +293,7 @@ export function addReport(task: Task): MutateResult {
   if (registered || flipped) {
     atomicWriteFileSync(task.path, stringify(data, newBody));
     syncInMemory(task, data, newBody);
-    if (flipped) emitStatusChange(task, current, "needs-review", "report attached, awaiting review");
+    if (flipped) emitStatusChange(task, current, "review", "report attached, awaiting review");
   }
 
   const parts: string[] = [];
@@ -301,7 +301,7 @@ export function addReport(task: Task): MutateResult {
   else if (!flipped && !folded) parts.push(`report on file (${relPath})`);
   if (folded) parts.push("folded task");
   const summary = parts.length ? parts.join(", ") : `report on file (${relPath})`;
-  const suffix = flipped ? " — status -> needs-review" : "";
+  const suffix = flipped ? " — status -> review" : "";
   const terminus = flipped
     ? "\n✓ Report attached. Your turn is complete — exit. A reviewer LGTMs or requests changes via `tpm serve`."
     : "";
@@ -310,7 +310,7 @@ export function addReport(task: Task): MutateResult {
 
 // Append a reviewer-feedback block to the report artifact and log the
 // request on the task body. Powers `tpm serve`'s "Request changes" button:
-//   - Flips needs-review -> needs-feedback so the agent re-picks the task.
+//   - Flips review -> rework so the agent re-picks the task.
 //   - Appends `## Reviewer feedback` to the report file with a timestamped
 //     entry (single artifact = full round-trip history).
 //   - Logs a one-line pointer on the task body Log section.
@@ -326,8 +326,8 @@ export function requestReportChanges(task: Task, comment: string): MutateResult 
     throw new Error(`${task.slug}: no report attached. Run \`tpm report <slug>\` first.`);
   }
   const current = String(data.status ?? "");
-  if (current !== "needs-review") {
-    throw new Error(`${task.slug}: request-changes requires status=needs-review (current: ${current || "?"})`);
+  if (current !== "review") {
+    throw new Error(`${task.slug}: request-changes requires status=review (current: ${current || "?"})`);
   }
   const absPath = taskReportPath(task);
 
@@ -340,15 +340,15 @@ export function requestReportChanges(task: Task, comment: string): MutateResult 
     : `${reportText.replace(/\s+$/, "")}\n\n## Reviewer feedback\n${block}`;
   atomicWriteFileSync(absPath, updatedReport);
 
-  assertTransition(task.slug, current, "needs-feedback");
-  data.status = "needs-feedback";
+  assertTransition(task.slug, current, "rework");
+  data.status = "rework";
   const firstLine = trimmedComment.split(/\r?\n/, 1)[0];
   let newBody = appendLog(body, `${stamp}: review requested — ${firstLine}`);
-  newBody = appendLog(newBody, `${stamp}: status -> needs-feedback (review requested)`);
+  newBody = appendLog(newBody, `${stamp}: status -> rework (review requested)`);
   atomicWriteFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
-  emitStatusChange(task, current, "needs-feedback", `review requested — ${firstLine}`);
-  return { message: `${task.slug}: review requested — status -> needs-feedback` };
+  emitStatusChange(task, current, "rework", `review requested — ${firstLine}`);
+  return { message: `${task.slug}: review requested — status -> rework` };
 }
 
 // Path to the task's report.md relative to the project root — for log lines
@@ -879,7 +879,7 @@ function transition(task: Task, target: Status, logVerb: string, opts: Transitio
 // task file. rename(2) within the same directory is atomic on POSIX; on
 // Windows Node maps renameSync to MoveFileEx with MOVEFILE_REPLACE_EXISTING,
 // which also replaces the destination in one step.
-function atomicWriteFileSync(path: string, text: string): void {
+export function atomicWriteFileSync(path: string, text: string): void {
   const tmp = `${path}.${process.pid}.tmp`;
   try {
     writeFileSync(tmp, text);

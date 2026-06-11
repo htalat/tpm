@@ -28,6 +28,7 @@ import { checkDrift } from "./drift.ts";
 import { getScheduler } from "./scheduler/types.ts";
 import { refreshSkills } from "./refresh_skills.ts";
 import { appendStatusEvent } from "./events.ts";
+import { migrateTree } from "./migrate.ts";
 
 const VERSION = readVersion();
 
@@ -134,6 +135,20 @@ try {
       if (!match) throw new Error(`No task matched "${query}". Try \`tpm ls --all\`.`);
       const path = archiveTask(match.task);
       console.log(`Archived ${qualifySlug(match.project.slug, match.task)} -> ${path}`);
+      break;
+    }
+    case "migrate": {
+      // One-time data migration for the status vocabulary rename
+      // (needs-feedback -> rework, needs-review -> review,
+      // needs-close -> closing). Idempotent; run once per tree after
+      // updating the CLI. --dry-run previews without writing.
+      const root = findRoot();
+      const dryRun = args.includes("--dry-run");
+      const r = migrateTree(root, { dryRun });
+      for (const c of r.changes) {
+        console.log(`${dryRun ? "would migrate" : "migrated"} ${c.slug}: ${c.from} -> ${c.to}`);
+      }
+      console.log(`${dryRun ? "[dry-run] " : ""}${r.changes.length} of ${r.scanned} tasks ${dryRun ? "need" : "got"} a status rename`);
       break;
     }
     case "fold": {
@@ -620,7 +635,7 @@ try {
         if (!pick) {
           const where = projectFilter ? ` in project "${projectFilter}"` : "";
           const gate = autonomous ? " with allow_orchestrator: true" : "";
-          console.error(`No ready or needs-feedback tasks${where}${gate}.`);
+          console.error(`No ready or rework tasks${where}${gate}.`);
           process.exit(1);
         }
         console.log(qualifySlug(pick.project.slug, pick.task));
@@ -657,7 +672,7 @@ try {
       }
       const where = projectFilter ? ` in project "${projectFilter}"` : "";
       const gate = autonomous ? " with allow_orchestrator: true" : "";
-      console.error(`No claimable ready or needs-feedback tasks${where}${gate} (all candidates locked or their repos busy).`);
+      console.error(`No claimable ready or rework tasks${where}${gate} (all candidates locked or their repos busy).`);
       process.exit(1);
     }
     case "serve": {
@@ -830,7 +845,7 @@ try {
       const projects = loadProjects(root);
       const items = inboxItems(projects);
       if (items.length === 0) {
-        console.log("Inbox empty (no needs-review, blocked, or open tasks).");
+        console.log("Inbox empty (no review, blocked, or open tasks).");
         break;
       }
       console.log(`Inbox (${items.length} task${items.length === 1 ? "" : "s"}):`);
@@ -1092,7 +1107,7 @@ Usage:
   tpm drop <task> ["<reason>"]               set status: dropped, stamp closed; optional reason fills ## Outcome + Log
   tpm block <task> "<reason>"                set status: blocked, log the reason
   tpm reopen <task> ["<reason>"]             set status: open, log it (optional reason on the Log)
-  tpm pull <task>                            pull a queued or running task back into the human pile: ready/in-progress -> open, needs-feedback -> needs-review
+  tpm pull <task>                            pull a queued or running task back into the human pile: ready/in-progress -> open, rework -> review
   tpm revert <task> ["<reason>"]             flip in-progress -> ready, log a timeout/revert (no-op otherwise)
   tpm status <task> <new-status> [--force]   generic status setter (validated against the transition table; --force bypasses)
   tpm set-type <task> <pr|investigation>   reclassify a task's type: (validated); back-end for tpm serve's type dropdown
@@ -1103,14 +1118,16 @@ Usage:
                                              rewrite the project name (frontmatter) or one prose section (Goal/Context/Notes); back-end for tpm serve's project editor
   tpm pr <task> <url>                        add URL to prs:, log opened PR
   tpm report <task>                          attach a report artifact at <project>/tasks/<slug>/report.md (auto-folds file-form tasks);
-                                             auto-flips in-progress -> needs-review (investigation analogue of tpm pr)
+                                             auto-flips in-progress -> review (investigation analogue of tpm pr)
   tpm report <task> --export text            print the report as plain text (drops HTML comments)
   tpm lgtm <task>                            reviewer approval on a report task: derive Outcome + complete
-  tpm request-changes <task> "<comment>"     reviewer pushback on a report: append to ## Reviewer feedback + flip to needs-feedback
+  tpm request-changes <task> "<comment>"     reviewer pushback on a report: append to ## Reviewer feedback + flip to rework
   tpm allow <task>                           set allow_orchestrator: true (safe for autonomous runs)
   tpm disallow <task>                        set allow_orchestrator: false
   tpm archive <task | project/task>          move a done/dropped task to tasks/archive/
   tpm fold <task | project/task>             promote a file-form task to folder-form (idempotent)
+  tpm migrate [--dry-run]                    rewrite pre-rename statuses in the tree (needs-feedback->rework,
+                                             needs-review->review, needs-close->closing); idempotent
   tpm reparent <task> <new-parent | --top>   move a task under a new parent (or to top-level); folds the new parent if needed
   tpm lock acquire <task> --as <id>          claim a per-task lock (atomic O_CREAT|O_EXCL)
   tpm lock release <task> --as <id> [--force]  release a per-task lock
@@ -1120,8 +1137,8 @@ Usage:
   tpm lock release-stale [--ttl <minutes>]   clear locks whose heartbeat is older than ttl
   tpm drift-check <project | task>           verify the project's repo.local is on its default branch + clean
   tpm next [--project <slug>] [--autonomous] [--claim <id>]
-                                             print next leaf task (needs-feedback > ready, oldest first); --claim atomically locks
-  tpm inbox                                  list human-queue tasks (needs-review, blocked, open) cross-project
+                                             print next leaf task (rework > ready, oldest first); --claim atomically locks
+  tpm inbox                                  list human-queue tasks (review, blocked, open) cross-project
   tpm orchestrate [--workers <N>] [--cli claude,copilot,…] [--minutes <N>] [--agent <name>] [--claude <path>] [--task <slug>]
                                              run a pool of concurrent worker loops in one invocation. pool size tracks
                                              \`workers\` in ~/.tpm/config.json (default: 1) — \`tpm config set workers N\`

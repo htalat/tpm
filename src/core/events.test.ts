@@ -45,7 +45,7 @@ test("appendStatusEvent: child tasks journal project/parent/slug; TPM_AGENT_ID b
     appendStatusEvent(root, {
       task: fakeTask({ slug: "002-b", parent: "001-a" }),
       from: "in-progress",
-      to: "needs-review",
+      to: "review",
       verb: "PR opened",
     });
     const rec = JSON.parse(readFileSync(eventsPath(root), "utf8").trim());
