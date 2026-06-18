@@ -52,11 +52,11 @@ test("parseTaskLogEntries: skips malformed bullets (silent drop, not garbage ren
 test("parseTaskLogEntries: handles messages containing `:`", () => {
   const body = [
     "## Log",
-    "- 2026-05-15 13:56 PDT: status -> needs-review (PR opened, awaiting review)",
+    "- 2026-05-15 13:56 PDT: status -> review (PR opened, awaiting review)",
     "- 2026-05-15 14:13 PDT: poller — merged https://github.com/x/y/pull/1",
   ].join("\n");
   const entries = parseTaskLogEntries(body, "America/Los_Angeles");
-  assert.equal(entries[0].message, "status -> needs-review (PR opened, awaiting review)");
+  assert.equal(entries[0].message, "status -> review (PR opened, awaiting review)");
   assert.equal(entries[1].message, "poller — merged https://github.com/x/y/pull/1");
 });
 

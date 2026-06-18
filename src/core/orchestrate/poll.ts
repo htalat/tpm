@@ -1,8 +1,8 @@
 // PR-signal poller. Walks every non-terminal task with a linked PR,
 // dispatches per-URL fetches to the host adapter registry, and flips status
-// based on the aggregated signal: merged → needs-close + inline auto-close;
-// CI red / behind / conflict / open threads → needs-feedback;
-// CHANGES_REQUESTED / abandoned → needs-review. Logs in the same structured
+// based on the aggregated signal: merged → closing + inline auto-close;
+// CI red / behind / conflict / open threads → rework;
+// CHANGES_REQUESTED / abandoned → review. Logs in the same structured
 // envelope as `tpm orchestrate` (src/log.ts) so a single `tpm` log file tails
 // cleanly.
 
@@ -38,9 +38,9 @@ const SCRIPT = "poll";
 const WATCHED_STATUSES = new Set([
   "in-progress",
   "ready",
-  "needs-review",
-  "needs-feedback",
-  "needs-close",
+  "review",
+  "rework",
+  "closing",
 ]);
 
 export interface PollOpts {
@@ -184,12 +184,12 @@ export async function runPoll(opts: PollOpts = {}): Promise<PollSummary> {
       continue;
     }
     const reasonsJoined = decision.reasons.join("; ");
-    const outcome = decision.status === "needs-close"
+    const outcome = decision.status === "closing"
       ? deriveOutcomeFromSignals(items)
       : null;
 
     if (opts.dryRun) {
-      if (decision.status === "needs-close" && outcome) {
+      if (decision.status === "closing" && outcome) {
         log("INFO", `would auto-close ${slug} (${reasonsJoined})`);
       } else {
         log("INFO", `would flip ${slug} -> ${decision.status} (${reasonsJoined})`);
@@ -207,14 +207,14 @@ export async function runPoll(opts: PollOpts = {}): Promise<PollSummary> {
       continue;
     }
 
-    if (decision.status === "needs-close" && outcome) {
+    if (decision.status === "closing" && outcome) {
       try {
         mutate.complete(task, { outcome });
         log("INFO", `auto-closed ${slug} (${reasonsJoined})`);
       } catch (e) {
         log(
           "WARN",
-          `auto-close ${slug} failed (${(e as Error).message}) — leaving at needs-close`,
+          `auto-close ${slug} failed (${(e as Error).message}) — leaving at closing`,
         );
       }
     } else {
@@ -252,10 +252,10 @@ function qualifySlug(projectSlug: string, task: Task): string {
 
 function actionFor(signal: PrSignal): string {
   switch (signal.kind) {
-    case "merged":      return "flip-to-needs-close";
-    case "needs-human": return "flip-to-needs-review";
-    case "abandoned":   return "flip-to-needs-review";
-    case "needs-agent": return "flip-to-needs-feedback";
+    case "merged":      return "flip-to-closing";
+    case "needs-human": return "flip-to-review";
+    case "abandoned":   return "flip-to-review";
+    case "needs-agent": return "flip-to-rework";
     case "no-action":   return "no-signal";
   }
 }

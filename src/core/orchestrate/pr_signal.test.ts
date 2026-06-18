@@ -36,40 +36,40 @@ test("analyzePr: clean open PR -> no-signal", () => {
   });
 });
 
-test("analyzePr: CI failed -> flip-to-needs-feedback (CI=FAIL)", () => {
+test("analyzePr: CI failed -> flip-to-rework (CI=FAIL)", () => {
   const d = analyzePr(pr("https://x/1", {
     mergeStateStatus: "UNSTABLE",
     statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "FAILURE" }],
   }));
-  assert.equal(d.action, "flip-to-needs-feedback");
+  assert.equal(d.action, "flip-to-rework");
   assert.equal(d.ci, "FAIL");
 });
 
-test("analyzePr: behind main -> flip-to-needs-feedback (mergeable=BEHIND)", () => {
+test("analyzePr: behind main -> flip-to-rework (mergeable=BEHIND)", () => {
   const d = analyzePr(pr("https://x/1", {
     mergeStateStatus: "BEHIND",
     statusCheckRollup: [{ conclusion: "SUCCESS" }],
   }));
-  assert.equal(d.action, "flip-to-needs-feedback");
+  assert.equal(d.action, "flip-to-rework");
   assert.equal(d.mergeable, "BEHIND");
 });
 
-test("analyzePr: merge conflict -> flip-to-needs-feedback (agent attempts rebase)", () => {
+test("analyzePr: merge conflict -> flip-to-rework (agent attempts rebase)", () => {
   const d = analyzePr(pr("https://x/1", {
     mergeStateStatus: "DIRTY",
     statusCheckRollup: [{ conclusion: "SUCCESS" }],
   }));
-  assert.equal(d.action, "flip-to-needs-feedback");
+  assert.equal(d.action, "flip-to-rework");
   assert.equal(d.mergeable, "DIRTY");
 });
 
-test("analyzePr: CHANGES_REQUESTED -> flip-to-needs-review", () => {
+test("analyzePr: CHANGES_REQUESTED -> flip-to-review", () => {
   const d = analyzePr(pr("https://x/1", {
     reviewDecision: "CHANGES_REQUESTED",
     mergeStateStatus: "BLOCKED",
     statusCheckRollup: [{ conclusion: "SUCCESS" }],
   }));
-  assert.equal(d.action, "flip-to-needs-review");
+  assert.equal(d.action, "flip-to-review");
   assert.equal(d.review, "CHANGES_REQUESTED");
 });
 
@@ -80,7 +80,7 @@ test("analyzePr: COMMENTED reviewer surfaces in review= field", () => {
     statusCheckRollup: [{ conclusion: "SUCCESS" }],
     latestReviews: [{ state: "COMMENTED" }],
   }));
-  assert.equal(d.action, "flip-to-needs-feedback");
+  assert.equal(d.action, "flip-to-rework");
   assert.equal(d.review, "REVIEW_REQUIRED");
 });
 
@@ -91,7 +91,7 @@ test("analyzePr: no reviewDecision but COMMENTED in latestReviews -> review=COMM
     latestReviews: [{ state: "COMMENTED" }],
   }));
   assert.equal(d.review, "COMMENTED");
-  assert.equal(d.action, "flip-to-needs-feedback");
+  assert.equal(d.action, "flip-to-rework");
 });
 
 test("analyzePr: pending CI -> ci=PENDING, no flip", () => {
@@ -126,17 +126,17 @@ test("analyzePr: draft PR -> no-signal even with red CI / dirty mergeable", () =
   assert.equal(d.ci, "FAIL");
 });
 
-test("analyzePr: merged -> flip-to-needs-close", () => {
+test("analyzePr: merged -> flip-to-closing", () => {
   const d = analyzePr({
     url: "https://x/1",
     state: "MERGED",
     isDraft: false,
   });
-  assert.equal(d.action, "flip-to-needs-close");
+  assert.equal(d.action, "flip-to-closing");
   assert.equal(d.state, "MERGED");
 });
 
-test("analyzePr: closed (not merged) -> flip-to-needs-review (abandoned)", () => {
+test("analyzePr: closed (not merged) -> flip-to-review (abandoned)", () => {
   // Task 052: abandoned PRs surface to the human inbox (previously silently
   // ignored). The user decides whether to reopen the PR or drop the task.
   const d = analyzePr({
@@ -146,7 +146,7 @@ test("analyzePr: closed (not merged) -> flip-to-needs-review (abandoned)", () =>
     mergeStateStatus: "DIRTY",
     statusCheckRollup: [{ conclusion: "FAILURE" }],
   });
-  assert.equal(d.action, "flip-to-needs-review");
+  assert.equal(d.action, "flip-to-review");
   assert.equal(d.state, "CLOSED");
 });
 
@@ -175,13 +175,13 @@ test("aggregateSignals: all no-action -> null", () => {
   assert.equal(aggregateSignals([sig("https://x/1", "no-action")]), null);
 });
 
-test("aggregateSignals: any merged -> needs-close (wins over everything)", () => {
+test("aggregateSignals: any merged -> closing (wins over everything)", () => {
   assert.deepEqual(
     aggregateSignals([
       sig("https://x/1", "merged"),
       sig("https://x/2", "needs-agent", "CI failed"),
     ]),
-    { status: "needs-close", reasons: ["merged https://x/1"] },
+    { status: "closing", reasons: ["merged https://x/1"] },
   );
 });
 
@@ -191,35 +191,35 @@ test("aggregateSignals: multiple merged -> all reasons", () => {
       sig("https://x/1", "merged"),
       sig("https://x/2", "merged"),
     ]),
-    { status: "needs-close", reasons: ["merged https://x/1", "merged https://x/2"] },
+    { status: "closing", reasons: ["merged https://x/1", "merged https://x/2"] },
   );
 });
 
-test("aggregateSignals: needs-human -> needs-review (verbatim reason)", () => {
+test("aggregateSignals: needs-human -> review (verbatim reason)", () => {
   assert.deepEqual(
     aggregateSignals([sig("https://x/1", "needs-human", "CHANGES_REQUESTED on https://x/1")]),
-    { status: "needs-review", reasons: ["CHANGES_REQUESTED on https://x/1"] },
+    { status: "review", reasons: ["CHANGES_REQUESTED on https://x/1"] },
   );
 });
 
-test("aggregateSignals: needs-review wins over needs-feedback across PRs (both reasons accumulate)", () => {
+test("aggregateSignals: review wins over rework across PRs (both reasons accumulate)", () => {
   const result = aggregateSignals([
     sig("https://x/1", "needs-agent", "CI failed on https://x/1"),
     sig("https://x/2", "needs-human", "CHANGES_REQUESTED on https://x/2"),
   ]);
   assert.deepEqual(result, {
-    status: "needs-review",
+    status: "review",
     reasons: ["CI failed on https://x/1", "CHANGES_REQUESTED on https://x/2"],
   });
 });
 
-test("aggregateSignals: subsequent needs-agent reasons suppressed once needs-review fired", () => {
+test("aggregateSignals: subsequent needs-agent reasons suppressed once review fired", () => {
   const result = aggregateSignals([
     sig("https://x/1", "needs-human", "CHANGES_REQUESTED on https://x/1"),
     sig("https://x/2", "needs-agent", "behind main on https://x/2"),
   ]);
   assert.deepEqual(result, {
-    status: "needs-review",
+    status: "review",
     reasons: ["CHANGES_REQUESTED on https://x/1"],
   });
 });
@@ -230,33 +230,33 @@ test("aggregateSignals: only the first needs-agent reason is recorded", () => {
     sig("https://x/2", "needs-agent", "branch behind main on https://x/2"),
   ]);
   assert.deepEqual(result, {
-    status: "needs-feedback",
+    status: "rework",
     reasons: ["merge conflict on https://x/1"],
   });
 });
 
-test("aggregateSignals: abandoned PR routes to needs-review (was silently ignored before task 052)", () => {
+test("aggregateSignals: abandoned PR routes to review (was silently ignored before task 052)", () => {
   assert.deepEqual(
     aggregateSignals([sig("https://x/1", "abandoned")]),
-    { status: "needs-review", reasons: ["PR abandoned: https://x/1"] },
+    { status: "review", reasons: ["PR abandoned: https://x/1"] },
   );
 });
 
-test("aggregateSignals: merged on one PR + abandoned on another -> needs-close (merge wins)", () => {
+test("aggregateSignals: merged on one PR + abandoned on another -> closing (merge wins)", () => {
   const result = aggregateSignals([
     sig("https://x/1", "merged"),
     sig("https://x/2", "abandoned"),
   ]);
-  assert.equal(result?.status, "needs-close");
+  assert.equal(result?.status, "closing");
 });
 
 // ---- shouldWatchForPrSignal (tasks 049 + 055) ---------------------------
 
 test("shouldWatchForPrSignal: every non-terminal status with a linked PR is watched", () => {
   // Forward-direction (055): linked PRs keep generating signals as the task
-  // moves through needs-review / needs-feedback / needs-close. Backward (049):
-  // a manual needs-review -> ready revert mustn't strand a merge signal.
-  for (const status of ["in-progress", "ready", "needs-review", "needs-feedback", "needs-close"]) {
+  // moves through review / rework / closing. Backward (049):
+  // a manual review -> ready revert mustn't strand a merge signal.
+  for (const status of ["in-progress", "ready", "review", "rework", "closing"]) {
     assert.equal(
       shouldWatchForPrSignal({ status, prs: ["https://x/1"] }),
       true,
@@ -268,7 +268,7 @@ test("shouldWatchForPrSignal: every non-terminal status with a linked PR is watc
 test("shouldWatchForPrSignal: non-terminal statuses without a linked PR are skipped", () => {
   // No URL to fetch means no signal to read — including in-progress before
   // the agent has opened its PR.
-  for (const status of ["in-progress", "ready", "needs-review", "needs-feedback", "needs-close"]) {
+  for (const status of ["in-progress", "ready", "review", "rework", "closing"]) {
     assert.equal(shouldWatchForPrSignal({ status, prs: [] }), false, `${status} + empty prs`);
     assert.equal(shouldWatchForPrSignal({ status }), false, `${status} + missing prs`);
     assert.equal(

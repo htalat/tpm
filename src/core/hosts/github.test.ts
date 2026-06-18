@@ -26,7 +26,7 @@ test("mapGithub: MERGED -> merged signal carries title/body/url/mergedAt", () =>
 
 test("mapGithub: CLOSED (not merged) -> abandoned", () => {
   // Even with red CI / dirty merge state — once closed, the PR is no longer
-  // actionable for the agent. The aggregator routes abandoned to needs-review.
+  // actionable for the agent. The aggregator routes abandoned to review.
   assert.deepEqual(
     mapGithub(pr({ state: "CLOSED", mergeStateStatus: "DIRTY", statusCheckRollup: [{ conclusion: "FAILURE" }] })),
     { kind: "abandoned" },
