@@ -2239,6 +2239,31 @@ test("route: /t/<proj>/<slug>/runs labels 'Last run' on a non-in-progress task",
   assert.doesNotMatch(r.body, /Current run/);
 });
 
+test("route: run panel surfaces the agent session id when the log carries one", () => {
+  const t = task("001-foo", "needs-review");
+  const p = project("alpha", [t]);
+  const text = [
+    JSON.stringify({ type: "system", subtype: "init", session_id: "sess-abc-123" }),
+    JSON.stringify({ type: "result", subtype: "success", result: "done" }),
+  ].join("\n");
+  const r = route("/t/alpha/001-foo/runs", new URLSearchParams(), [p], {
+    runLog: runLogOf(text),
+    runLogList: runLogListOf("alpha-001--20260515T120000Z.log"),
+  });
+  assert.match(r.body, /session <code>sess-abc-123<\/code>/);
+});
+
+test("route: run panel omits the session line when the log has no session id", () => {
+  const t = task("001-foo", "needs-review");
+  const p = project("alpha", [t]);
+  const text = JSON.stringify({ type: "system", subtype: "init" });
+  const r = route("/t/alpha/001-foo/runs", new URLSearchParams(), [p], {
+    runLog: runLogOf(text),
+    runLogList: runLogListOf("alpha-001--20260515T120000Z.log"),
+  });
+  assert.doesNotMatch(r.body, /class="run-meta">session/);
+});
+
 test("route: /t/<proj>/<slug>/runs auto-refreshes only when the task is in-progress", () => {
   const inProg = task("001-foo", "in-progress");
   const p1 = project("alpha", [inProg]);

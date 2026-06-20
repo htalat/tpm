@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { CONFIG_DIR } from "../config.ts";
 import { foldTask } from "../tree.ts";
@@ -98,6 +98,24 @@ export function allRunLogs(task: Task): string[] {
 export function latestRunLog(task: Task): string | null {
   const all = allRunLogs(task);
   return all.length ? all[0] : null;
+}
+
+// Session id of a task's most recent orchestrator run, or null when the task
+// has never been dispatched or the capture never recorded one (e.g. a run that
+// died before the agent emitted its `init` event, or an output format that
+// doesn't carry a session id). Backs `tpm session <slug>` so a human can
+// `claude --resume` the exact session the orchestrator spawned. Reads the
+// newest run log only — older runs are reachable via their own log files.
+export function latestSessionId(task: Task): string | null {
+  const path = latestRunLog(task);
+  if (!path) return null;
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  return parseRunLog(text).sessionId ?? null;
 }
 
 // Pre-spawn: auto-fold file-form top-level tasks so the runs/ subfolder has
@@ -227,6 +245,17 @@ export interface ParsedRunLog {
   // Header metadata when present — useful to the viewer for surfacing the
   // agent name in the panel chrome ("Last run · copilot").
   header?: RunLogHeader;
+  // The agent's coding-session id, lifted from the last event that carries a
+  // top-level `session_id` (claude's `system/init` and `result` events both
+  // do; copilot's NDJSON carries one too). Last-writer-wins because a run that
+  // applies feedback resumes the agent, and the resume mints a new session id
+  // partway through the log — the newest id is the one worth resuming. Lets a
+  // human resume the exact session the orchestrator spawned
+  // (`claude --resume <id>`). Undefined when
+  // the capture never recorded one. Format-agnostic on purpose — it's a
+  // top-level field across the dialects we've seen, so we don't thread it
+  // through the per-format interpreters.
+  sessionId?: string;
 }
 
 export interface ParseRunLogOpts {
@@ -274,6 +303,7 @@ export function parseRunLog(text: string, opts: ParseRunLogOpts = {}): ParsedRun
   const events: RunEvent[] = [];
   let parsed = 0;
   let skipped = 0;
+  let sessionId: string | undefined;
   let headerConsumed = false;
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -305,11 +335,31 @@ export function parseRunLog(text: string, opts: ParseRunLogOpts = {}): ParsedRun
         continue;
       }
       parsed++;
+      // Last writer wins: a single run can span more than one session (a
+      // feedback round resumes the agent, and `claude --resume` mints a fresh
+      // session id mid-log). The id you'd resume from next is the newest one,
+      // so keep overwriting rather than locking onto the first.
+      const sid = sessionIdOf(obj);
+      if (sid !== undefined) sessionId = sid;
       for (const ev of interpretFor(format, obj, slice)) events.push(ev);
     }
     if (split.unclosedTail) skipped++;
   }
-  return { events, parsed, skipped, format, header };
+  return { events, parsed, skipped, format, header, sessionId };
+}
+
+// Pull a top-level session id off a parsed NDJSON object. Accepts both the
+// snake_case `session_id` (claude, copilot) and a camelCase fallback in case a
+// future dialect uses it. Returns undefined for non-objects, missing keys, or
+// empty/blank values.
+function sessionIdOf(obj: unknown): string | undefined {
+  if (!obj || typeof obj !== "object") return undefined;
+  const rec = obj as Record<string, unknown>;
+  for (const key of ["session_id", "sessionId"]) {
+    const v = rec[key];
+    if (typeof v === "string" && v.trim().length) return v;
+  }
+  return undefined;
 }
 
 // Backwards-compatible flat-stream view over parseRunLog.
