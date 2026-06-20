@@ -18,6 +18,7 @@ import * as lock from "./orchestrate/lock.ts";
 import { runOrchestrate } from "./orchestrate/orchestrate.ts";
 import { runPoll } from "./orchestrate/poll.ts";
 import { runLoop, parseLoopArgs } from "./orchestrate/loop.ts";
+import { latestSessionId } from "./orchestrate/run_log.ts";
 import { runServe } from "../web/serve.ts";
 import { shouldNotify, fireNotification, NOTIFY_EVENTS } from "./notify.ts";
 import { taskDeepLink } from "../web/serve_url.ts";
@@ -227,6 +228,24 @@ try {
     }
     case "now": {
       console.log(now());
+      break;
+    }
+    case "session": {
+      // Print the agent session id of a task's most recent orchestrator run,
+      // so a human can pick up where the agent left off:
+      //   claude --resume "$(tpm session <slug>)"
+      // Exits non-zero with a stderr note (not stdout) when there's no run or
+      // no captured session id, so the `$(...)` substitution above stays empty
+      // rather than swallowing an error string into the resume target.
+      const task = resolveLiveTask(args[1], "tpm session <task>");
+      const sessionId = latestSessionId(task);
+      if (!sessionId) {
+        console.error(
+          `${task.slug}: no session id on record (task not yet dispatched, or its latest run captured none).`,
+        );
+        process.exit(1);
+      }
+      console.log(sessionId);
       break;
     }
     case "config": {
@@ -1066,6 +1085,7 @@ Usage:
   tpm report [--md]                          generate a rollup of every project/task to reports/index.{html,md}
   tpm root                                   print the tree root
   tpm path <project | task | project/task>   print the local repo path
+  tpm session <task>                         print the agent session id of the task's latest run (resume with \`claude --resume "$(tpm session <task>)"\`)
   tpm now                                    timestamp in the configured timezone
   tpm config get <key>                       read a config key from ~/.tpm/config.json (known: ${KNOWN_CONFIG_KEYS.join(", ")})
   tpm config set <key> <value>               write a config key to ~/.tpm/config.json (e.g. \`tpm config set workers 3\`);

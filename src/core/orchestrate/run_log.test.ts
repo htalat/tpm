@@ -11,6 +11,7 @@ import {
   isLegacyRunLogName,
   isValidRunLogName,
   latestRunLog,
+  latestSessionId,
   newRunLogName,
   newRunLogPath,
   parseLine,
@@ -231,6 +232,71 @@ test("latestRunLog: returns null when no runs", () => {
     const t = topLevelFolderForm(root, "001-foo");
     assert.equal(latestRunLog(t), null);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("latestSessionId: reads the session id from the newest run log", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+  try {
+    const t = topLevelFolderForm(root, "001-foo");
+    const runsDir = join(root, "001-foo", "runs");
+    mkdirSync(runsDir);
+    // Older run with a different session — must be ignored in favor of newest.
+    writeFileSync(
+      join(runsDir, "20260101T000000Z.log"),
+      JSON.stringify({ type: "system", subtype: "init", session_id: "old-session" }) + "\n",
+    );
+    writeFileSync(
+      join(runsDir, "20260601T080000Z.log"),
+      JSON.stringify({ type: "system", subtype: "init", session_id: "new-session" }) + "\n",
+    );
+    assert.equal(latestSessionId(t), "new-session");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("latestSessionId: null when no runs or no session id captured", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "tpm-runs-"));
+  try {
+    const t = topLevelFolderForm(root, "001-foo");
+    assert.equal(latestSessionId(t), null); // never dispatched
+    const runsDir = join(root, "001-foo", "runs");
+    mkdirSync(runsDir);
+    writeFileSync(
+      join(runsDir, "20260601T080000Z.log"),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "hi" }] } }) + "\n",
+    );
+    assert.equal(latestSessionId(t), null); // run with no session_id
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("parseRunLog: lifts session_id from the first event that carries one", () => {
+  const buf = [
+    JSON.stringify({ type: "system", subtype: "init", session_id: "abc-123", model: "claude" }),
+    JSON.stringify({ type: "result", subtype: "success", session_id: "abc-123" }),
+  ].join("\n");
+  assert.equal(parseRunLog(buf).sessionId, "abc-123");
+});
+
+test("parseRunLog: session_id absent yields undefined", () => {
+  const buf = JSON.stringify({ type: "system", subtype: "init", model: "claude" });
+  assert.equal(parseRunLog(buf).sessionId, undefined);
+});
+
+test("parseRunLog: session_id is captured under a copilot header too", () => {
+  const buf = [
+    formatRunLogHeader("copilot", "copilot-json").trim(),
+    JSON.stringify({ session_id: "cop-9", role: "assistant", content: "working" }),
+  ].join("\n");
+  const parsed = parseRunLog(buf);
+  assert.equal(parsed.sessionId, "cop-9");
+  assert.equal(parsed.format, "copilot-json");
+});
+
+test("parseRunLog: blank session_id is ignored (treated as absent)", () => {
+  const buf = [
+    JSON.stringify({ type: "system", subtype: "init", session_id: "   " }),
+    JSON.stringify({ type: "result", subtype: "success", session_id: "real-id" }),
+  ].join("\n");
+  assert.equal(parseRunLog(buf).sessionId, "real-id");
 });
 
 test("isLegacyRunLogName: matches the pre-095 flat-dir filename shape", () => {

@@ -2124,7 +2124,7 @@ function renderRunPanel(task: Task, slugSegs: string, status: string, runLog: Ru
   <p class="run-empty">${esc(note)}</p>
 </section>`;
   }
-  const { events, parsed, skipped } = parseRunLog(snapshot.text);
+  const { events, parsed, skipped, sessionId } = parseRunLog(snapshot.text);
   const tail = events.slice(-RUN_PANEL_EVENTS);
   const rendered = tail.length === 0
     ? `<p class="run-empty">Log file is empty — the agent hasn't written anything yet.</p>`
@@ -2136,11 +2136,18 @@ function renderRunPanel(task: Task, slugSegs: string, status: string, runLog: Ru
     ? `<p class="run-warning">${parsed} events parsed, ${skipped} skipped — file may have been truncated or partially written.</p>`
     : "";
   const rawLink = `<p class="run-meta"><a href="/t/${slugSegs}/runs/${encodeURIComponent(snapshot.name)}">View raw log →</a></p>`;
+  // Surface the agent's session id so an operator can resume the exact session
+  // the orchestrator spawned (`claude --resume <id>`). The CLI mirror is
+  // `tpm session <slug>`. Rendered in a copy-friendly <code> span.
+  const session = sessionId
+    ? `<p class="run-meta">session <code>${esc(sessionId)}</code></p>`
+    : "";
   return `<section class="run-panel">
   <h2>${esc(label)} <span class="meta">${esc(snapshot.name)}</span></h2>
   ${warning}
   ${rendered}
   ${truncated}
+  ${session}
   ${rawLink}
 </section>`;
 }
