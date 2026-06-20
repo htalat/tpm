@@ -268,12 +268,24 @@ test("latestSessionId: null when no runs or no session id captured", () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("parseRunLog: lifts session_id from the first event that carries one", () => {
+test("parseRunLog: lifts session_id from an event that carries one", () => {
   const buf = [
     JSON.stringify({ type: "system", subtype: "init", session_id: "abc-123", model: "claude" }),
     JSON.stringify({ type: "result", subtype: "success", session_id: "abc-123" }),
   ].join("\n");
   assert.equal(parseRunLog(buf).sessionId, "abc-123");
+});
+
+test("parseRunLog: last session_id wins when a run spans multiple sessions", () => {
+  // A feedback round resumes the agent; `claude --resume` mints a fresh
+  // session id mid-log. The resumable id is the newest one, not the first.
+  const buf = [
+    JSON.stringify({ type: "system", subtype: "init", session_id: "first-session" }),
+    JSON.stringify({ type: "result", subtype: "success", session_id: "first-session" }),
+    JSON.stringify({ type: "system", subtype: "init", session_id: "resumed-session" }),
+    JSON.stringify({ type: "result", subtype: "success", session_id: "resumed-session" }),
+  ].join("\n");
+  assert.equal(parseRunLog(buf).sessionId, "resumed-session");
 });
 
 test("parseRunLog: session_id absent yields undefined", () => {

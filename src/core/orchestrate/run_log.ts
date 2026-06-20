@@ -245,10 +245,13 @@ export interface ParsedRunLog {
   // Header metadata when present — useful to the viewer for surfacing the
   // agent name in the panel chrome ("Last run · copilot").
   header?: RunLogHeader;
-  // The agent's coding-session id, lifted from the first event that carries a
+  // The agent's coding-session id, lifted from the last event that carries a
   // top-level `session_id` (claude's `system/init` and `result` events both
-  // do; copilot's NDJSON carries one too). Lets a human resume the exact
-  // session the orchestrator spawned (`claude --resume <id>`). Undefined when
+  // do; copilot's NDJSON carries one too). Last-writer-wins because a run that
+  // applies feedback resumes the agent, and the resume mints a new session id
+  // partway through the log — the newest id is the one worth resuming. Lets a
+  // human resume the exact session the orchestrator spawned
+  // (`claude --resume <id>`). Undefined when
   // the capture never recorded one. Format-agnostic on purpose — it's a
   // top-level field across the dialects we've seen, so we don't thread it
   // through the per-format interpreters.
@@ -332,7 +335,12 @@ export function parseRunLog(text: string, opts: ParseRunLogOpts = {}): ParsedRun
         continue;
       }
       parsed++;
-      if (sessionId === undefined) sessionId = sessionIdOf(obj);
+      // Last writer wins: a single run can span more than one session (a
+      // feedback round resumes the agent, and `claude --resume` mints a fresh
+      // session id mid-log). The id you'd resume from next is the newest one,
+      // so keep overwriting rather than locking onto the first.
+      const sid = sessionIdOf(obj);
+      if (sid !== undefined) sessionId = sid;
       for (const ev of interpretFor(format, obj, slice)) events.push(ev);
     }
     if (split.unclosedTail) skipped++;
