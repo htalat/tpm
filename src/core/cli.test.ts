@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { CLI_NAME } from "../util/cli_name.ts";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "cli.ts");
 
@@ -35,13 +36,14 @@ test("entry point: `tpm drop` with no task prints usage and exits non-zero", () 
   // this exercises the dispatch + usage path without needing a configured root.
   const r = runCli(["drop"]);
   assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /tpm drop <task>/);
+  // `tpm` on macOS/Linux, `tpmgr` on Windows (see util/cli_name.ts).
+  assert.match(r.stderr, new RegExp(`${CLI_NAME} drop <task>`));
 });
 
 test("entry point: `tpm help` documents the drop verb", () => {
   const r = runCli(["help"]);
   assert.equal(r.status, 0, `stderr: ${r.stderr}`);
-  assert.match(r.stdout, /tpm drop <task>/);
+  assert.match(r.stdout, new RegExp(`${CLI_NAME} drop <task>`));
 });
 
 test("entry point: `tpm config get <unknown>` reports the known-keys list (no TDZ)", () => {
