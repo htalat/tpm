@@ -14,8 +14,12 @@
 // a poll tick. SIGINT/SIGTERM kills any in-flight child and exits, the
 // equivalent of bash's `trap 'kill 0' EXIT`.
 //
-// The ticks run as child `tpm` processes (not in-process) so a crash or hang in
-// one tick can't take the loop down with it — the bash original forked too.
+// The ticks run as child processes (not in-process) so a crash or hang in one
+// tick can't take the loop down with it — the bash original forked too. Each
+// child is `node <this install's cli.ts> <args>` (the same mechanism `tpm
+// serve` uses for its mutations): no dependency on a runnable bin shim, so it
+// works identically on Windows — where the .cmd shim can't be spawned directly
+// and the bash shim doesn't exist — as on macOS/Linux.
 
 import { spawn, type ChildProcess } from "node:child_process";
 
@@ -49,9 +53,10 @@ export function parseLoopArgs(argv: string[], bail: (msg: string) => never): Loo
   return opts;
 }
 
-// Run both loops forever (or once, with --once). `tpmBin` is the resolved path
-// to this install's binary so the ticks run the same `tpm` the loop itself did.
-export async function runLoop(tpmBin: string, opts: LoopOptions): Promise<void> {
+// Run both loops forever (or once, with --once). `cliEntry` is the absolute
+// path to this install's cli.ts; ticks run as `node <cliEntry> <args>` so they
+// execute the same install the loop itself is running, on any platform.
+export async function runLoop(cliEntry: string, opts: LoopOptions): Promise<void> {
   const children = new Set<ChildProcess>();
   const wakers = new Set<() => void>();
   let shuttingDown = false;
@@ -67,13 +72,14 @@ export async function runLoop(tpmBin: string, opts: LoopOptions): Promise<void> 
       wakers.add(wake);
     });
 
-  // Run `tpm <args>` to completion, inheriting stdio so its structured log lines
-  // flow straight to our stdout/stderr. Resolves regardless of exit code — a
-  // single failed tick shouldn't kill the loop (bash's version ignored exit
-  // codes too).
+  // Run `node <cliEntry> <args>` to completion, inheriting stdio so its
+  // structured log lines flow straight to our stdout/stderr. Resolves
+  // regardless of exit code — a single failed tick shouldn't kill the loop
+  // (bash's version ignored exit codes too). process.execArgv is forwarded so
+  // any node flags that launched the parent (e.g. TS-strip) reach the child.
   const runOnce = (label: string, args: string[]): Promise<void> =>
     new Promise(res => {
-      const child = spawn(tpmBin, args, { stdio: "inherit" });
+      const child = spawn(process.execPath, [...process.execArgv, cliEntry, ...args], { stdio: "inherit" });
       children.add(child);
       const done = () => { children.delete(child); res(); };
       child.on("exit", done);

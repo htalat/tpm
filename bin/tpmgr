@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Git Bash / POSIX entry for tpm under the Windows-safe name `tpmgr` (bare `tpm`
+# collides with the built-in tpm.msc on Windows %PATH%; see bin/tpmgr.cmd). On
+# macOS/Linux there's no collision, so `tpm` is the usual name — this shim just
+# also works there. Identical resolution to bin/tpm.
+set -e
+SCRIPT="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT" ]; do
+  DIR="$(cd -P "$(dirname "$SCRIPT")" && pwd)"
+  SCRIPT="$(readlink "$SCRIPT")"
+  [[ "$SCRIPT" != /* ]] && SCRIPT="$DIR/$SCRIPT"
+done
+DIR="$(cd -P "$(dirname "$SCRIPT")" && pwd)"
+exec node "$DIR/../src/core/cli.ts" "$@"

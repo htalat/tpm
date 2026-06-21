@@ -13,6 +13,7 @@ import { findTask, findRepoTarget } from "./resolve.ts";
 import { init } from "./init.ts";
 import { CONFIG_PATH, readConfig, writeConfig, serveBaseUrl } from "./config.ts";
 import { now } from "../util/time.ts";
+import { brandCli, shimFileName, CLI_NAME } from "../util/cli_name.ts";
 import * as mutate from "./mutate.ts";
 import * as lock from "./orchestrate/lock.ts";
 import { runOrchestrate } from "./orchestrate/orchestrate.ts";
@@ -86,7 +87,7 @@ try {
       const projects = loadProjects(root, { archived: includeArchived });
       const projectFilter = parseFlag(args, "--project");
       if (projects.length === 0) {
-        console.log("No projects yet. Run: tpm new project <slug>");
+        print("No projects yet. Run: tpm new project <slug>");
         break;
       }
       const passes = (t: Task) => {
@@ -157,7 +158,7 @@ try {
         newParent = parentMatch.task;
       }
       const r = mutate.reparent(match.task, newParent);
-      console.log(r.message);
+      print(r.message);
       console.log(`-> ${r.newPath}`);
       break;
     }
@@ -200,12 +201,12 @@ try {
       }
       const task = resolveLiveTask(slug, "tpm report <slug> [--export text]");
       const r = mutate.addReport(task);
-      console.log(r.message);
+      print(r.message);
       break;
     }
     case "init": {
       const result = init(args[1]);
-      console.log(`tpm tree at ${result.root}`);
+      print(`tpm tree at ${result.root}`);
       console.log(`config:    ${result.configPath}`);
       if (result.created.length) {
         console.log(`created:`);
@@ -292,74 +293,74 @@ try {
     }
     case "start": {
       const r = mutate.start(resolveLiveTask(args[1], "tpm start <task>"));
-      console.log(r.message);
+      print(r.message);
       break;
     }
     case "ready": {
       const r = mutate.ready(resolveLiveTask(args[1], "tpm ready <task>"));
-      console.log(r.message);
+      print(r.message);
       break;
     }
     case "block": {
       const reason = args[2];
       if (!args[1] || !reason) usage('tpm block <task> "<reason>"');
       const r = mutate.block(resolveLiveTask(args[1], 'tpm block <task> "<reason>"'), reason);
-      console.log(r.message);
+      print(r.message);
       break;
     }
     case "reopen": {
       const reason = args[2];
       const r = mutate.reopen(resolveLiveTask(args[1], 'tpm reopen <task> ["<reason>"]'), reason);
-      console.log(r.message);
+      print(r.message);
       break;
     }
     case "pull": {
       const r = mutate.pullFromQueue(resolveLiveTask(args[1], "tpm pull <task>"));
-      console.log(r.message);
+      print(r.message);
       break;
     }
     case "revert": {
       const reason = args[2];
       const r = mutate.revert(resolveLiveTask(args[1], 'tpm revert <task> ["<reason>"]'), reason);
-      console.log(r.message);
+      print(r.message);
       break;
     }
     case "log": {
       const message = args[2];
       if (!args[1] || !message) usage('tpm log <task> "<message>"');
       const r = mutate.logEntry(resolveLiveTask(args[1], 'tpm log <task> "<message>"'), message);
-      console.log(r.message);
+      print(r.message);
       break;
     }
     case "pr": {
       const url = args[2];
       if (!args[1] || !url) usage("tpm pr <task> <url>");
       const r = mutate.addPr(resolveLiveTask(args[1], "tpm pr <task> <url>"), url);
-      console.log(r.message);
+      print(r.message);
       break;
     }
     case "status": {
       const newStatus = args[2];
       if (!args[1] || !newStatus) usage("tpm status <task> <new-status>");
       const r = mutate.setStatus(resolveLiveTask(args[1], "tpm status <task> <new-status>"), newStatus);
-      console.log(r.message);
+      print(r.message);
       break;
     }
     case "allow": {
       const r = mutate.setAllowOrchestrator(resolveLiveTask(args[1], "tpm allow <task>"), true);
-      console.log(r.message);
+      print(r.message);
       break;
     }
     case "disallow": {
       const r = mutate.setAllowOrchestrator(resolveLiveTask(args[1], "tpm disallow <task>"), false);
-      console.log(r.message);
+      print(r.message);
       break;
     }
     case "set-type": {
       const newType = args[2];
       if (!args[1] || !newType) usage("tpm set-type <task> <pr|investigation>");
       const r = mutate.setType(resolveLiveTask(args[1], "tpm set-type <task> <type>"), newType);
-      console.log(r.message);
+      print(r.message);
       break;
     }
     case "complete": {
@@ -373,7 +374,7 @@ try {
         outcome,
         archive: archiveOpt,
       });
-      console.log(r.message);
+      print(r.message);
       if (r.archivedAt) console.log(`Archived -> ${r.archivedAt}`);
       break;
     }
@@ -384,7 +385,7 @@ try {
       if (!args[1]) usage('tpm drop <task> ["<reason>"]');
       const reason = args[2];
       const r = mutate.drop(resolveLiveTask(args[1], 'tpm drop <task> ["<reason>"]'), reason);
-      console.log(r.message);
+      print(r.message);
       break;
     }
     case "lgtm": {
@@ -399,7 +400,7 @@ try {
       const reportText = readFileSync(absPath, "utf8");
       const outcome = mutate.deriveReportOutcome(reportText);
       const r = mutate.complete(task, { outcome });
-      console.log(r.message);
+      print(r.message);
       if (r.archivedAt) console.log(`Archived -> ${r.archivedAt}`);
       break;
     }
@@ -410,7 +411,7 @@ try {
         resolveLiveTask(args[1], 'tpm request-changes <task> "<comment>"'),
         comment,
       );
-      console.log(r.message);
+      print(r.message);
       break;
     }
     case "edit": {
@@ -434,7 +435,7 @@ try {
         value,
         { expectMtimeMs },
       );
-      console.log(r.message);
+      print(r.message);
       break;
     }
     case "edit-project": {
@@ -458,7 +459,7 @@ try {
         value,
         { expectMtimeMs },
       );
-      console.log(r.message);
+      print(r.message);
       break;
     }
     case "lock": {
@@ -474,7 +475,7 @@ try {
             warnLegacyGlobalLock("acquire");
             const r = lock.acquire(root);
             if (!r.acquired) {
-              console.error(`tpm lock: ${r.reason}`);
+              console.error(brandCli(`tpm lock: ${r.reason}`));
               process.exit(1);
             }
             if (r.takeover) {
@@ -489,7 +490,7 @@ try {
           const slug = qualifySlugString(root, positional);
           const r = lock.acquireTask(root, slug, agentId);
           if (!r.acquired) {
-            console.error(`tpm lock: ${r.reason}`);
+            console.error(brandCli(`tpm lock: ${r.reason}`));
             process.exit(1);
           }
           console.log(`acquired ${slug} as ${agentId}`);
@@ -501,16 +502,16 @@ try {
             warnLegacyGlobalLock("release");
             const r = lock.release(root, force);
             if (!r.released) {
-              console.error(`tpm lock: ${r.message}`);
+              console.error(brandCli(`tpm lock: ${r.message}`));
               process.exit(1);
             }
-            console.log(r.message);
+            print(r.message);
             break;
           }
           const slug = qualifySlugString(root, positional);
           const r = lock.releaseTask(root, slug, agentId ?? "", force);
           if (!r.released) {
-            console.error(`tpm lock: ${r.message}`);
+            console.error(brandCli(`tpm lock: ${r.message}`));
             process.exit(1);
           }
           console.log(`${r.message}: ${slug}`);
@@ -522,7 +523,7 @@ try {
           const slug = qualifySlugString(root, positional);
           const r = lock.heartbeatTask(root, slug, agentId);
           if (!r.ok) {
-            console.error(`tpm lock: ${r.message}`);
+            console.error(brandCli(`tpm lock: ${r.message}`));
             process.exit(1);
           }
           console.log(`${r.message}: ${slug}`);
@@ -758,10 +759,12 @@ try {
     }
     case "loop": {
       // Long-running drain harness: poll + orchestrate on independent cadences
-      // in one foreground process. Each tick is spawned as a child `tpm` (via
-      // the resolved bin) so a crash/hang in one can't take the loop down.
+      // in one foreground process. Each tick is spawned as a child `node
+      // <this cli.ts>` so a crash/hang in one can't take the loop down — and so
+      // it works cross-platform without depending on a runnable bin shim (the
+      // Windows .cmd can't be spawned directly; the bash shim isn't on Windows).
       const opts = parseLoopArgs(args.slice(1), usage);
-      await runLoop(resolveTpmBin(), opts);
+      await runLoop(fileURLToPath(import.meta.url), opts);
       break;
     }
     case "inbox": {
@@ -798,11 +801,12 @@ try {
             usage("tpm schedule install <name> --every <seconds> -- <cmd> [args...]");
           }
           const cmdArgs = args.slice(dashIdx + 1);
-          // Convenience: if the user typed bare `tpm` (no path separator),
-          // substitute the absolute path of THIS install. Systemd's PATH for
-          // user services is usually thin and cron's is thinner — an absolute
-          // path makes the unit work without further env wiring.
-          if (cmdArgs[0] === "tpm") cmdArgs[0] = resolveTpmBin();
+          // Convenience: if the user typed the bare command (`tpm`, or `tpmgr`
+          // on Windows), substitute the absolute path of THIS install's shim.
+          // Systemd's PATH for user services is usually thin and cron's is
+          // thinner — an absolute path makes the unit work without further env
+          // wiring (and on Windows dodges the tpm.msc collision).
+          if (cmdArgs[0] === "tpm" || cmdArgs[0] === "tpmgr") cmdArgs[0] = resolveTpmBin();
           scheduler.install({ name, args: cmdArgs, intervalSeconds });
           console.log(`scheduled ${name} (every ${intervalSeconds}s)`);
           break;
@@ -874,7 +878,7 @@ try {
       process.exit(1);
   }
 } catch (e: unknown) {
-  console.error(e instanceof Error ? e.message : String(e));
+  console.error(brandCli(e instanceof Error ? e.message : String(e)));
   process.exit(1);
 }
 
@@ -987,8 +991,15 @@ function formatTaskLine(t: Task, depth: number, displayStatus?: string): string 
 }
 
 function usage(msg: string): never {
-  console.error(msg);
+  console.error(brandCli(msg));
   process.exit(1);
+}
+
+// Print to stdout, rewriting the `tpm` command token to the platform name
+// (`tpmgr` on Windows) so every hint a user sees names the command they can
+// actually type. Mutation result messages and one-off hints route through here.
+function print(msg: string): void {
+  console.log(brandCli(msg));
 }
 
 function readVersion(): string {
@@ -997,26 +1008,28 @@ function readVersion(): string {
   return typeof pkg.version === "string" ? pkg.version : "0.0.0";
 }
 
-// Resolve the absolute path to this install's `bin/tpm`, so `tpm schedule
-// install <name> ... -- tpm <args>` writes a unit/cron line that runs even
-// when the scheduler's PATH doesn't include the user's normal shell PATH.
-// Honors $TPM_BIN as an explicit override. Falls back to bare "tpm" if the
-// shim isn't where we expect (someone reorganized the repo).
+// Resolve the absolute path to this install's bin shim, so `tpm schedule
+// install <name> ... -- tpm <args>` writes a unit/cron/Task Scheduler line that
+// runs even when the scheduler's PATH doesn't include the user's normal shell
+// PATH. Platform-specific: `bin/tpmgr.cmd` on Windows (the bash shim `bin/tpm`
+// is unrunnable by Task Scheduler, and bare `tpm` hits tpm.msc), `bin/tpm`
+// elsewhere. Honors $TPM_BIN as an explicit override. Falls back to the bare
+// command name if the shim isn't where we expect (someone reorganized the repo).
 function resolveTpmBin(): string {
   const override = process.env.TPM_BIN;
   if (override && isAbsolute(override) && existsSync(override)) return override;
   try {
     const here = fileURLToPath(import.meta.url);
-    const candidate = resolve(dirname(here), "..", "..", "bin", "tpm");
+    const candidate = resolve(dirname(here), "..", "..", "bin", shimFileName());
     if (existsSync(candidate)) return candidate;
   } catch {
     // ignore
   }
-  return "tpm";
+  return CLI_NAME;
 }
 
 function help(): void {
-  console.log(`tpm ${VERSION} — task & project manager
+  console.log(brandCli(`tpm ${VERSION} — task & project manager
 
 Usage:
   tpm init [<dir>]                          bootstrap a tree (default: ~/tpm)
@@ -1103,5 +1116,5 @@ Layout (inside a tree):
   .tpm/templates/                            task & project templates
 
 Tree root: ${CONFIG_PATH} -> root  (set by \`tpm init\`).
-`);
+`));
 }

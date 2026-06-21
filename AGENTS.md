@@ -12,6 +12,8 @@ For shipping rules specific to **this repo** (the tpm CLI itself), see `CONTRIBU
 
 Run `tpm --help` to discover every subcommand and flag. The action procedures below name the specific commands they need.
 
+> **On Windows the command is `tpmgr`, not `tpm`** — bare `tpm` resolves to the built-in `tpm.msc` (TPM console), which shadows any user shim. Everywhere this guide says `tpm`, run `tpmgr` on Windows. (macOS/Linux: `tpm`.)
+
 ## Schema
 
 - **Project frontmatter**: `name, slug, status, created, repo: {remote, local}, host, tags`. `host` is `github` (default) or `ado` — see the dispatch bullet under Conventions.

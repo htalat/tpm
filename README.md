@@ -9,7 +9,8 @@ Markdown-based task & project manager. CLI-driven, agent-friendly. Zero deps —
 This repo (the CLI install):
 ```
 bin/tpm                            entry (bash shim → src/core/cli.ts)
-bin/tpm.cmd                        entry (Windows shim → src/core/cli.ts)
+bin/tpmgr                          entry (Windows Git Bash shim → src/core/cli.ts)
+bin/tpmgr.cmd                      entry (Windows cmd/PowerShell shim → src/core/cli.ts)
 src/core/                          orchestration, task tree, mutations, CLI dispatch (entry: src/core/cli.ts)
 src/web/                           the web dashboard (`tpm serve`) + shared HTML/CSS
 src/util/                          dependency-free helpers (markdown, frontmatter, time)
@@ -123,23 +124,38 @@ tpm init
 
 ### Windows
 
-Same idea, different shim. `bin/tpm.cmd` is the Windows entry — drop a copy
-(or a [`mklink`](https://learn.microsoft.com/windows-server/administration/windows-commands/mklink)
-junction) under a directory on `%PATH%`, then `tpm` works the same as on
-macOS/Linux. Requires Node 22.18+ for native TypeScript.
+**The command is `tpmgr`, not `tpm`, on Windows.** Bare `tpm` collides with the
+built-in `tpm.msc` (the Trusted Platform Module management console): `.MSC` is in
+`PATHEXT` and `%WINDIR%\system32` sits ahead of every user directory on `%PATH%`,
+so a `tpm.cmd` of your own can never win. The repo ships `bin\tpmgr.cmd`
+(cmd/PowerShell) and `bin\tpmgr` (Git Bash) under the collision-free name. Needs
+Node 22.18+ for native TypeScript.
 
-```cmd
-:: From a cmd.exe inside the repo
-mkdir "%USERPROFILE%\.local\bin" 2>nul
-copy /Y "%CD%\bin\tpm.cmd" "%USERPROFILE%\.local\bin\tpm.cmd"
-:: Ensure %USERPROFILE%\.local\bin is on PATH (one-time, via System Properties
-:: → Environment Variables, or `setx PATH "%PATH%;%USERPROFILE%\.local\bin"`).
-tpm init
+Each shim resolves the repo from its own location, so the simplest, most durable
+install is to **put the repo's `bin\` directory on `%PATH%`** — no copying, and
+`git pull`s to the repo are picked up automatically:
+
+```powershell
+# From a PowerShell inside the repo. Appends <repo>\bin to your *user* PATH.
+setx PATH "$env:Path;$(Resolve-Path .\bin)"
+# Open a new terminal so PATH refreshes, then:
+tpmgr init
 ```
 
-PowerShell users can use `Copy-Item` or `New-Item -ItemType SymbolicLink`
-instead — the `.cmd` is just a thin `node src/core/cli.ts %*` wrapper, so any
-mechanism that puts it on `PATH` works.
+Prefer to keep a single bin directory instead? Drop a one-line launcher that
+points at the repo by absolute path (this does *not* copy `tpmgr.cmd` — its
+relative `%~dp0..` resolution only works from inside the repo's `bin\`):
+
+```powershell
+$bin = "$env:USERPROFILE\.local\bin"; New-Item -ItemType Directory -Force $bin | Out-Null
+"@echo off`r`nnode `"$(Resolve-Path .\src\core\cli.ts)`" %*" |
+  Set-Content -Encoding ascii "$bin\tpmgr.cmd"
+# Ensure %USERPROFILE%\.local\bin is on PATH (setx as above), open a new
+# terminal, then `tpmgr init`.
+```
+
+Everywhere this README (and the docs / the `/tpm` skill) says `tpm`, run `tpmgr`
+on Windows.
 
 ## Setting up the harness
 
@@ -316,7 +332,7 @@ tpm schedule uninstall poll
 
 **macOS:** `tpm schedule` is not yet wired up on Darwin — the launchd adapter is a follow-up (separate task). For now, stick with the manual `crontab` examples above on macOS.
 
-A bare `tpm` as the command (i.e. `-- tpm <args>`) is auto-resolved to this install's absolute `bin/tpm` so the unit/cron/Task Scheduler line keeps working under the stripped `PATH` that systemd-user, cron, and schtasks all see. Override with `TPM_BIN=/abs/path/to/tpm tpm schedule install ...` if you keep multiple installs. On Windows, the binary install shim lands in a follow-up task — until then, pass an absolute path to your `tpm.cmd` (or whatever shim you've wired up) instead of bare `tpm`.
+A bare command (`-- tpm <args>`, or `-- tpmgr <args>` on Windows) is auto-resolved to this install's absolute bin shim — `bin/tpm` on macOS/Linux, `bin/tpmgr.cmd` on Windows — so the unit/cron/Task Scheduler line keeps working under the stripped `PATH` that systemd-user, cron, and schtasks all see. Override with `TPM_BIN=/abs/path/to/shim tpm schedule install ...` if you keep multiple installs.
 
 ### Live dashboard
 
