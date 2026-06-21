@@ -5,7 +5,8 @@
   "type": "module",
   "private": true,
   "bin": {
-    "tpm": "./bin/tpm"
+    "tpm": "./bin/tpm",
+    "tpmgr": "./bin/tpmgr"
   },
   "scripts": {
     "test": "node --test 'src/**/*.test.ts'",

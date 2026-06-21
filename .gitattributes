@@ -13,6 +13,7 @@
 *.bat       text eol=crlf
 *.ps1       text eol=crlf
 
-# The bash shim (no extension) is executed on Unix only — keep LF so the
-# shebang line works.
+# The bash shims (no extension) are executed by a POSIX shell — keep LF so the
+# shebang line works. bin/tpmgr is the Windows-Git-Bash twin of bin/tpm.
 bin/tpm     text eol=lf
+bin/tpmgr   text eol=lf

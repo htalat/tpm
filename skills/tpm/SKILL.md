@@ -13,6 +13,8 @@ This skill is the Claude Code dispatch wrapper. The action procedures (situation
 
 Run `tpm --help` to discover every subcommand and flag. The action procedures below name the specific commands they need.
 
+**On Windows the CLI is `tpmgr`, not `tpm`** (bare `tpm` resolves to the built-in `tpm.msc` TPM console). When you shell out on Windows, substitute `tpmgr` for `tpm` in every command below. The `/tpm` slash command itself is unaffected — it's invoked by skill name, not the OS command.
+
 ## Schema
 
 - **Project frontmatter**: `name, slug, status, created, repo: {remote, local}, host, tags`. `host` is `github` (default) or `ado` — see the dispatch bullet under Conventions.
