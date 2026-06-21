@@ -13,7 +13,7 @@ import { findTask, findRepoTarget } from "./resolve.ts";
 import { init } from "./init.ts";
 import { CONFIG_PATH, readConfig, writeConfig, serveBaseUrl } from "./config.ts";
 import { now } from "../util/time.ts";
-import { brandCli } from "../util/cli_name.ts";
+import { brandCli, shimFileName, CLI_NAME } from "../util/cli_name.ts";
 import * as mutate from "./mutate.ts";
 import * as lock from "./orchestrate/lock.ts";
 import { runOrchestrate } from "./orchestrate/orchestrate.ts";
@@ -759,10 +759,12 @@ try {
     }
     case "loop": {
       // Long-running drain harness: poll + orchestrate on independent cadences
-      // in one foreground process. Each tick is spawned as a child `tpm` (via
-      // the resolved bin) so a crash/hang in one can't take the loop down.
+      // in one foreground process. Each tick is spawned as a child `node
+      // <this cli.ts>` so a crash/hang in one can't take the loop down — and so
+      // it works cross-platform without depending on a runnable bin shim (the
+      // Windows .cmd can't be spawned directly; the bash shim isn't on Windows).
       const opts = parseLoopArgs(args.slice(1), usage);
-      await runLoop(resolveTpmBin(), opts);
+      await runLoop(fileURLToPath(import.meta.url), opts);
       break;
     }
     case "inbox": {
@@ -799,11 +801,12 @@ try {
             usage("tpm schedule install <name> --every <seconds> -- <cmd> [args...]");
           }
           const cmdArgs = args.slice(dashIdx + 1);
-          // Convenience: if the user typed bare `tpm` (no path separator),
-          // substitute the absolute path of THIS install. Systemd's PATH for
-          // user services is usually thin and cron's is thinner — an absolute
-          // path makes the unit work without further env wiring.
-          if (cmdArgs[0] === "tpm") cmdArgs[0] = resolveTpmBin();
+          // Convenience: if the user typed the bare command (`tpm`, or `tpmgr`
+          // on Windows), substitute the absolute path of THIS install's shim.
+          // Systemd's PATH for user services is usually thin and cron's is
+          // thinner — an absolute path makes the unit work without further env
+          // wiring (and on Windows dodges the tpm.msc collision).
+          if (cmdArgs[0] === "tpm" || cmdArgs[0] === "tpmgr") cmdArgs[0] = resolveTpmBin();
           scheduler.install({ name, args: cmdArgs, intervalSeconds });
           console.log(`scheduled ${name} (every ${intervalSeconds}s)`);
           break;
@@ -1005,22 +1008,24 @@ function readVersion(): string {
   return typeof pkg.version === "string" ? pkg.version : "0.0.0";
 }
 
-// Resolve the absolute path to this install's `bin/tpm`, so `tpm schedule
-// install <name> ... -- tpm <args>` writes a unit/cron line that runs even
-// when the scheduler's PATH doesn't include the user's normal shell PATH.
-// Honors $TPM_BIN as an explicit override. Falls back to bare "tpm" if the
-// shim isn't where we expect (someone reorganized the repo).
+// Resolve the absolute path to this install's bin shim, so `tpm schedule
+// install <name> ... -- tpm <args>` writes a unit/cron/Task Scheduler line that
+// runs even when the scheduler's PATH doesn't include the user's normal shell
+// PATH. Platform-specific: `bin/tpmgr.cmd` on Windows (the bash shim `bin/tpm`
+// is unrunnable by Task Scheduler, and bare `tpm` hits tpm.msc), `bin/tpm`
+// elsewhere. Honors $TPM_BIN as an explicit override. Falls back to the bare
+// command name if the shim isn't where we expect (someone reorganized the repo).
 function resolveTpmBin(): string {
   const override = process.env.TPM_BIN;
   if (override && isAbsolute(override) && existsSync(override)) return override;
   try {
     const here = fileURLToPath(import.meta.url);
-    const candidate = resolve(dirname(here), "..", "..", "bin", "tpm");
+    const candidate = resolve(dirname(here), "..", "..", "bin", shimFileName());
     if (existsSync(candidate)) return candidate;
   } catch {
     // ignore
   }
-  return "tpm";
+  return CLI_NAME;
 }
 
 function help(): void {

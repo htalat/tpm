@@ -26,3 +26,11 @@ export function brandCliFor(name: string, text: string): string {
 export function brandCli(text: string): string {
   return brandCliFor(CLI_NAME, text);
 }
+
+// Filename of the bin/ shim a scheduler invokes (and `tpm loop`/`tpm schedule`
+// resolve to an absolute path). Windows must use `tpmgr.cmd` — `bin/tpm` is the
+// bash shim, unrunnable by Task Scheduler/cmd, and bare `tpm` hits tpm.msc.
+// Unix uses the `tpm` bash shim. Platform is a parameter so it's testable.
+export function shimFileName(platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? "tpmgr.cmd" : "tpm";
+}

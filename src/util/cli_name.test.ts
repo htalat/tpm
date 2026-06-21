@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { brandCliFor } from "./cli_name.ts";
+import { brandCliFor, shimFileName } from "./cli_name.ts";
 
 test("brandCliFor: no-op when the name is already tpm (non-Windows)", () => {
   const s = "No projects yet. Run: tpm new project <slug>";
@@ -30,4 +30,10 @@ test("brandCliFor: leaves the data dir, env vars, and job prefixes intact", () =
 test("brandCliFor: leaves the version banner intact (digit, not a subcommand)", () => {
   assert.equal(brandCliFor("tpmgr", "tpm 0.11.0 — task & project manager"),
     "tpm 0.11.0 — task & project manager");
+});
+
+test("shimFileName: Windows needs the .cmd shim, Unix uses the bash shim", () => {
+  assert.equal(shimFileName("win32"), "tpmgr.cmd");
+  assert.equal(shimFileName("linux"), "tpm");
+  assert.equal(shimFileName("darwin"), "tpm");
 });

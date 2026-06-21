@@ -332,7 +332,7 @@ tpm schedule uninstall poll
 
 **macOS:** `tpm schedule` is not yet wired up on Darwin — the launchd adapter is a follow-up (separate task). For now, stick with the manual `crontab` examples above on macOS.
 
-A bare `tpm` as the command (i.e. `-- tpm <args>`) is auto-resolved to this install's absolute `bin/tpm` so the unit/cron/Task Scheduler line keeps working under the stripped `PATH` that systemd-user, cron, and schtasks all see. Override with `TPM_BIN=/abs/path/to/tpm tpm schedule install ...` if you keep multiple installs. On Windows, the binary install shim lands in a follow-up task — until then, pass an absolute path to your `tpm.cmd` (or whatever shim you've wired up) instead of bare `tpm`.
+A bare command (`-- tpm <args>`, or `-- tpmgr <args>` on Windows) is auto-resolved to this install's absolute bin shim — `bin/tpm` on macOS/Linux, `bin/tpmgr.cmd` on Windows — so the unit/cron/Task Scheduler line keeps working under the stripped `PATH` that systemd-user, cron, and schtasks all see. Override with `TPM_BIN=/abs/path/to/shim tpm schedule install ...` if you keep multiple installs.
 
 ### Live dashboard
 
