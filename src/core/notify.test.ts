@@ -116,6 +116,27 @@ test("fireNotification: invokes injected powershell and survives a thrown error"
   );
 });
 
+test("fireNotification: invokes injected notify-send and survives a thrown error", () => {
+  const calls: Array<[string, string]> = [];
+  fireNotification("tpm", "001-t: finish", { notifySend: (t, m) => calls.push([t, m]) });
+  assert.deepEqual(calls, [["tpm", "001-t: finish"]]);
+
+  // Failure inside notify-send shouldn't propagate (best-effort contract).
+  assert.doesNotThrow(() =>
+    fireNotification("tpm", "001-t: fail", { notifySend: () => { throw new Error("boom"); } }),
+  );
+});
+
+test("fireNotification: Linux drops the URL (notify-send is display-only)", () => {
+  const calls: Array<unknown[]> = [];
+  // The notifySend seam takes only (title, message) — the URL never reaches it.
+  fireNotification("tpm", "001-t: finish", {
+    url: "http://127.0.0.1:7777/t/p/001-t",
+    notifySend: (...a) => calls.push(a),
+  });
+  assert.deepEqual(calls, [["tpm", "001-t: finish"]]);
+});
+
 test("fireNotification: macOS uses terminal-notifier when a URL is set and the binary is present", () => {
   const tn: Array<[string, string, string]> = [];
   const osa: Array<[string, string]> = [];

@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { DEFAULT_NOTIFICATIONS } from "./config.ts";
 import type { NotificationsConfig } from "./config.ts";
 import { firePowerShellNotification } from "./notify/powershell.ts";
+import { fireNotifySendNotification } from "./notify/notify-send.ts";
 import type { Project, Task } from "./tree.ts";
 
 export type NotifyEvent = "start" | "finish" | "fail";
@@ -58,6 +59,7 @@ export interface FireNotifyOpts {
   osascript?: (title: string, message: string) => void;
   terminalNotifier?: (title: string, message: string, url: string) => void;
   powershell?: (title: string, message: string, url?: string) => void;
+  notifySend?: (title: string, message: string) => void;
   hasTerminalNotifier?: () => boolean;
 }
 
@@ -66,7 +68,8 @@ export interface FireNotifyOpts {
 // denial never blocks the orchestrator.
 export function fireNotification(title: string, message: string, opts: FireNotifyOpts = {}): void {
   // A macOS seam (or the detection seam) forces the darwin path; `powershell`
-  // forces win32 — so the selection logic runs in tests on any host.
+  // forces win32; `notifySend` forces linux — so the selection logic runs in
+  // tests on any host.
   if (opts.osascript || opts.terminalNotifier || opts.hasTerminalNotifier) {
     fireDarwin(title, message, opts);
     return;
@@ -75,12 +78,20 @@ export function fireNotification(title: string, message: string, opts: FireNotif
     fireWindows(title, message, opts);
     return;
   }
+  if (opts.notifySend) {
+    fireLinux(title, message, opts);
+    return;
+  }
   if (process.platform === "darwin") {
     fireDarwin(title, message, opts);
     return;
   }
   if (process.platform === "win32") {
     fireWindows(title, message, opts);
+    return;
+  }
+  if (process.platform === "linux") {
+    fireLinux(title, message, opts);
     return;
   }
   // No portable system-notification channel for this platform yet. Log to
@@ -108,6 +119,16 @@ function fireWindows(title: string, message: string, opts: FireNotifyOpts): void
     return;
   }
   firePowerShellNotification(title, message, { url: opts.url });
+}
+
+// Linux: `notify-send` (libnotify). Display-only — no portable click action, so
+// `url` is intentionally ignored (see notify-send.ts).
+function fireLinux(title: string, message: string, opts: FireNotifyOpts): void {
+  if (opts.notifySend) {
+    try { opts.notifySend(title, message); } catch { /* best-effort */ }
+    return;
+  }
+  fireNotifySendNotification(title, message);
 }
 
 function defaultOsascript(title: string, message: string): void {
