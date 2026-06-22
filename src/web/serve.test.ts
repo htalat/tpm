@@ -140,6 +140,38 @@ test("route: /p/<unknown> returns 404", () => {
   assert.equal(r.status, 404);
 });
 
+test("route: /p/<project>/<id> redirects to the matching task page", () => {
+  const p = project("alpha", [task("012-foo", "ready"), task("013-bar", "open")]);
+  const r = route("/p/alpha/12", new URLSearchParams(), [p]);
+  assert.equal(r.status, 302);
+  assert.equal(r.location, "/t/alpha/012-foo");
+});
+
+test("route: /p/<project>/<id> matches a child task by its numeric prefix", () => {
+  const child = task("003-child", "ready", { parent: "001-parent" });
+  child.parent = "001-parent";
+  const parent = task("001-parent", "ready");
+  parent.children = [child];
+  const r = route("/p/alpha/3", new URLSearchParams(), [project("alpha", [parent])]);
+  assert.equal(r.status, 302);
+  assert.equal(r.location, "/t/alpha/001-parent/003-child");
+});
+
+test("route: /p/<project>/<unknown-id> bounces to project home with a toast", () => {
+  const p = project("alpha", [task("012-foo", "ready")]);
+  const r = route("/p/alpha/99", new URLSearchParams(), [p]);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/p\/alpha\?flash=/);
+  assert.match(decodeURIComponent(r.location ?? ""), /No task #99/);
+});
+
+test("route: /p/<unknown-project>/<id> bounces to home with a toast", () => {
+  const r = route("/p/nope/12", new URLSearchParams(), []);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/\?flash=/);
+  assert.match(decodeURIComponent(r.location ?? ""), /No project "nope"/);
+});
+
 test("route: /t/<project>/<slug> renders task view (sidebar + body)", () => {
   const t = task("001-foo", "in-progress", { prs: ["https://github.com/x/y/pull/1"] });
   const p = project("alpha", [t]);
