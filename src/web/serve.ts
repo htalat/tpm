@@ -9,7 +9,7 @@ import { loadProjects, flatTasks, isParent, rollupStatus, taskHasReport, taskRep
 import { KNOWN_TASK_TYPES } from "../core/new.ts";
 import type { Project, Task } from "../core/tree.ts";
 import { findRoot } from "../core/root.ts";
-import { findTask } from "../core/resolve.ts";
+import { findTask, findTasksByNumericId } from "../core/resolve.ts";
 import { resolveRepo } from "../core/context.ts";
 import { now } from "../util/time.ts";
 import { inboxItems } from "../core/queue.ts";
@@ -420,6 +420,27 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const typeParam = params.get("type");
     const filter: ArtifactFilter = typeParam === "pr" || typeParam === "report" ? typeParam : "all";
     return ok("text/html; charset=utf-8", renderArtifacts(project, projects, filter, prCache));
+  }
+  // Permalink by numeric id: `/p/<project>/<id>` -> the task whose slug prefix
+  // is that id (e.g. /p/tpm/12 -> /t/tpm/012-foo). Lets you jump straight to a
+  // task from its id without knowing the slug. No match -> bounce to the project
+  // home (or the global home if the project is unknown) with a toast saying why.
+  const projectTaskIdMatch = pathname.match(/^\/p\/([^/]+)\/(\d+)\/?$/);
+  if (projectTaskIdMatch) {
+    const slug = decodeURIComponent(projectTaskIdMatch[1]);
+    const id = Number(projectTaskIdMatch[2]);
+    const project = projects.find(p => p.slug === slug);
+    if (!project) {
+      return redirect(303, `/?flash=${encodeURIComponent(`No project "${slug}"`)}`);
+    }
+    const matches = findTasksByNumericId(project, id);
+    if (matches.length === 1) {
+      return redirect(302, taskPath(project, matches[0].task));
+    }
+    const reason = matches.length > 1
+      ? `Multiple tasks match #${id} in ${project.slug} — open one from the list`
+      : `No task #${id} in ${project.slug}`;
+    return redirect(303, `/p/${encodeURIComponent(project.slug)}?flash=${encodeURIComponent(reason)}`);
   }
   const projectMatch = pathname.match(/^\/p\/([^/]+)\/?$/);
   if (projectMatch) {
