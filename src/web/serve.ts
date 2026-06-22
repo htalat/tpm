@@ -746,6 +746,16 @@ function routeNewTask(projectSlug: string, body: URLSearchParams, runner: CliRun
       ? `${flash} (with Context)`
       : `${flash} — but Context failed: ${editResult.stderr || editResult.stdout || "edit failed"}`;
   }
+  // "Create & ready" submit button: promote the brand-new task to ready in the
+  // same round-trip (same as `tpm ready <slug>` — sets allow_orchestrator too).
+  // A failed promotion is harmless (the task still exists at `open`), so on
+  // failure we keep the created task and surface the reason in the flash.
+  if (body.get("ready")) {
+    const readyResult = runner(["ready", slug]);
+    flash = readyResult.ok
+      ? `${flash} (readied)`
+      : `${flash} — but ready failed: ${readyResult.stderr || readyResult.stdout || "ready failed"}`;
+  }
   return flashTo(taskHref, flash);
 }
 
@@ -1174,7 +1184,10 @@ function renderNewTaskForm(project: Project, opts: RouteOpts): string {
     <label>Context <span class="meta">(optional; lands in ## Context)</span>
       <textarea name="context" rows="6" placeholder="Facts I have right now…"></textarea>
     </label>
-    <button type="submit">Create task</button>
+    <div class="new-task-buttons">
+      <button type="submit">Create task</button>
+      <button type="submit" name="ready" value="1">Create &amp; ready</button>
+    </div>
   </form>
   <script>${NEW_TASK_SLUG_SCRIPT}</script>
 </details>`;
