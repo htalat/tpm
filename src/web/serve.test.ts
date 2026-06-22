@@ -2361,6 +2361,50 @@ test("route: run panel omits the session line when the log has no session id", (
   assert.doesNotMatch(r.body, /class="run-meta">session/);
 });
 
+test("route: task detail surfaces session_id frontmatter as a claude --resume snippet", () => {
+  const t = task("001-foo", "needs-review", { session_id: "fm-sess-789" });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], {
+    runLog: () => null,
+  });
+  assert.match(r.body, /<dt>Session<\/dt><dd><code>claude --resume fm-sess-789<\/code><\/dd>/);
+});
+
+test("route: task detail prefers the live run-log session id over the frontmatter one", () => {
+  const t = task("001-foo", "needs-review", { session_id: "fm-stale" });
+  const p = project("alpha", [t]);
+  const text = JSON.stringify({ type: "system", subtype: "init", session_id: "run-live" });
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], {
+    runLog: runLogOf(text),
+  });
+  assert.match(r.body, /claude --resume run-live/);
+  // Don't double-render: the stale frontmatter id must not also appear.
+  assert.doesNotMatch(r.body, /fm-stale/);
+});
+
+test("route: task detail omits the Session row when no run log and no frontmatter id", () => {
+  const t = task("001-foo", "needs-review");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], {
+    runLog: () => null,
+  });
+  assert.doesNotMatch(r.body, /<dt>Session<\/dt>/);
+});
+
+test("route: archived task still surfaces its session_id on the detail page", () => {
+  // Most closed pr-type tasks are archived; the run-log reader works off the
+  // task's on-disk path regardless of archive location, and the frontmatter
+  // fallback covers tasks whose logs aren't present. Either way the operator
+  // gets a resume affordance.
+  const t = task("001-foo", "done", { session_id: "archived-sess" });
+  t.archived = true;
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], {
+    runLog: () => null,
+  });
+  assert.match(r.body, /claude --resume archived-sess/);
+});
+
 test("route: /t/<proj>/<slug>/runs auto-refreshes only when the task is in-progress", () => {
   const inProg = task("001-foo", "in-progress");
   const p1 = project("alpha", [inProg]);
