@@ -1737,6 +1737,9 @@ test("renderProject: renders a New task <details> form with slug/title/parent/ty
   assert.match(r.body, /<option[^>]*value="pr"[^>]*selected/);
   // Optional multi-line Context textarea, written into ## Context on submit.
   assert.match(r.body, /<textarea[^>]*name="context"[^>]*rows="6"/);
+  // Two submit buttons: plain create, and create-then-promote (ready=1).
+  assert.match(r.body, /<button[^>]*type="submit">Create task<\/button>/);
+  assert.match(r.body, /<button[^>]*type="submit"[^>]*name="ready"[^>]*value="1"[^>]*>Create &amp; ready<\/button>/);
 });
 
 test("renderProject: New task form renders Title before Slug", () => {
@@ -1902,6 +1905,68 @@ test("routeMutation: /p/<project>/new-task with Context fires a follow-up `tpm e
     ["edit", "add-thing", "context", "a fact I have right now"],
   ]);
   assert.match(decodeURIComponent(r.location ?? ""), /with Context/);
+});
+
+test("routeMutation: /p/<project>/new-task with ready=1 promotes the new task", () => {
+  // "Create & ready" submit: create lands first, then `tpm ready <slug>`
+  // promotes it (the same verb the task-page Promote button uses).
+  const { runner, calls } = captureRunner();
+  const params = new URLSearchParams();
+  params.set("slug", "add-thing");
+  params.set("ready", "1");
+  const r = routeMutation("/p/alpha/new-task", params, runner);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/t\/alpha\/add-thing\?flash=/);
+  assert.deepEqual(calls, [
+    ["new", "task", "alpha", "add-thing"],
+    ["ready", "add-thing"],
+  ]);
+  assert.match(decodeURIComponent(r.location ?? ""), /readied/);
+});
+
+test("routeMutation: /p/<project>/new-task with ready=1 readies after Context lands", () => {
+  // Create → Context edit → ready, in that order, all against the new slug.
+  const { runner, calls } = captureRunner();
+  const params = new URLSearchParams();
+  params.set("slug", "add-thing");
+  params.set("context", "a fact");
+  params.set("ready", "1");
+  routeMutation("/p/alpha/new-task", params, runner);
+  assert.deepEqual(calls, [
+    ["new", "task", "alpha", "add-thing"],
+    ["edit", "add-thing", "context", "a fact"],
+    ["ready", "add-thing"],
+  ]);
+});
+
+test("routeMutation: /p/<project>/new-task without ready skips the promote call", () => {
+  // Plain "Create task" submit: no ready field, no promotion, no "readied" suffix.
+  const { runner, calls } = captureRunner();
+  const r = routeMutation("/p/alpha/new-task", new URLSearchParams("slug=add-thing"), runner);
+  assert.deepEqual(calls, [["new", "task", "alpha", "add-thing"]]);
+  assert.doesNotMatch(decodeURIComponent(r.location ?? ""), /readied/);
+});
+
+test("routeMutation: /p/<project>/new-task keeps the task when ready promotion fails", () => {
+  // Create succeeds, ready refuses: don't roll back, still redirect to the new
+  // task, surface both the creation and the failed promotion in the flash.
+  let n = 0;
+  const runner: CliRunner = () => {
+    n += 1;
+    return n === 1
+      ? { ok: true, stdout: "Created task", stderr: "" }
+      : { ok: false, stdout: "", stderr: "ready: refused" };
+  };
+  const r = routeMutation(
+    "/p/alpha/new-task",
+    new URLSearchParams("slug=add-thing&ready=1"),
+    runner,
+  );
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/t\/alpha\/add-thing\?flash=/);
+  const flash = decodeURIComponent(r.location ?? "");
+  assert.match(flash, /Created task/);
+  assert.match(flash, /ready failed: ready: refused/);
 });
 
 test("routeMutation: /p/<project>/new-task with blank Context skips the edit call", () => {

@@ -206,6 +206,9 @@ body { max-width: 1600px; }
 .action-form textarea, .action-form input[type="text"], .action-form input[type="url"], .action-form select { width: 100%; padding: .35rem .5rem; border: 1px solid #d0d7de; border-radius: 4px; font: inherit; background: #fff; color: inherit; }
 .action-form button { align-self: flex-start; padding: .35rem .85rem; background: #0969da; color: #fff; border: 1px solid #0969da; border-radius: 6px; cursor: pointer; font: inherit; }
 .action-form button:hover { background: #0860c4; }
+.new-task-buttons { display: flex; flex-wrap: wrap; gap: .5rem; }
+.new-task-buttons button[name="ready"] { background: transparent; color: #0969da; }
+.new-task-buttons button[name="ready"]:hover { background: #ddf4ff; }
 @media (prefers-color-scheme: dark) {
   .flash { background: #4d3a00; border-color: #9a6700; color: #e6edf3; }
   .flash a.flash-dismiss { color: #8d96a0; }
@@ -214,6 +217,8 @@ body { max-width: 1600px; }
   .action-form textarea, .action-form input[type="text"], .action-form input[type="url"], .action-form select { background: #0d1117; border-color: #30363d; color: #e6edf3; }
   .action-form button { background: #1f6feb; border-color: #1f6feb; }
   .action-form button:hover { background: #388bfd; }
+  .new-task-buttons button[name="ready"] { background: transparent; color: #58a6ff; }
+  .new-task-buttons button[name="ready"]:hover { background: #131d2e; }
 }
 .new-task-form { margin: 1rem 0 1.5rem; padding: .5rem .85rem; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; }
 .new-task-form > summary { cursor: pointer; font-weight: 600; padding: .25rem 0; }
