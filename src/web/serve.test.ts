@@ -172,6 +172,44 @@ test("route: /p/<unknown-project>/<id> bounces to home with a toast", () => {
   assert.match(decodeURIComponent(r.location ?? ""), /No project "nope"/);
 });
 
+test("route: /t/<project>/<id> redirects to the matching task page", () => {
+  const p = project("alpha", [task("012-foo", "ready"), task("013-bar", "open")]);
+  const r = route("/t/alpha/12", new URLSearchParams(), [p]);
+  assert.equal(r.status, 302);
+  assert.equal(r.location, "/t/alpha/012-foo");
+});
+
+test("route: /t/<project>/<zero-padded-id> resolves like the bare id", () => {
+  const p = project("alpha", [task("003-foo", "ready")]);
+  for (const id of ["3", "03", "003"]) {
+    const r = route(`/t/alpha/${id}`, new URLSearchParams(), [p]);
+    assert.equal(r.status, 302, `id ${id}`);
+    assert.equal(r.location, "/t/alpha/003-foo", `id ${id}`);
+  }
+});
+
+test("route: /t/<project>/<id> matches a child task by its numeric prefix", () => {
+  const child = task("003-child", "ready", { parent: "001-parent" });
+  child.parent = "001-parent";
+  const parent = task("001-parent", "ready");
+  parent.children = [child];
+  const r = route("/t/alpha/3", new URLSearchParams(), [project("alpha", [parent])]);
+  assert.equal(r.status, 302);
+  assert.equal(r.location, "/t/alpha/001-parent/003-child");
+});
+
+test("route: /t/<project>/<unknown-id> returns 404 for the right reason", () => {
+  const p = project("alpha", [task("012-foo", "ready")]);
+  const r = route("/t/alpha/99", new URLSearchParams(), [p]);
+  assert.equal(r.status, 404);
+  assert.match(r.body, /No task #99 in alpha/);
+});
+
+test("route: /t/<unknown-project>/<id> returns 404", () => {
+  const r = route("/t/nope/12", new URLSearchParams(), []);
+  assert.equal(r.status, 404);
+});
+
 test("route: /t/<project>/<slug> renders task view (sidebar + body)", () => {
   const t = task("001-foo", "in-progress", { prs: ["https://github.com/x/y/pull/1"] });
   const p = project("alpha", [t]);

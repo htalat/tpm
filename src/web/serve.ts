@@ -515,6 +515,32 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const runs = runLogList(match.task);
     return ok("text/html; charset=utf-8", renderTaskRuns(projects, match.project, match.task, runs, runLog, slugPath));
   }
+  // Numeric-id shortcut on the canonical task path: `/t/<project>/<id>` ->
+  // `/t/<project>/<full-slug>` (e.g. /t/tpm/12 -> /t/tpm/012-foo). Mirrors the
+  // `/p/<project>/<id>` permalink above so the path users actually see in the
+  // address bar also accepts a bare task number, with or without leading zeros
+  // (`3`, `03`, `003` all resolve via the shared `findTasksByNumericId`). Placed
+  // before the greedy `/t/<slug>` matcher so a numeric final segment is read as
+  // an id, not a (never-valid) all-digits slug.
+  const taskByIdMatch = pathname.match(/^\/t\/([^/]+)\/(\d+)\/?$/);
+  if (taskByIdMatch) {
+    const slug = decodeURIComponent(taskByIdMatch[1]);
+    const project = projects.find(p => p.slug === slug);
+    // Unknown project: fall through to the greedy matcher below, which produces
+    // the uniform "No task" 404 (rather than special-casing it here).
+    if (project) {
+      const id = Number(taskByIdMatch[2]);
+      const matches = findTasksByNumericId(project, id);
+      if (matches.length === 1) {
+        return redirect(302, taskPath(project, matches[0].task));
+      }
+      if (matches.length > 1) {
+        const reason = `Multiple tasks match #${id} in ${project.slug} — open one from the list`;
+        return redirect(303, `/p/${encodeURIComponent(project.slug)}?flash=${encodeURIComponent(reason)}`);
+      }
+      return notFound(`No task #${id} in ${project.slug}`);
+    }
+  }
   const taskMatch = pathname.match(/^\/t\/(.+?)\/?$/);
   if (taskMatch) {
     const query = decodeURIComponent(taskMatch[1]);
