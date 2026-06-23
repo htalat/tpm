@@ -238,7 +238,9 @@ try {
       // Exits non-zero with a stderr note (not stdout) when there's no run or
       // no captured session id, so the `$(...)` substitution above stays empty
       // rather than swallowing an error string into the resume target.
-      const task = resolveLiveTask(args[1], "tpm session <task>");
+      // Include archived tasks: pr-type tasks are archived on completion, and
+      // resuming a closed task's agent run is exactly when you reach for this.
+      const task = resolveLiveTask(args[1], "tpm session <task>", { archived: true });
       const sessionId = latestSessionId(task);
       if (!sessionId) {
         console.error(
@@ -887,10 +889,19 @@ function parseFlag(args: string[], flag: string): string | undefined {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
-function resolveLiveTask(query: string | undefined, usageMsg: string): Task {
+// Resolve a task for verbs that act on it. By default only live (non-archived)
+// tasks are searched — mutating verbs (start/block/complete/…) shouldn't target
+// an archived task. Read-only verbs that still make sense post-archive (e.g.
+// `tpm session`, to resume a closed task's agent run) pass `{ archived: true }`
+// to widen the search, matching what `tpm context` does.
+function resolveLiveTask(
+  query: string | undefined,
+  usageMsg: string,
+  opts: { archived?: boolean } = {},
+): Task {
   if (!query) usage(usageMsg);
   const root = findRoot();
-  const projects = loadProjects(root);
+  const projects = loadProjects(root, opts.archived ? { archived: true } : undefined);
   const match = findTask(projects, query);
   if (!match) throw new Error(`No task matched "${query}". Try \`tpm ls\`.`);
   return match.task;
