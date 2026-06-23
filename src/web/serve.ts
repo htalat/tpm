@@ -528,7 +528,7 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const editingSection = editRaw && ["title", "context", "plan", "outcome"].includes(editRaw)
       ? editRaw
       : null;
-    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, projects, opts, prCache, taskLocks, editingSection));
+    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, projects, opts, prCache, taskLocks, editingSection, runLog));
   }
   return notFound(pathname);
 }
@@ -1376,6 +1376,7 @@ function renderTask(
   prCache: PrCacheReader = (url) => readPrCache(url),
   taskLocks: Map<string, TaskLockSnapshotEntry> = new Map(),
   editingSection: string | null = null,
+  runLog: RunLogReader = defaultRunLogReader,
 ): string {
   const repo = resolveRepo(project, task);
   const status = rollupStatus(task);
@@ -1410,6 +1411,21 @@ function renderTask(
   const allowBlock = isParent(task)
     ? ""
     : `<dt>Autonomous</dt><dd>${esc(allowField)}</dd>`;
+
+  // Surface the agent's session id on the detail page so an operator can
+  // resume the exact session the orchestrator spawned. Two sources can carry
+  // it: the latest run log (live source, read off the task's on-disk path so
+  // it works for archived tasks too) and the `session_id:` frontmatter field
+  // (backfilled across the tree). Prefer the run-log id when present — it's
+  // the freshest — and fall back to frontmatter for tasks whose run logs
+  // aren't on disk. Rendered as a copy-friendly `claude --resume <id>` snippet
+  // (matching the run panel's <code> affordance), not a bespoke copy control.
+  const runLogSnapshot = runLog(task);
+  const runLogSessionId = runLogSnapshot ? parseRunLog(runLogSnapshot.text).sessionId : null;
+  const sessionId = runLogSessionId ?? (strOr(task.data.session_id, "") || null);
+  const sessionBlock = sessionId
+    ? `<dt>Session</dt><dd><code>claude --resume ${esc(sessionId)}</code></dd>`
+    : "";
 
   const flashBanner = renderFlashBanner(opts.flash, taskHref(project, task));
 
@@ -1463,6 +1479,7 @@ ${headerBlock}
     <dl>
       <dt>Status</dt><dd><span class="badge s-${cls(status)}">${esc(status)}</span> ${headerLockChip}</dd>
       <dt>Type</dt><dd>${esc(strOr(task.data.type, "?"))}</dd>
+      ${sessionBlock}
       ${repoBlock}
       ${localBlock}
       <dt>Created</dt><dd>${esc(strOr(task.data.created, "?"))}</dd>
