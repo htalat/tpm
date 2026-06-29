@@ -341,6 +341,11 @@ try {
       print(r.message);
       break;
     }
+    case "review": {
+      const r = mutate.review(resolveLiveTask(args[1], "tpm review <task>"));
+      print(r.message);
+      break;
+    }
     case "status": {
       const newStatus = args[2];
       if (!args[1] || !newStatus) usage("tpm status <task> <new-status>");
@@ -1064,7 +1069,9 @@ Usage:
                                              rewrite the title (frontmatter) or one prose section; back-end for tpm serve's inline editor
   tpm edit-project <project> <name|goal|context|notes> "<value>" [--expect-mtime <ms>]
                                              rewrite the project name (frontmatter) or one prose section (Goal/Context/Notes); back-end for tpm serve's project editor
-  tpm pr <task> <url>                        add URL to prs:, log opened PR
+  tpm pr <task> <url>                        link a PR: append URL to prs: + flip in-progress -> needs-review (idempotent;
+                                             re-run to re-flag, pass a new URL to supersede a reopened/closed PR)
+  tpm review <task>                          flag a task for review: flip in-progress -> needs-review (the PR-less sugar over tpm pr)
   tpm report <task>                          attach a report artifact at <project>/tasks/<slug>/report.md (auto-folds file-form tasks);
                                              auto-flips in-progress -> needs-review (investigation analogue of tpm pr)
   tpm report <task> --export text            print the report as plain text (drops HTML comments)
