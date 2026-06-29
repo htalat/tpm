@@ -35,7 +35,7 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
 - **Project body**: `## Goal`, `## Context`, `## Notes`, `## Log`. The project Log is a timeline for events that don't belong to any single task — pivots, milestones, status flips, decisions that span multiple tasks. Use the same `- YYYY-MM-DD HH:MM ZZZ: <event>` format as task Logs. Keep per-task events in the task's own Log (don't double-write).
 - **Task body**: `## Context`, `## Plan`, `## Log`, `## Outcome`
 - Code work happens in `repo.local`. `tpm context` calls this out; `tpm path <target>` prints it for shell composition (`cd $(tpm path my-task)`).
-- For an agent-friendly briefing on a single task, run `tpm context <task>` or `tpm context <project>/<task>`.
+- For an agent-friendly briefing on a single task, run `tpm context <task>` or `tpm context <project>/<task>`. **`tpm context` is the sole, self-sufficient briefing.** It inlines the task body, the project's `## Notes` (project-level conventions / workflow guidance), a container's children (qualified refs + status), the repo's current branch + clean/dirty state, and a working agreement that names the `tpm` verbs for every state change. **Never `cat` the task file or `ls`/`find` the task tree** — it lives under the tpm tree root (`~/.tpm/config.json`), outside the repo sandbox, so your file tools can't reach it. Everything you need is in the briefing; everything you change goes through a `tpm` verb (`tpm log`, `tpm pr`, `tpm report`, `tpm complete`, `tpm block`, `tpm revert`).
 
 ## Slug resolution
 
@@ -109,7 +109,7 @@ When the user asks for one of these — by slash command, natural language, or a
 ### Start a task
 This is the primary action.
 1. Run `tpm context <slug>`. Read the briefing in full.
-2. If `tpm context` reports the task is a parent container (has children), don't try to work it directly. Print the children (`tpm ls --project <p>`) and ask the user which child to pick up.
+2. If `tpm context` reports the task is a parent container (has children), don't try to work it directly. The briefing's `### Children` section lists each child (qualified ref + status) — surface them and ask the user which child to pick up.
 3. **Dispatch by current status** (so this action does the right thing whatever state the poller left the task in):
    - `needs-feedback` → switch to **handle PR feedback** and stop the start flow.
    - `needs-close` → switch to **close out** and stop the start flow.
@@ -213,7 +213,7 @@ Don't:
 - **Force-push without `--force-with-lease`**. The lease check is the only thing standing between you and clobbering a reviewer's commit.
 
 ### Close out
-1. Read the task file.
+1. Run `tpm context <slug>` for the briefing (PRs, type, current status). Don't `cat` the task file — it's outside the repo sandbox.
 2. **Verify PR merge status** if `prs:` is non-empty. For each PR URL, run `gh pr view <url> --json state --jq '.state'`.
    - At least one `MERGED` → proceed.
    - All `OPEN` or `CLOSED` (none merged) → ask once: "PR not merged; close anyway?" Respect the answer. This is the only legitimate ask in close-out.

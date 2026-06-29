@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
@@ -383,6 +384,198 @@ test("context: no workflow set -> working agreement names the fallback chain", (
     assert.doesNotMatch(out, /Workflow:/);
     assert.match(out, /look for AGENTS\.md, then CLAUDE\.md, in the repo root/);
     assert.match(out, /If no doc is found, ask before each step/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("context: inlines the project's Notes section verbatim, labelled as conventions", () => {
+  const root = mkTempDir();
+  try {
+    mkdirSync(join(root, "p", "tasks"), { recursive: true });
+    writeFileSync(
+      join(root, "p", "project.md"),
+      `---\nname: P\nslug: p\nstatus: active\n---\n\n# P\n\n## Goal\nShip P.\n\n## Notes\nWork from \`dist/\`, branch off \`master\`, validate with \`node serve.js\`.\n\n## Log\n- 2026: x\n`,
+    );
+    writeFileSync(
+      join(root, "p", "tasks", "001-t.md"),
+      `---\ntitle: T\nslug: t\nproject: p\nstatus: open\ntype: pr\n---\n\n# T\n`,
+    );
+    const out = context(root, "p/t");
+    assert.match(out, /### Project notes \(conventions/);
+    assert.match(out, /Work from `dist\/`, branch off `master`, validate with `node serve\.js`\./);
+    // The Log section is project-internal — not part of the briefing.
+    assert.doesNotMatch(out, /## Log/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("context: omits the Notes section when it holds only its scaffold placeholder", () => {
+  const root = mkTempDir();
+  try {
+    mkdirSync(join(root, "p", "tasks"), { recursive: true });
+    writeFileSync(
+      join(root, "p", "project.md"),
+      `---\nname: P\nslug: p\nstatus: active\n---\n\n# P\n\n## Goal\nShip P.\n\n## Notes\n<!-- Living notes, decisions, open questions -->\n`,
+    );
+    writeFileSync(
+      join(root, "p", "tasks", "001-t.md"),
+      `---\ntitle: T\nslug: t\nproject: p\nstatus: open\ntype: pr\n---\n\n# T\n`,
+    );
+    const out = context(root, "p/t");
+    assert.doesNotMatch(out, /Project notes/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("context: container task lists its children with qualified refs + status", () => {
+  const root = mkTempDir();
+  try {
+    mkdirSync(join(root, "p", "tasks", "002-parent"), { recursive: true });
+    writeFileSync(
+      join(root, "p", "project.md"),
+      `---\nname: P\nslug: p\nstatus: active\n---\n\n# P\n`,
+    );
+    writeFileSync(
+      join(root, "p", "tasks", "002-parent", "task.md"),
+      `---\ntitle: Parent\nslug: parent\nproject: p\nstatus: in-progress\ntype: pr\n---\n\n# Parent\n`,
+    );
+    writeFileSync(
+      join(root, "p", "tasks", "002-parent", "002-child.md"),
+      `---\ntitle: A child task\nslug: child\nproject: p\nparent: 002-parent\nstatus: ready\ntype: pr\n---\n\n# A child task\n`,
+    );
+    const out = context(root, "p/parent");
+    assert.match(out, /### Children/);
+    assert.match(out, /This task is a container/);
+    assert.match(out, /- p\/002-parent\/002-child — A child task \[ready\]/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("context: leaf task has no Children section", () => {
+  const root = mkTempDir();
+  try {
+    setup(root);
+    const out = context(root, "alpha-only");
+    assert.doesNotMatch(out, /### Children/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("context: working agreement names CLI verbs, not direct task-file edits", () => {
+  const root = mkTempDir();
+  try {
+    setup(root);
+    const out = context(root, "alpha-only");
+    assert.match(out, /`tpm log alpha\/001-alpha-only "/);
+    assert.match(out, /`tpm pr alpha\/001-alpha-only <url>`/);
+    assert.match(out, /`tpm complete alpha\/001-alpha-only`/);
+    // No instruction to hand-edit the Log / frontmatter / prs of the task file.
+    assert.doesNotMatch(out, /Append progress to the "Log" section/);
+    assert.doesNotMatch(out, /set status: done in the frontmatter/);
+    assert.doesNotMatch(out, /append its URL to the prs: list/);
+    // The task-file path is never emitted as an edit target.
+    assert.doesNotMatch(out, /001-alpha-only\.md/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("context: investigation task's working agreement points at tpm report, not tpm pr", () => {
+  const root = mkTempDir();
+  try {
+    mkdirSync(join(root, "p", "tasks"), { recursive: true });
+    writeFileSync(
+      join(root, "p", "project.md"),
+      `---\nname: P\nslug: p\nstatus: active\n---\n\n# P\n`,
+    );
+    writeFileSync(
+      join(root, "p", "tasks", "001-t.md"),
+      `---\ntitle: T\nslug: t\nproject: p\nstatus: open\ntype: investigation\n---\n\n# T\n`,
+    );
+    const out = context(root, "p/t");
+    assert.match(out, /`tpm report p\/001-t`/);
+    assert.doesNotMatch(out, /tpm pr /);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("context: child task's working agreement uses the fully-qualified child ref", () => {
+  const root = mkTempDir();
+  try {
+    mkdirSync(join(root, "p", "tasks", "002-parent"), { recursive: true });
+    writeFileSync(
+      join(root, "p", "project.md"),
+      `---\nname: P\nslug: p\nstatus: active\n---\n\n# P\n`,
+    );
+    writeFileSync(
+      join(root, "p", "tasks", "002-parent", "task.md"),
+      `---\ntitle: Parent\nslug: parent\nproject: p\nstatus: in-progress\ntype: pr\n---\n\n# Parent\n`,
+    );
+    writeFileSync(
+      join(root, "p", "tasks", "002-parent", "002-child.md"),
+      `---\ntitle: Child\nslug: child\nproject: p\nparent: 002-parent\nstatus: ready\ntype: pr\n---\n\n# Child\n`,
+    );
+    const out = context(root, "p/parent/child");
+    assert.match(out, /`tpm log p\/002-parent\/002-child "/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("context: surfaces the repo's current branch + clean/dirty state", () => {
+  const root = mkTempDir();
+  const repo = mkTempDir();
+  try {
+    const git = (args: string[]) =>
+      execFileSync("git", args, {
+        cwd: repo,
+        stdio: ["ignore", "ignore", "ignore"],
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@e.x",
+          GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@e.x",
+        },
+      });
+    git(["init", "--initial-branch=main", "--quiet"]);
+    writeFileSync(join(repo, "README.md"), "hi\n");
+    git(["add", "."]);
+    git(["commit", "-m", "init", "--quiet"]);
+
+    mkdirSync(join(root, "p", "tasks"), { recursive: true });
+    writeFileSync(
+      join(root, "p", "project.md"),
+      `---\nname: P\nslug: p\nstatus: active\nrepo:\n  local: ${repo}\n---\n\n# P\n`,
+    );
+    writeFileSync(
+      join(root, "p", "tasks", "001-t.md"),
+      `---\ntitle: T\nslug: t\nproject: p\nstatus: open\ntype: pr\n---\n\n# T\n`,
+    );
+
+    const clean = context(root, "p/t");
+    assert.match(clean, /^- Branch: main \(clean\)$/m);
+
+    writeFileSync(join(repo, "README.md"), "changed\n");
+    const dirty = context(root, "p/t");
+    assert.match(dirty, /^- Branch: main \(dirty — uncommitted changes\)$/m);
+  } finally {
+    rmTempDir(root);
+    rmTempDir(repo);
+  }
+});
+
+test("context: no Branch line when repo.local is not a git repo", () => {
+  const root = mkTempDir();
+  try {
+    setup(root);
+    // beta's repo.local is /tmp/beta — not a real git repo.
+    const out = context(root, "beta/shared");
+    assert.doesNotMatch(out, /^- Branch:/m);
   } finally {
     rmTempDir(root);
   }

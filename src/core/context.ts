@@ -1,7 +1,8 @@
-import { loadProjects } from "./tree.ts";
+import { loadProjects, isParent } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
 import { findTask, findRepoTarget } from "./resolve.ts";
 import { resolveSameRepoStrategy, DEFAULT_SAME_REPO_STRATEGY } from "./orchestrate/strategy.ts";
+import { branchState } from "./drift.ts";
 
 export interface Repo {
   remote: string | null;
@@ -36,6 +37,12 @@ export function context(root: string, query: string): string {
   lines.push(`- Project: ${str(project.data.name) ?? project.slug} (${project.slug})`);
   if (repo.remote) lines.push(`- Repo: ${repo.remote}`);
   if (repo.local) lines.push(`- Local: ${repo.local}`);
+  if (repo.local) {
+    const state = branchState(repo.local);
+    if (state) {
+      lines.push(`- Branch: ${state.branch} (${state.dirty ? "dirty — uncommitted changes" : "clean"})`);
+    }
+  }
   lines.push(`- Host: ${str(project.data.host) ?? "github"}`);
   const strategy = resolveSameRepoStrategy(project);
   if (strategy !== DEFAULT_SAME_REPO_STRATEGY) {
@@ -65,6 +72,18 @@ export function context(root: string, query: string): string {
     lines.push(projectContext);
   }
 
+  // The project's `## Notes` is the de-facto project-level workflow doc:
+  // conventions, gotchas, validation steps. It lives in project.md inside the
+  // tpm tree — outside the agent's repo sandbox — so a path pointer is useless;
+  // the agent can only ever see what `tpm context` prints. Inline it verbatim.
+  const projectNotes = extractProseSection(project.body, "Notes");
+  if (projectNotes) {
+    lines.push("");
+    lines.push("### Project notes (conventions — treat as workflow guidance)");
+    lines.push("");
+    lines.push(projectNotes);
+  }
+
   lines.push("");
   lines.push("---");
   lines.push("");
@@ -72,15 +91,40 @@ export function context(root: string, query: string): string {
   lines.push("");
   lines.push(trimTaskBody(task.body));
 
+  // Container tasks aren't actionable directly — surface their children so the
+  // agent (or a parent run) never shells into the tree to discover them.
+  if (isParent(task)) {
+    lines.push("");
+    lines.push("### Children");
+    lines.push("");
+    lines.push("This task is a container — work its children, not the parent directly.");
+    for (const child of task.children!) {
+      const title = str(child.data.title) ?? child.slug;
+      const status = str(child.data.status) ?? "?";
+      const ref = `${project.slug}/${task.slug}/${child.slug}`;
+      lines.push(`- ${ref} — ${title} [${status}]`);
+    }
+  }
+
   lines.push("");
   lines.push("---");
   lines.push("");
   lines.push("## Working agreement");
-  if (repo.local) lines.push(`- Work happens in ${repo.local}. cd there before editing code.`);
-  lines.push(`- Append progress to the "Log" section in ${task.path}.`);
-  lines.push(`- When done, fill "Outcome", set status: done in the frontmatter, and stamp closed: <YYYY-MM-DD>.`);
-  lines.push(`- If you open a PR, append its URL to the prs: list in the frontmatter.`);
-  lines.push(`- Surface blockers explicitly rather than guessing.`);
+  // Drive all task state through `tpm` verbs. The task file lives in the tpm
+  // tree, outside the repo sandbox — the agent's file tools can't reach it, so
+  // never tell it to hand-edit the Log, frontmatter, or `prs:` list.
+  const taskRef = task.parent
+    ? `${project.slug}/${task.parent}/${task.slug}`
+    : `${project.slug}/${task.slug}`;
+  if (repo.local) lines.push(`- Work happens in ${repo.local}. cd there before editing code. The task tree lives outside this repo — drive task state through \`tpm\` verbs, never by reading or editing the task file directly.`);
+  lines.push(`- Log progress with \`tpm log ${taskRef} "<what changed>"\`.`);
+  if (str(task.data.type) === "investigation") {
+    lines.push(`- Deliverable is a report: \`tpm report ${taskRef}\` scaffolds/attaches it; write findings into that file, then re-run \`tpm report ${taskRef}\` to hand off for review.`);
+  } else {
+    lines.push(`- After opening the PR, run \`tpm pr ${taskRef} <url>\` — it links the PR and advances status for review. Don't hand-edit \`prs:\`.`);
+  }
+  lines.push(`- Close out with \`tpm complete ${taskRef}\` (for \`type: pr\`, the poller usually does this once the PR merges).`);
+  lines.push(`- Stuck? \`tpm block ${taskRef} "<reason>"\` (human queue) or \`tpm revert ${taskRef} "<reason>"\` (back to ready). Surface blockers explicitly; never exit while still in-progress.`);
   lines.push(`- For shipping (commit / push / PR / close), follow the repo's workflow doc: ${workflow ? `read ${workflow}` : "look for AGENTS.md, then CLAUDE.md, in the repo root"}. If no doc is found, ask before each step.`);
 
   return lines.join("\n");
@@ -104,6 +148,16 @@ function extractSection(body: string, heading: string): string | null {
   if (!m) return null;
   const content = m[1].trim();
   return content.length ? content : null;
+}
+
+// Like `extractSection`, but also strips HTML comments before checking for
+// content — so a section that holds only its scaffold placeholder (e.g. the
+// `<!-- Living notes... -->` in a fresh project.md) is treated as empty.
+function extractProseSection(body: string, heading: string): string | null {
+  const raw = extractSection(body, heading);
+  if (!raw) return null;
+  const stripped = raw.replace(/<!--[\s\S]*?-->/g, "").trim();
+  return stripped.length ? stripped : null;
 }
 
 // Strip historical / placeholder sections from a task body before embedding it
