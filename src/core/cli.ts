@@ -615,7 +615,11 @@ try {
             break;
           }
           for (const e of removed) {
-            const note = e.reverted ? " -> reverted to ready" : "";
+            const note = e.reverted
+              ? " -> reverted to ready"
+              : e.reviewed
+                ? " -> review (open PR)"
+                : "";
             console.log(`released ${e.qualifiedSlug} (was ${e.data.agentId}, age ${e.ageMinutes.toFixed(1)}m)${note}`);
           }
           break;
