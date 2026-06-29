@@ -16,6 +16,12 @@ import { context as buildBriefing, resolveRepo, type Repo } from "../context.ts"
 import { hostFor } from "./pr_signal.ts";
 import { resolveSameRepoStrategy, worktreePath, worktreeBranch } from "./strategy.ts";
 import { prepareRunLogPath, formatRunLogHeader } from "./run_log.ts";
+import {
+  detectRateLimitInLog,
+  armRateLimitBackoff,
+  clearRateLimitBackoff,
+  rateLimitBackoffActive,
+} from "./rate_limit.ts";
 import { resolveAgentCli, type AgentCli } from "../agent_cli.ts";
 import type { Project, Task } from "../tree.ts";
 
@@ -210,8 +216,44 @@ export function shouldAutoRevert(input: AutoRevertInput): boolean {
   if (input.terminationReason) return false;
   if (!input.after) return false;
   if (input.after.status !== "in-progress") return false;
+  // A task left in-progress *with a linked PR* is real delivered work — the
+  // open-PR strand net (shouldAutoReview) flips it to needs-review instead.
+  // Reverting it to ready would re-run the task and risk a duplicate PR. This
+  // also covers a re-claimed task that already carried a PR (prs unchanged but
+  // non-zero), which the prs-equality check below would otherwise wave through.
+  if (input.after.prs > 0) return false;
   if (input.after.prs !== input.before.prs) return false;
   if ((input.after.report ?? false) && !(input.before.report ?? false)) return false;
+  if (input.before.status === "needs-feedback") return false;
+  return true;
+}
+
+export interface AutoReviewInput {
+  before: DispositionSnapshot;
+  after: DispositionSnapshot | null;
+}
+
+// Open-PR-at-exit strand net (run-log theme 2, the agrotech failure mode). A
+// run that ends with the task still at `in-progress` but carrying a linked PR
+// stranded: `tpm next` skips it (presumed claimed) and the PR-signal poller
+// only flips on an *actionable* signal — a freshly-opened PR with no review or
+// CI result yet reads as no-action, so the task sits forever. Hand it to
+// needs-review so the human (or the poller, on the next real signal) owns it.
+//
+// True only when:
+//   - the task still exists and is at `in-progress` after the run
+//   - it has at least one linked PR (the delivered artifact)
+//   - `before.status` wasn't `needs-feedback` — a feedback round legitimately
+//     ends at in-progress with its PR linked (the agent pushed and is waiting
+//     on CI; the poller, which watches in-progress + PR, owns that case).
+//
+// Exit-code agnostic: a PR opened just before a crash / rate-limit death / time
+// bound is still delivered work, so it goes to review regardless of how the run
+// ended.
+export function shouldAutoReview(input: AutoReviewInput): boolean {
+  if (!input.after) return false;
+  if (input.after.status !== "in-progress") return false;
+  if (input.after.prs <= 0) return false;
   if (input.before.status === "needs-feedback") return false;
   return true;
 }
@@ -341,6 +383,17 @@ function logLine(level: LogLevel, message: string): void {
 function workerLogger(agentId: string | undefined): (level: LogLevel, message: string) => void {
   if (!agentId) return logLine;
   return (level, message) => sharedLogLine(level, "orchestrate", `agent=${agentId} ${message}`);
+}
+
+// Log a rate-limit backoff skip at most once per distinct window within a
+// process. A long-running pool re-checks the gate every ~10s per worker; without
+// dedup that's hundreds of identical lines over a 30m cooldown. Re-arming a new
+// window (different untilMs) logs again.
+let lastLoggedBackoffUntil: number | null = null;
+function logBackoffOnce(log: (level: LogLevel, message: string) => void, untilMs: number): void {
+  if (lastLoggedBackoffUntil === untilMs) return;
+  lastLoggedBackoffUntil = untilMs;
+  log("INFO", `rate-limit backoff active until ${new Date(untilMs).toISOString()} — skipping claim`);
 }
 
 export type RepoCheck =
@@ -559,6 +612,8 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   for (const e of lock.releaseStaleTaskLocks(root, ttl)) {
     if (e.reverted) {
       logLine("WARN", `${e.qualifiedSlug}: stale lock (was ${e.data.agentId}); reverted in-progress -> ready`);
+    } else if (e.reviewed) {
+      logLine("WARN", `${e.qualifiedSlug}: stale lock (was ${e.data.agentId}); in-progress with open PR -> needs-review`);
     }
   }
 
@@ -856,6 +911,20 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
   const agentId = opts.agentId;
   const log = workerLogger(opts.agentId);
 
+  // Rate-limit backoff gate. If a recent run died on a usage/credit limit, an
+  // account-global cooldown is in effect — skip claiming entirely so we don't
+  // relaunch a doomed agent every tick (run-log theme 2). A pre-claimed task
+  // (`tpm next --claim`) bypasses: it's already locked, so skipping it would
+  // strand it. Returning `exitCode: 1` makes the worker loop idle-sleep and
+  // re-check; the single-shot `tpm loop` re-spawn re-checks on its next pass.
+  if (!opts.preClaimedTask) {
+    const backoff = rateLimitBackoffActive(Date.now());
+    if (backoff) {
+      logBackoffOnce(log, backoff.untilMs);
+      return { exitCode: 1 };
+    }
+  }
+
   const projects = loadProjects(root);
   let pick: { project: Project; task: Task } | null = null;
   let slug = "";
@@ -1074,11 +1143,22 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
           log("WARN", `task ${slug} not found after timeout (was it archived mid-run?)`);
           return;
         }
+        // PR-aware timeout recovery: if the agent opened a PR before the time
+        // bound cut it off, the work is delivered — hand it to needs-review
+        // instead of reverting to ready (which would re-run and risk a dup PR).
+        // A feedback round (before=needs-feedback) is left to the poller, same
+        // as shouldAutoReview. Otherwise revert to ready for a clean re-claim.
+        const snap = snapshotTask(match.task);
         try {
-          const r = mutate.revert(match.task, `time bound ${minutes}m exceeded`);
-          log("INFO", `revert ${slug}: ${r.message}`);
+          if (snap.status === "in-progress" && snap.prs > 0 && beforeStatus !== "needs-feedback") {
+            const r = mutate.review(match.task);
+            log("INFO", `time bound ${minutes}m exceeded with open PR; review ${slug}: ${r.message}`);
+          } else {
+            const r = mutate.revert(match.task, `time bound ${minutes}m exceeded`);
+            log("INFO", `revert ${slug}: ${r.message}`);
+          }
         } catch (e) {
-          log("ERROR", `revert ${slug} failed: ${(e as Error).message}`);
+          log("ERROR", `timeout recovery for ${slug} failed: ${(e as Error).message}`);
         }
       },
       () => {
@@ -1106,6 +1186,22 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
         log("ERROR", `repo lock release failed for ${pick.project.slug}: ${(e as Error).message}`);
       }
     }
+  }
+
+  // Rate-limit / credit-death classification (run-log theme 2). Scan the
+  // captured run-log tail for usage/credit signatures. If the agent died this
+  // way, arm an account-global backoff marker so the next ~60s tick doesn't
+  // relaunch a doomed agent (the audit caught 4 consecutive no-backoff
+  // relaunches). A clean run clears any stale marker so the window resets.
+  const rateLimit = logFile ? detectRateLimitInLog(logFile) : { limited: false };
+  if (rateLimit.limited) {
+    const backoff = armRateLimitBackoff(rateLimit, Date.now());
+    log(
+      "WARN",
+      `${slug}: agent exited rate-limited (usage/credit); backing off claims until ${new Date(backoff.untilMs).toISOString()}`,
+    );
+  } else {
+    clearRateLimitBackoff();
   }
 
   // Spawn-failure rollback: exit 127 means runWithTimeout's child.on("error")
@@ -1161,25 +1257,49 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
   const level = disposition === "stalled" ? "WARN" : "INFO";
   log(level, formatDispositionLine(slug, disposition, result.exitCode, before, after));
 
-  // Strand-on-exit safety net (task 063). If the agent left the task at
-  // in-progress with no shipping signal, revert to ready so the next
-  // orchestrator tick (or a human) can re-pick it. mutate.revert is itself
-  // idempotent — the predicate is the gate that decides intent.
-  if (
+  // Strand-on-exit recovery (run-log theme 2 + task 063). Order matters:
+  //   1. Open-PR strand → needs-review. A task left in-progress with a linked
+  //      PR is delivered work; review wins over revert so we never re-run it
+  //      and risk a duplicate PR. Fires regardless of exit code (a PR opened
+  //      just before a crash / rate-limit death still ships).
+  //   2. Otherwise revert to ready for a clean re-claim — either the existing
+  //      clean-exit strand net, or an abnormal rate-limit exit that left the
+  //      task in-progress with no PR (so the next launch is a fresh claim, not
+  //      a silent re-entry into a half-done run).
+  // mutate.review / mutate.revert are both idempotent — the predicate decides.
+  if (matchAfter && shouldAutoReview({ before, after })) {
+    log(
+      "WARN",
+      `${slug}: task left in-progress with a linked PR; flipping to needs-review`,
+    );
+    try {
+      const r = mutate.review(matchAfter.task);
+      log("INFO", `review ${slug}: ${r.message}`);
+    } catch (e) {
+      log("ERROR", `auto-review ${slug} failed: ${(e as Error).message}`);
+    }
+  } else if (
     matchAfter &&
-    shouldAutoRevert({
+    (shouldAutoRevert({
       exitCode: result.exitCode,
       before,
       after,
       terminationReason: result.terminationReason,
-    })
+    }) ||
+      (rateLimit.limited && after?.status === "in-progress"))
   ) {
+    const why = rateLimit.limited
+      ? "agent died rate-limited"
+      : "agent exited cleanly";
     log(
       "WARN",
-      `${slug}: agent exited cleanly with task still in-progress and no PR; auto-reverting to ready`,
+      `${slug}: ${why} with task still in-progress and no PR; auto-reverting to ready`,
     );
     try {
-      const r = mutate.revert(matchAfter.task, "agent exited with no progress (auto-revert)");
+      const reason = rateLimit.limited
+        ? "agent died rate-limited (auto-revert for clean re-claim)"
+        : "agent exited with no progress (auto-revert)";
+      const r = mutate.revert(matchAfter.task, reason);
       log("INFO", `revert ${slug}: ${r.message}`);
     } catch (e) {
       log("ERROR", `auto-revert ${slug} failed: ${(e as Error).message}`);

@@ -23,6 +23,7 @@ import {
   runPool,
   runWithTimeout,
   shouldAutoRevert,
+  shouldAutoReview,
 } from "./orchestrate.ts";
 import * as mutate from "../mutate.ts";
 import type { Project, Task } from "../tree.ts";
@@ -746,6 +747,76 @@ test("shouldAutoRevert: after=null (task archived mid-run) → false", () => {
   assert.equal(
     shouldAutoRevert({
       exitCode: 0,
+      before: { status: "in-progress", prs: 1 },
+      after: null,
+    }),
+    false,
+  );
+});
+
+test("shouldAutoRevert: re-claimed task that already carried a PR → false (review owns it)", () => {
+  // Strand recovery: a task re-picked while already in-progress with a linked
+  // PR, agent did nothing, prs unchanged. The old prs-equality rule would have
+  // reverted an open-PR task to ready (re-run + dup-PR risk); now the open-PR
+  // strand net (shouldAutoReview) flips it to needs-review instead.
+  assert.equal(
+    shouldAutoRevert({
+      exitCode: 0,
+      before: { status: "in-progress", prs: 1 },
+      after: { status: "in-progress", prs: 1 },
+    }),
+    false,
+  );
+});
+
+test("shouldAutoReview: in-progress with a linked PR → true (open-PR strand)", () => {
+  // The agrotech failure mode: PR opened, status never flipped out of
+  // in-progress. Hand it to review rather than stranding or reverting.
+  assert.equal(
+    shouldAutoReview({
+      before: { status: "ready", prs: 0 },
+      after: { status: "in-progress", prs: 1 },
+    }),
+    true,
+  );
+});
+
+test("shouldAutoReview: in-progress with no PR → false (revert net owns it)", () => {
+  assert.equal(
+    shouldAutoReview({
+      before: { status: "ready", prs: 0 },
+      after: { status: "in-progress", prs: 0 },
+    }),
+    false,
+  );
+});
+
+test("shouldAutoReview: needs-feedback origin → false (poller owns the CI wait)", () => {
+  // A feedback round legitimately ends at in-progress with its PR linked: the
+  // agent pushed and is waiting on CI. Flipping to needs-review here would hand
+  // off to the human before CI runs; the poller (watches in-progress + PR) owns it.
+  assert.equal(
+    shouldAutoReview({
+      before: { status: "needs-feedback", prs: 1 },
+      after: { status: "in-progress", prs: 1 },
+    }),
+    false,
+  );
+});
+
+test("shouldAutoReview: already flipped to needs-review → false (nothing to do)", () => {
+  assert.equal(
+    shouldAutoReview({
+      before: { status: "ready", prs: 0 },
+      after: { status: "needs-review", prs: 1 },
+    }),
+    false,
+  );
+});
+
+test("shouldAutoReview: after=null (archived mid-run) → false", () => {
+  assert.equal(
+    shouldAutoReview({
       before: { status: "in-progress", prs: 1 },
       after: null,
     }),
