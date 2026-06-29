@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -64,6 +64,61 @@ test("entry point: `tpm help` documents the drop verb", () => {
   const r = runCli(["help"]);
   assert.equal(r.status, 0, `stderr: ${r.stderr}`);
   assert.match(r.stdout, new RegExp(`${CLI_NAME} drop <task>`));
+});
+
+// Task 156: `tpm done` is the alias agents reach for (it matches the `/tpm done`
+// slash command and the AGENTS "close out" action) — it must dispatch to
+// complete, not die with "Unknown command: done".
+test("entry point: `tpm help` documents the done alias and no-arg status listing", () => {
+  const r = runCli(["help"]);
+  assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+  assert.match(r.stdout, new RegExp(`alias: ${CLI_NAME} done`));
+  assert.match(r.stdout, /list the valid statuses/);
+});
+
+// `tpm status` with no new-status arg self-documents the vocabulary so agents
+// stop grepping mutate.ts for VALID_STATUSES. No tree needed — it prints before
+// resolving a task.
+test("status: `tpm status` with no arg lists valid statuses + reaching verbs", () => {
+  const r = runCli(["status"]);
+  assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+  assert.match(r.stdout, /Valid task statuses/);
+  for (const s of ["open", "ready", "in-progress", "review", "rework", "closing", "blocked", "done", "dropped"]) {
+    assert.match(r.stdout, new RegExp(`\\b${s}\\b`), `missing status: ${s}`);
+  }
+  // The verbs that reach a status are listed alongside it.
+  assert.match(r.stdout, /complete, done, lgtm/);
+});
+
+test("status: `tpm status <task>` (no new-status) also lists the vocabulary", () => {
+  // Half-typed transition — print the listing rather than a bare usage error.
+  const r = runCli(["status", "some-task"]);
+  assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+  assert.match(r.stdout, /Valid task statuses/);
+});
+
+test("done: `tpm done <task>` dispatches to complete (sets status: done)", () => {
+  const { root, home, env } = setupTree();
+  try {
+    const tasksDir = join(root, "p", "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeFileSync(
+      join(root, "p", "project.md"),
+      `---\nname: P\nslug: p\nstatus: active\n---\n\n# P\n`,
+    );
+    const taskFile = join(tasksDir, "001-foo.md");
+    writeFileSync(
+      taskFile,
+      `---\ntitle: Foo\nslug: foo\nproject: p\nstatus: in-progress\ntype: pr\nclosed:\n---\n\n# Foo\n\n## Log\n- 2026-01-01 00:00 PDT: created\n\n## Outcome\n<!-- Filled when closed -->\n`,
+    );
+    // --no-archive keeps the file at its original path so we can assert on it.
+    const r = runCli(["done", "foo", "--no-archive"], env);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.match(readFileSync(taskFile, "utf8"), /status: done/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("entry point: `tpm config get <unknown>` reports the known-keys list (no TDZ)", () => {

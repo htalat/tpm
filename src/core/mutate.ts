@@ -37,6 +37,23 @@ function emitStatusChange(task: Task, from: string, to: Status, verb: string): v
   }
 }
 
+// Self-documenting vocabulary for `tpm status` (no new-status arg). Each entry
+// names the verb(s) that *reach* a status so an agent can discover how to
+// transition a task from the CLI's own output instead of grepping this file.
+// Single source of truth for the runtime listing — keep the verbs in sync with
+// the dispatch in cli.ts (a test asserts this covers exactly VALID_STATUSES).
+export const STATUS_VOCAB: { status: Status; verbs: string[]; note?: string }[] = [
+  { status: "open", verbs: ["reopen", "pull"] },
+  { status: "ready", verbs: ["ready", "revert"] },
+  { status: "in-progress", verbs: ["start"] },
+  { status: "rework", verbs: ["request-changes"], note: "also set by the PR-signal poller (CI red, behind main, open threads)" },
+  { status: "closing", verbs: [], note: "PR-signal poller only — merged PR awaiting inline auto-close" },
+  { status: "review", verbs: ["pr", "review", "report", "pull"] },
+  { status: "blocked", verbs: ["block"] },
+  { status: "done", verbs: ["complete", "done", "lgtm"], note: "`done` is an alias for `complete`; also auto-closed by the poller on merge" },
+  { status: "dropped", verbs: ["drop"] },
+];
+
 export interface MutateResult {
   message: string;
   archivedAt?: string;
