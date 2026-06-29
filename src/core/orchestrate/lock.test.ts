@@ -28,7 +28,7 @@ function writeLockFile(root: string, pid: number, startedAt = "2026-01-01 00:00 
 // Scaffold a project + single top-level task on disk so loadProjects/findTask
 // can resolve the lock's qualified slug back to a real task. Returns the task
 // file path so callers can read back its status after a sweep.
-function seedTask(root: string, project: string, slug: string, status: string): string {
+function seedTask(root: string, project: string, slug: string, status: string, prs: string[] = []): string {
   const dir = join(root, project);
   mkdirSync(join(dir, "tasks"), { recursive: true });
   writeFileSync(
@@ -36,9 +36,10 @@ function seedTask(root: string, project: string, slug: string, status: string): 
     `---\nname: ${project}\nslug: ${project}\nstatus: active\ncreated: 2026-01-01 00:00 PDT\ntags: []\n---\n\n# ${project}\n`,
   );
   const taskPath = join(dir, "tasks", `${slug}.md`);
+  const prsYaml = prs.length === 0 ? "[]" : `\n${prs.map((p) => `  - ${p}`).join("\n")}`;
   writeFileSync(
     taskPath,
-    `---\ntitle: Task ${slug}\nslug: ${slug}\nproject: ${project}\nstatus: ${status}\ntype: pr\ncreated: 2026-01-01 00:00 PDT\nclosed:\nprs: []\ntags: []\n---\n\n# Task ${slug}\n\n## Log\n- 2026-01-01 00:00 PDT: created\n`,
+    `---\ntitle: Task ${slug}\nslug: ${slug}\nproject: ${project}\nstatus: ${status}\ntype: pr\ncreated: 2026-01-01 00:00 PDT\nclosed:\nprs: ${prsYaml}\ntags: []\n---\n\n# Task ${slug}\n\n## Log\n- 2026-01-01 00:00 PDT: created\n`,
   );
   return taskPath;
 }
@@ -459,6 +460,28 @@ test("releaseStaleTaskLocks: stale lock at in-progress -> released and reverted 
     assert.equal(statusOf(taskPath), "ready");
     // The revert leaves an audit trail in the task's Log.
     assert.match(readFileSync(taskPath, "utf8"), /stranded — lock expired/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("releaseStaleTaskLocks: stale lock at in-progress WITH a linked PR -> needs-review (not ready)", () => {
+  // Open-PR strand on a hard crash: the lock expired with the task still
+  // in-progress but carrying a PR. Reverting to ready would re-run the task and
+  // risk a duplicate PR — hand it to needs-review instead.
+  const root = setupRoot();
+  try {
+    const taskPath = seedTask(root, "alpha", "001-foo", "in-progress", [
+      "https://github.com/o/r/pull/7",
+    ]);
+    acquireTask(root, "alpha/001-foo", "claude-1");
+    backdateLock(taskLockPath(root, "alpha/001-foo"), 60);
+
+    const removed = releaseStaleTaskLocks(root, 30);
+    assert.equal(removed.length, 1);
+    assert.equal(removed[0].reviewed, true);
+    assert.equal(removed[0].reverted, false);
+    assert.equal(statusOf(taskPath), "needs-review");
   } finally {
     rmTempDir(root);
   }

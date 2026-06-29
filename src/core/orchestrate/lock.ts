@@ -319,11 +319,14 @@ export function listTaskLocks(root: string): TaskLockEntry[] {
   return out;
 }
 
-// A released stale lock, plus whether its task was stranded at in-progress and
-// got reverted to ready in the same sweep. `reverted` is false for repo locks
-// (not per-task) and for tasks that weren't in-progress when the lock cleared.
+// A released stale lock, plus how its task was recovered if it was stranded at
+// in-progress. `reverted` (→ ready) and `reviewed` (→ needs-review) are both
+// false for repo locks (not per-task) and for tasks that weren't in-progress
+// when the lock cleared. A stranded task with a linked PR is `reviewed` (re-
+// running it would risk a duplicate PR); otherwise it's `reverted`.
 export interface StaleLockRelease extends TaskLockEntry {
   reverted: boolean;
+  reviewed: boolean;
 }
 
 // Walk the locks dir and remove anything whose heartbeat hasn't been touched
@@ -345,17 +348,19 @@ export function releaseStaleTaskLocks(root: string, ttlMinutes: number): StaleLo
     if (entry.ageMinutes > ttlMinutes) {
       try {
         unlinkSync(entry.path);
-        removed.push({ ...entry, reverted: false });
+        removed.push({ ...entry, reverted: false, reviewed: false });
       } catch {
         // Race with another process clearing the same lock; ignore.
       }
     }
   }
 
-  // Flip any stranded in-progress tasks back to ready. Repo locks (slug
-  // `repo--<project>`) aren't per-task, so skip them. Load the tree once; if it
-  // can't be read, leave statuses untouched — the post-run net or the next
-  // sweep will catch them.
+  // Recover any stranded in-progress tasks. Repo locks (slug `repo--<project>`)
+  // aren't per-task, so skip them. Load the tree once; if it can't be read,
+  // leave statuses untouched — the post-run net or the next sweep will catch
+  // them. A task with a linked PR is delivered work: flip it to needs-review
+  // (re-running it would risk a duplicate PR); otherwise revert to ready for a
+  // clean re-claim.
   const perTask = removed.filter(e => !e.qualifiedSlug.startsWith("repo--"));
   if (perTask.length > 0) {
     let projects;
@@ -370,11 +375,16 @@ export function releaseStaleTaskLocks(root: string, ttlMinutes: number): StaleLo
         if (!match) continue;
         if (String(match.task.data.status ?? "") !== "in-progress") continue;
         try {
-          mutate.revert(match.task, "stranded — lock expired");
-          e.reverted = true;
+          if (hasLinkedPr(match.task)) {
+            mutate.review(match.task);
+            e.reviewed = true;
+          } else {
+            mutate.revert(match.task, "stranded — lock expired");
+            e.reverted = true;
+          }
         } catch {
-          // Best-effort: the lock is already gone; a failed revert just means
-          // the status flip waits for the next sweep or the post-run net.
+          // Best-effort: the lock is already gone; a failed flip just means the
+          // status change waits for the next sweep or the post-run net.
         }
       }
     }
@@ -384,6 +394,13 @@ export function releaseStaleTaskLocks(root: string, ttlMinutes: number): StaleLo
 }
 
 // ---- internals -------------------------------------------------------------
+
+// Does the task carry at least one non-empty PR URL? Mirrors orchestrate's
+// parsePrUrls but inlined here to avoid a lock <-> orchestrate import cycle.
+function hasLinkedPr(task: { data: { prs?: unknown } }): boolean {
+  const prs = task.data.prs;
+  return Array.isArray(prs) && prs.some((p) => typeof p === "string" && p.trim().length > 0);
+}
 
 function readTaskLock(path: string): TaskLockData | null {
   try {
