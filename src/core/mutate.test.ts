@@ -8,7 +8,7 @@ import {
   start, ready, block, reopen, revert, logEntry, addPr, review, setStatus, setType, complete, drop,
   setAllowOrchestrator, reparent, addReport, requestReportChanges,
   pullFromQueue, appendLog, setSection, sectionHasContent, editTaskSection,
-  editProjectSection,
+  editProjectSection, VALID_STATUSES, STATUS_VOCAB,
 } from "./mutate.ts";
 import { parse } from "../util/frontmatter.ts";
 
@@ -79,6 +79,15 @@ function loadTask(root: string, projectSlug: string, slug: string) {
   const [proj] = loadProjects(root, { archived: true }).filter(p => p.slug === projectSlug);
   return proj.tasks.find(t => t.slug === slug)!;
 }
+
+// Task 156: STATUS_VOCAB drives the `tpm status` self-documentation. If a new
+// status is added to VALID_STATUSES without a vocab entry (or vice versa), the
+// runtime listing silently goes stale — this guard fails loudly instead.
+test("STATUS_VOCAB covers exactly VALID_STATUSES", () => {
+  const vocab = STATUS_VOCAB.map((e) => e.status);
+  assert.deepEqual([...vocab].sort(), [...VALID_STATUSES].sort());
+  assert.equal(vocab.length, new Set(vocab).size, "duplicate status in STATUS_VOCAB");
+});
 
 // ---- pure body helpers ----------------------------------------------------
 
