@@ -45,6 +45,10 @@ const WATCHED_STATUSES = new Set([
 
 export interface PollOpts {
   dryRun?: boolean;
+  // Restrict the tick to one task (qualified `project/slug` or bare slug) —
+  // the web UI's per-card "poll now". Combine with force to bypass the
+  // cache-freshness floor.
+  only?: string;
   // Bypass the per-PR cache-freshness throttle (cron uses the throttled path;
   // `tpm poll --force` is the manual-diagnostic escape hatch).
   force?: boolean;
@@ -91,7 +95,11 @@ export async function runPoll(opts: PollOpts = {}): Promise<PollSummary> {
   const nowMs = (opts.now?.() ?? new Date()).getTime();
 
   const projects = loadProjects(root);
-  const candidates = enumerateCandidates(projects);
+  let candidates = enumerateCandidates(projects);
+  if (opts.only) {
+    candidates = candidates.filter(({ project, task }) =>
+      qualifySlug(project.slug, task) === opts.only || task.slug === opts.only);
+  }
   if (candidates.length === 0) {
     log("INFO", "no tasks to watch");
     return summary;

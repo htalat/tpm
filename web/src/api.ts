@@ -78,4 +78,5 @@ export const api = {
   bulk: (action: string, slugs: string[], reason?: string) =>
     postJson(`/api/bulk/${action}`, reason ? { slugs, reason } : { slugs }) as Promise<MutationResponse & BulkResponse>,
   setWorkers: (value: number) => postJson("/api/harness/workers", { value }),
+  pollPr: (qualifiedSlug: string) => postJson(`/api/tasks/${enc(qualifiedSlug)}/poll-pr`, {}),
 };

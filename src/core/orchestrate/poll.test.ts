@@ -425,3 +425,30 @@ test("resolvePollFloor: precedence — per_host > global > built-in default", ()
   assert.equal(resolvePollFloor(undefined, "github"), 5);
   assert.equal(resolvePollFloor({}, "github"), 5);
 });
+
+test("runPoll: only=<slug> restricts the tick to that task", async () => {
+  const root = setupTree();
+  try {
+    writeTask(root, "001-a", "review", ["https://github.com/o/r/pull/1"]);
+    writeTask(root, "002-b", "review", ["https://github.com/o/r/pull/2"]);
+    const fetched: string[] = [];
+    const summary = await runPoll({
+      root,
+      only: "alpha/001-a",
+      force: true,
+      cacheDir: cacheDirFor(root),
+      log: () => {},
+      fetchSignal: async (url) => {
+        fetched.push(url);
+        return {
+          signal: { kind: "no-action", url },
+          raw: { url, state: "OPEN" },
+        } as FetchedSignal;
+      },
+    });
+    assert.equal(summary.checked, 1);
+    assert.deepEqual(fetched, ["https://github.com/o/r/pull/1"]);
+  } finally {
+    rmTempDir(root);
+  }
+});
