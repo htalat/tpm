@@ -1,14 +1,14 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { loadProjects, flatTasks, isParent, rollupStatus, taskHasReport, taskReportPath } from "../core/tree.ts";
 import { KNOWN_TASK_TYPES } from "../core/new.ts";
 import type { Project, Task } from "../core/tree.ts";
 import { findRoot } from "../core/root.ts";
+import { execCommand } from "../core/commands.ts";
+import { onStatusChange } from "../core/mutate.ts";
 import { findTask, findTasksByNumericId } from "../core/resolve.ts";
 import { resolveRepo } from "../core/context.ts";
 import { now } from "../util/time.ts";
@@ -40,7 +40,7 @@ import {
 } from "../core/config.ts";
 import type { Config } from "../core/config.ts";
 import type { HarnessSnapshot } from "../core/orchestrate/supervisor.ts";
-import { eventsPath, readJournalLinesFrom, readRecentEvents } from "../core/events.ts";
+import { appendStatusEvent, eventsPath, readJournalLinesFrom, readRecentEvents } from "../core/events.ts";
 import type { StatusEventRecord } from "../core/events.ts";
 import { taskPath } from "./serve_url.ts";
 import { defaultHarnessLogReader, parseTaskLogEntries } from "../core/harness_log.ts";
@@ -186,13 +186,17 @@ const BULK_CAPS: Record<string, string[]> = {
 // Order the bar renders its buttons in (stable, independent of which are shown).
 const BULK_ACTION_ORDER = ["promote", "pull", "close", "reopen", "drop", "block", "archive"];
 
-const CLI_PATH = fileURLToPath(new URL("../core/cli.ts", import.meta.url));
 
 // `tpm serve`: localhost dashboard for the queues. POST endpoints shell out to
 // the CLI so the web layer never writes files directly (one writer contract,
 // lock-aware, no parallel implementation). Mutations only register when bound
 // to loopback — see `mutationsEnabled` below.
 export async function runServe(opts: ServeOpts = {}): Promise<void> {
+  // Mutations now run in-process, so this process must journal them the way a
+  // spawned CLI child used to journal its own. The CLI entry registers the
+  // same listener at module load; re-registering here (identical behavior)
+  // covers programmatic embedders that import runServe directly.
+  onStatusChange(change => appendStatusEvent(findRoot(), change));
   const host = opts.host ?? DEFAULT_SERVE_HOST;
   const port = opts.port ?? DEFAULT_SERVE_PORT;
   const mutationsEnabled = isLoopback(host);
@@ -828,7 +832,7 @@ export interface MutationResult {
 export type CliRunner = (args: string[]) => { ok: boolean; stdout: string; stderr: string };
 
 // Pure dispatch for POST mutations. Tests pass a stub runner; production passes
-// the real `runCli` that shells out to the local tpm binary.
+// the in-process `runCli` built on the command layer (commands.ts).
 export function routeMutation(pathname: string, body: URLSearchParams, runner: CliRunner): MutationResult {
   // Project-scoped: /p/<project>/new-task. The only mutation today that
   // creates a task rather than transitioning one, so it lives outside the
@@ -1149,20 +1153,10 @@ function buildCliArgs(slug: string, action: string, body: URLSearchParams): stri
 }
 
 function runCli(args: string[]): { ok: boolean; stdout: string; stderr: string } {
-  // Re-invoke the same node binary that's hosting this server, forwarding
-  // execArgv so flags like --experimental-strip-types propagate to the child.
-  try {
-    const stdout = execFileSync(process.execPath, [...process.execArgv, CLI_PATH, ...args], {
-      stdio: ["ignore", "pipe", "pipe"],
-      encoding: "utf8",
-    });
-    return { ok: true, stdout: stdout.trim(), stderr: "" };
-  } catch (e: unknown) {
-    const err = e as { stderr?: Buffer | string; stdout?: Buffer | string };
-    const stderr = err.stderr ? String(err.stderr).trim() : (e instanceof Error ? e.message : String(e));
-    const stdout = err.stdout ? String(err.stdout).trim() : "";
-    return { ok: false, stdout, stderr };
-  }
+  // In-process command layer (commands.ts) — same argv vocabulary the CLI
+  // speaks, without a child process per click. `findRoot` is resolved per
+  // mutation, matching the per-request resolution on the GET path.
+  return execCommand(findRoot, args);
 }
 
 function ok(contentType: string, body: string): RouteResult {

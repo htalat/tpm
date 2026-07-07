@@ -5,7 +5,7 @@ import { findRoot } from "./root.ts";
 import { newProject, newTask } from "./new.ts";
 import { context, repoPath } from "./context.ts";
 import { report } from "./report.ts";
-import { archiveTask, foldTask, loadProjects, flatTasks, rollupStatus, taskHasReport, taskReportPath } from "./tree.ts";
+import { foldTask, loadProjects, flatTasks, rollupStatus, taskHasReport, taskReportPath } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
 import { selectNext, selectCandidates, inboxItems } from "./queue.ts";
 import { resolveSameRepoStrategy } from "./orchestrate/strategy.ts";
@@ -31,6 +31,7 @@ import { getScheduler } from "./scheduler/types.ts";
 import { refreshSkills } from "./refresh_skills.ts";
 import { appendStatusEvent } from "./events.ts";
 import { migrateTree } from "./migrate.ts";
+import { execCommand, COMMAND_VERBS } from "./commands.ts";
 
 const VERSION = readVersion();
 
@@ -64,7 +65,17 @@ function isKnownConfigKey(key: string): key is KnownConfigKey {
 }
 
 try {
-  switch (cmd) {
+  // The mutation verbs live in the in-process command layer (commands.ts) so
+  // the web layer can run them without spawning a CLI per click. The CLI stays
+  // the printing edge: delegate, then brand + print — or throw into the shared
+  // error path below (same stderr + exit 1 the old usage()/throw paths had).
+  // `findRoot` is passed as a thunk: arity errors and the `tpm status` vocab
+  // listing must work outside a configured tree.
+  if (cmd !== undefined && COMMAND_VERBS.has(cmd)) {
+    const r = execCommand(findRoot, args);
+    if (!r.ok) throw new Error(r.stderr);
+    print(r.stdout);
+  } else switch (cmd) {
     case "new": {
       const root = findRoot();
       const what = args[1];
@@ -126,17 +137,6 @@ try {
           }
         }
       }
-      break;
-    }
-    case "archive": {
-      const root = findRoot();
-      const query = args[1];
-      if (!query) usage("tpm archive <task | project/task>");
-      const projects = loadProjects(root, { archived: true });
-      const match = findTask(projects, query);
-      if (!match) throw new Error(`No task matched "${query}". Try \`tpm ls --all\`.`);
-      const path = archiveTask(match.task);
-      console.log(`Archived ${qualifySlug(match.project.slug, match.task)} -> ${path}`);
       break;
     }
     case "migrate": {
@@ -320,201 +320,6 @@ try {
         usage(`tpm config set: setter for "${key}" not implemented`);
       }
       usage("tpm config get|set <key> [value]");
-    }
-    case "start": {
-      const r = mutate.start(resolveLiveTask(args[1], "tpm start <task>"));
-      print(r.message);
-      break;
-    }
-    case "ready": {
-      const r = mutate.ready(resolveLiveTask(args[1], "tpm ready <task>"));
-      print(r.message);
-      break;
-    }
-    case "block": {
-      const reason = args[2];
-      if (!args[1] || !reason) usage('tpm block <task> "<reason>"');
-      const r = mutate.block(resolveLiveTask(args[1], 'tpm block <task> "<reason>"'), reason);
-      print(r.message);
-      break;
-    }
-    case "reopen": {
-      const reason = args[2];
-      const r = mutate.reopen(resolveLiveTask(args[1], 'tpm reopen <task> ["<reason>"]'), reason);
-      print(r.message);
-      break;
-    }
-    case "pull": {
-      const r = mutate.pullFromQueue(resolveLiveTask(args[1], "tpm pull <task>"));
-      print(r.message);
-      break;
-    }
-    case "revert": {
-      const reason = args[2];
-      const r = mutate.revert(resolveLiveTask(args[1], 'tpm revert <task> ["<reason>"]'), reason);
-      print(r.message);
-      break;
-    }
-    case "log": {
-      const message = args[2];
-      if (!args[1] || !message) usage('tpm log <task> "<message>"');
-      const r = mutate.logEntry(resolveLiveTask(args[1], 'tpm log <task> "<message>"'), message);
-      print(r.message);
-      break;
-    }
-    case "pr": {
-      const url = args[2];
-      if (!args[1] || !url) usage("tpm pr <task> <url>");
-      const r = mutate.addPr(resolveLiveTask(args[1], "tpm pr <task> <url>"), url);
-      print(r.message);
-      break;
-    }
-    case "review": {
-      const r = mutate.review(resolveLiveTask(args[1], "tpm review <task>"));
-      print(r.message);
-      break;
-    }
-    case "status": {
-      // --force bypasses the transition legality table (transitions.ts) — the
-      // repair hatch for hand-mangled frontmatter or a flow the table doesn't
-      // model yet. Normal moves should go through the purpose-built verbs.
-      const force = args.includes("--force");
-      const positional = args.slice(1).filter(a => a !== "--force");
-      const newStatus = positional[1];
-      // No new-status arg → self-document the vocabulary instead of erroring,
-      // so agents discover valid statuses + the verbs that reach them from the
-      // CLI itself (no grepping the source). Covers both `tpm status` and the
-      // half-typed `tpm status <task>`.
-      if (!newStatus) {
-        printStatusVocab();
-        break;
-      }
-      if (!positional[0]) usage("tpm status <task> <new-status> [--force]");
-      const r = mutate.setStatus(
-        resolveLiveTask(positional[0], "tpm status <task> <new-status> [--force]"),
-        newStatus,
-        undefined,
-        { force },
-      );
-      print(r.message);
-      break;
-    }
-    case "allow": {
-      const r = mutate.setAllowOrchestrator(resolveLiveTask(args[1], "tpm allow <task>"), true);
-      print(r.message);
-      break;
-    }
-    case "disallow": {
-      const r = mutate.setAllowOrchestrator(resolveLiveTask(args[1], "tpm disallow <task>"), false);
-      print(r.message);
-      break;
-    }
-    case "set-type": {
-      const newType = args[2];
-      if (!args[1] || !newType) usage("tpm set-type <task> <pr|investigation>");
-      const r = mutate.setType(resolveLiveTask(args[1], "tpm set-type <task> <type>"), newType);
-      print(r.message);
-      break;
-    }
-    case "done": // alias: matches the `/tpm done` slash command + AGENTS "close out"
-    case "complete": {
-      if (!args[1]) usage('tpm complete <task> [--outcome "..."] [--no-archive] [--archive]');
-      const outcome = parseFlag(args, "--outcome");
-      const noArchive = args.includes("--no-archive");
-      const forceArchive = args.includes("--archive");
-      if (noArchive && forceArchive) usage("--archive and --no-archive are mutually exclusive");
-      const archiveOpt = noArchive ? false : forceArchive ? true : undefined;
-      const r = mutate.complete(resolveLiveTask(args[1], 'tpm complete <task>'), {
-        outcome,
-        archive: archiveOpt,
-      });
-      print(r.message);
-      if (r.archivedAt) console.log(`Archived -> ${r.archivedAt}`);
-      break;
-    }
-    case "drop": {
-      // Terminal "abandon" verb — the dropped-status counterpart to complete.
-      // Optional reason lands in ## Outcome + the Log line; reasonless drops
-      // log a plain `dropped` (block/reopen dash convention).
-      if (!args[1]) usage('tpm drop <task> ["<reason>"]');
-      const reason = args[2];
-      const r = mutate.drop(resolveLiveTask(args[1], 'tpm drop <task> ["<reason>"]'), reason);
-      print(r.message);
-      break;
-    }
-    case "lgtm": {
-      // Reviewer LGTM on an investigation report: derive an Outcome from the
-      // report file (title + first paragraph) and run complete. The serve
-      // `LGTM` button shells out to this verb so the web layer never reaches
-      // into mutate directly.
-      if (!args[1]) usage("tpm lgtm <task>");
-      const task = resolveLiveTask(args[1], "tpm lgtm <task>");
-      if (!taskHasReport(task)) throw new Error(`${task.slug}: no report attached. Run \`tpm report ${args[1]}\` first.`);
-      const absPath = taskReportPath(task);
-      const reportText = readFileSync(absPath, "utf8");
-      const outcome = mutate.deriveReportOutcome(reportText);
-      const r = mutate.complete(task, { outcome });
-      print(r.message);
-      if (r.archivedAt) console.log(`Archived -> ${r.archivedAt}`);
-      break;
-    }
-    case "request-changes": {
-      const comment = args[2];
-      if (!args[1] || !comment) usage('tpm request-changes <task> "<comment>"');
-      const r = mutate.requestReportChanges(
-        resolveLiveTask(args[1], 'tpm request-changes <task> "<comment>"'),
-        comment,
-      );
-      print(r.message);
-      break;
-    }
-    case "edit": {
-      const section = args[2];
-      const value = args[3];
-      if (!args[1] || !section || value === undefined) {
-        usage('tpm edit <task> <title|context|plan|outcome> "<value>" [--expect-mtime <ms>]');
-      }
-      const mtimeRaw = parseFlag(args, "--expect-mtime");
-      let expectMtimeMs: number | undefined;
-      if (mtimeRaw !== undefined) {
-        const n = Number(mtimeRaw);
-        if (!Number.isFinite(n)) {
-          throw new Error(`tpm edit: --expect-mtime must be a number, got "${mtimeRaw}"`);
-        }
-        expectMtimeMs = n;
-      }
-      const r = mutate.editTaskSection(
-        resolveLiveTask(args[1], 'tpm edit <task> <section> "<value>"'),
-        section,
-        value,
-        { expectMtimeMs },
-      );
-      print(r.message);
-      break;
-    }
-    case "edit-project": {
-      const section = args[2];
-      const value = args[3];
-      if (!args[1] || !section || value === undefined) {
-        usage('tpm edit-project <project> <name|goal|context|notes> "<value>" [--expect-mtime <ms>]');
-      }
-      const mtimeRaw = parseFlag(args, "--expect-mtime");
-      let expectMtimeMs: number | undefined;
-      if (mtimeRaw !== undefined) {
-        const n = Number(mtimeRaw);
-        if (!Number.isFinite(n)) {
-          throw new Error(`tpm edit-project: --expect-mtime must be a number, got "${mtimeRaw}"`);
-        }
-        expectMtimeMs = n;
-      }
-      const r = mutate.editProjectSection(
-        resolveProject(args[1], 'tpm edit-project <project> <section> "<value>"'),
-        section,
-        value,
-        { expectMtimeMs },
-      );
-      print(r.message);
-      break;
     }
     case "lock": {
       const sub = args[1];
@@ -1020,18 +825,6 @@ function resolveLiveTask(
   return match.task;
 }
 
-// Resolve a project by slug for project-scoped verbs (`tpm edit-project`).
-// Loads with archived included so the same lookup works regardless of how the
-// tree is filtered elsewhere; projects aren't archived today, but the flag
-// keeps this stable if that changes.
-function resolveProject(query: string | undefined, usageMsg: string): Project {
-  if (!query) usage(usageMsg);
-  const root = findRoot();
-  const project = loadProjects(root, { archived: true }).find(p => p.slug === query);
-  if (!project) throw new Error(`No project matched "${query}". Try \`tpm ls\`.`);
-  return project;
-}
-
 function pad(s: string, n: number): string {
   return s.length >= n ? s : s + " ".repeat(n - s.length);
 }
@@ -1129,17 +922,6 @@ function print(msg: string): void {
 // Self-documenting status vocabulary for `tpm status` with no new-status arg.
 // Renders mutate.STATUS_VOCAB so the valid statuses + the verbs that reach them
 // live in exactly one place (mutate.ts) — agents read this instead of source.
-function printStatusVocab(): void {
-  const lines = ["Valid task statuses (transition via the verb shown, or `tpm status <task> <new-status>` directly):", ""];
-  const width = Math.max(...mutate.STATUS_VOCAB.map((e) => e.status.length));
-  for (const { status, verbs, note } of mutate.STATUS_VOCAB) {
-    const reach = verbs.length ? verbs.join(", ") : "(no agent verb)";
-    const suffix = note ? `  — ${note}` : "";
-    lines.push(`  ${status.padEnd(width)}  ${reach}${suffix}`);
-  }
-  print(lines.join("\n"));
-}
-
 function readVersion(): string {
   const pkgPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
   const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
