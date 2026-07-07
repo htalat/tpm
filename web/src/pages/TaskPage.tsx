@@ -45,8 +45,8 @@ export default function TaskPage() {
   useSse(detail.refresh);
   useRevalidateOnFocus(detail.refresh);
 
-  if (detail.error) return <p className="text-sm text-red-600">Failed to load: {detail.error}</p>;
-  if (!detail.data) return <p className="text-sm text-neutral-500">Loading…</p>;
+  if (detail.error) return <p className="text-sm text-danger">Failed to load: {detail.error}</p>;
+  if (!detail.data) return <p className="text-sm text-muted">Loading…</p>;
   const t = detail.data;
 
   return (
@@ -54,10 +54,10 @@ export default function TaskPage() {
       <header className="flex flex-wrap items-center gap-3">
         <StatusBadge status={t.status} />
         <h1 className="text-xl font-semibold">{t.title}</h1>
-        <span className="font-mono text-sm text-neutral-400">{t.qualifiedSlug}</span>
+        <span className="font-mono text-sm text-faint">{t.qualifiedSlug}</span>
         {t.archived && <span className="badge s-archived">archived</span>}
         <span className="flex-1" />
-        <Link to={`/p/${encodeURIComponent(t.project.slug)}`} className="text-sm text-blue-600 hover:underline dark:text-blue-400">
+        <Link to={`/p/${encodeURIComponent(t.project.slug)}`} className="text-sm text-accent hover:underline">
           {t.project.name} →
         </Link>
       </header>
@@ -96,22 +96,22 @@ function MetaRail({ task }: { task: TaskDetail }) {
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 px-3 py-2 text-sm">
         {rows.map(([k, v]) => (
           <div key={k} className="contents">
-            <dt className="text-neutral-500">{k}</dt>
+            <dt className="text-muted">{k}</dt>
             <dd className="min-w-0 break-words">{v}</dd>
           </div>
         ))}
       </dl>
       {task.sessionId && (
-        <p className="border-t border-neutral-200 px-3 py-2 text-xs dark:border-neutral-800">
+        <p className="border-t border-edge px-3 py-2 text-xs">
           <code className="select-all">claude --resume {task.sessionId}</code>
         </p>
       )}
-      <p className="border-t border-neutral-200 px-3 py-2 text-xs dark:border-neutral-800">
-        <Link className="text-blue-600 hover:underline dark:text-blue-400" to={`/t/${task.segments.map(encodeURIComponent).join("/")}/runs`}>
+      <p className="border-t border-edge px-3 py-2 text-xs">
+        <Link className="text-accent hover:underline" to={`/t/${task.segments.map(encodeURIComponent).join("/")}/runs`}>
           Runs →
         </Link>
-        <span className="px-2 text-neutral-300 dark:text-neutral-700">·</span>
-        <a className="text-blue-600 hover:underline dark:text-blue-400" href={"/t/" + task.segments.map(encodeURIComponent).join("/")}>
+        <span className="px-2 text-faint">·</span>
+        <a className="text-accent hover:underline" href={"/t/" + task.segments.map(encodeURIComponent).join("/")}>
           classic view
         </a>
       </p>
@@ -145,7 +145,7 @@ function EditableSection({ task, section, onSaved }: { task: TaskDetail; section
     <SectionCard
       title={section.heading ?? ""}
       meta={canEdit && !editing ? (
-        <button onClick={() => { setValue(section.raw); setEditing(true); }} className="text-blue-600 hover:underline dark:text-blue-400">
+        <button onClick={() => { setValue(section.raw); setEditing(true); }} className="text-accent hover:underline">
           edit
         </button>
       ) : undefined}
@@ -156,11 +156,11 @@ function EditableSection({ task, section, onSaved }: { task: TaskDetail; section
             value={value}
             onChange={e => setValue(e.target.value)}
             rows={Math.max(6, value.split("\n").length + 1)}
-            className="w-full rounded border border-neutral-300 bg-white p-2 font-mono text-sm dark:border-neutral-700 dark:bg-neutral-900"
+            className="w-full rounded border border-edge bg-surface p-2 font-mono text-sm"
           />
           <div className="flex gap-2">
-            <button onClick={save} className="rounded bg-blue-600 px-3 py-1 text-sm text-white hover:bg-blue-700">Save</button>
-            <button onClick={() => setEditing(false)} className="rounded border border-neutral-300 px-3 py-1 text-sm dark:border-neutral-700">Cancel</button>
+            <button onClick={save} className="rounded bg-accent-solid px-3 py-1 text-sm text-on-accent hover:brightness-110">Save</button>
+            <button onClick={() => setEditing(false)} className="rounded border border-edge px-3 py-1 text-sm">Cancel</button>
           </div>
         </div>
       ) : section.raw.trim() === "" ? (
@@ -215,17 +215,17 @@ function ActionRow({ task, spec, onDone }: { task: TaskDetail; spec: ActionSpec;
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-2">
         <button onClick={run} disabled={disabled}
-                className="rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-neutral-100 disabled:opacity-40 dark:border-neutral-700 dark:hover:bg-neutral-800">
+                className="rounded border border-edge px-2 py-1 text-xs hover:bg-surface-hover disabled:opacity-40">
           {spec.label}
         </button>
         {spec.field && !spec.field.multiline && (
           <input value={value} onChange={e => setValue(e.target.value)} placeholder={spec.field.placeholder}
-                 className="min-w-0 flex-1 rounded border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-900" />
+                 className="min-w-0 flex-1 rounded border border-edge bg-surface px-2 py-1 text-xs" />
         )}
       </div>
       {spec.field?.multiline && (
         <textarea value={value} onChange={e => setValue(e.target.value)} placeholder={spec.field.placeholder} rows={2}
-                  className="w-full rounded border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-900" />
+                  className="w-full rounded border border-edge bg-surface px-2 py-1 text-xs" />
       )}
     </div>
   );
@@ -254,7 +254,7 @@ function SettingsPanel({ task, onDone }: { task: TaskDetail; onDone: () => void 
         <label className="flex items-center gap-2">
           type
           <select value={task.type ?? "pr"} onChange={e => set("set-type", { type: e.target.value })}
-                  className="rounded border border-neutral-300 bg-white px-2 py-0.5 text-xs dark:border-neutral-700 dark:bg-neutral-900">
+                  className="rounded border border-edge bg-surface px-2 py-0.5 text-xs">
             <option value="pr">pr</option>
             <option value="investigation">investigation</option>
           </select>
@@ -268,7 +268,7 @@ const BADGE_TONES: Record<string, string> = {
   good: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   bad: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
   warn: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  meh: "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400",
+  meh: "bg-hairline text-muted",
 };
 
 function tone(kind: string, v: string | undefined): string {
@@ -285,11 +285,11 @@ function PrPanel({ prs }: { prs: PrDigest[] }) {
   return (
     <SectionCard title={`Pull request${prs.length === 1 ? "" : "s"}`}>
       {prs.map(pr => (
-        <div key={pr.url} className="flex flex-wrap items-center gap-2 border-b border-neutral-100 px-3 py-2 text-sm last:border-0 dark:border-neutral-900">
-          <a href={pr.url} target="_blank" rel="noreferrer" className="font-medium text-blue-600 hover:underline dark:text-blue-400">
+        <div key={pr.url} className="flex flex-wrap items-center gap-2 border-b border-hairline px-3 py-2 text-sm last:border-0">
+          <a href={pr.url} target="_blank" rel="noreferrer" className="font-medium text-accent hover:underline">
             PR {pr.displayId ?? pr.url}
           </a>
-          {pr.title && <span className="min-w-0 flex-1 truncate text-neutral-600 dark:text-neutral-400">{pr.title}</span>}
+          {pr.title && <span className="min-w-0 flex-1 truncate text-muted">{pr.title}</span>}
           {pr.fresh ? (
             <span className="flex gap-1.5">
               {(["state", "ci", "review", "mergeable"] as const).map(k => pr[k] && (
@@ -299,7 +299,7 @@ function PrPanel({ prs }: { prs: PrDigest[] }) {
               ))}
             </span>
           ) : (
-            <span className="text-xs text-neutral-400">
+            <span className="text-xs text-faint">
               {pr.fetchedAt ? "cache stale — awaiting next poll" : "no PR data cached yet"}
             </span>
           )}

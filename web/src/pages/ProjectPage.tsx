@@ -20,8 +20,8 @@ export default function ProjectPage() {
   useSse(detail.refresh);
   useRevalidateOnFocus(detail.refresh);
 
-  if (detail.error) return <p className="text-sm text-red-600">Failed to load: {detail.error}</p>;
-  if (!detail.data) return <p className="text-sm text-neutral-500">Loading…</p>;
+  if (detail.error) return <p className="text-sm text-danger">Failed to load: {detail.error}</p>;
+  if (!detail.data) return <p className="text-sm text-muted">Loading…</p>;
   const p = detail.data;
 
   const groups = new Map<string, ReturnType<typeof flatTasks>>();
@@ -37,17 +37,17 @@ export default function ProjectPage() {
       <header className="flex flex-wrap items-center gap-3">
         {p.status && <StatusBadge status={p.status} />}
         <h1 className="text-xl font-semibold">{p.name}</h1>
-        <span className="font-mono text-sm text-neutral-400">{p.slug}</span>
+        <span className="font-mono text-sm text-faint">{p.slug}</span>
         {p.repo.remote && (
-          <a href={p.repo.remote} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline dark:text-blue-400">repo →</a>
+          <a href={p.repo.remote} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">repo →</a>
         )}
         <span className="flex-1" />
-        <label className="flex items-center gap-1 text-xs text-neutral-500">
+        <label className="flex items-center gap-1 text-xs text-muted">
           <input type="checkbox" checked={showArchived}
                  onChange={e => setParams(e.target.checked ? { archived: "1" } : {})} />
           show archived
         </label>
-        <a href={`/p/${encodeURIComponent(p.slug)}`} className="text-xs text-neutral-500 hover:underline">classic</a>
+        <a href={`/p/${encodeURIComponent(p.slug)}`} className="text-xs text-muted hover:underline">classic</a>
       </header>
 
       <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
@@ -96,16 +96,16 @@ function ProjectSection({ project, section, onSaved }: { project: ProjectDetail;
     <SectionCard
       title={section.heading ?? ""}
       meta={canEdit && !editing ? (
-        <button onClick={() => { setValue(section.raw); setEditing(true); }} className="text-blue-600 hover:underline dark:text-blue-400">edit</button>
+        <button onClick={() => { setValue(section.raw); setEditing(true); }} className="text-accent hover:underline">edit</button>
       ) : undefined}
     >
       {editing ? (
         <div className="flex flex-col gap-2 p-3">
           <textarea value={value} onChange={e => setValue(e.target.value)} rows={Math.max(4, value.split("\n").length + 1)}
-                    className="w-full rounded border border-neutral-300 bg-white p-2 font-mono text-sm dark:border-neutral-700 dark:bg-neutral-900" />
+                    className="w-full rounded border border-edge bg-surface p-2 font-mono text-sm" />
           <div className="flex gap-2">
-            <button onClick={save} className="rounded bg-blue-600 px-3 py-1 text-sm text-white hover:bg-blue-700">Save</button>
-            <button onClick={() => setEditing(false)} className="rounded border border-neutral-300 px-3 py-1 text-sm dark:border-neutral-700">Cancel</button>
+            <button onClick={save} className="rounded bg-accent-solid px-3 py-1 text-sm text-on-accent hover:brightness-110">Save</button>
+            <button onClick={() => setEditing(false)} className="rounded border border-edge px-3 py-1 text-sm">Cancel</button>
           </div>
         </div>
       ) : section.raw.trim() === "" ? (
@@ -140,7 +140,7 @@ function NewTaskForm({ project, onCreated }: { project: ProjectDetail; onCreated
   if (!open) {
     return (
       <button onClick={() => setOpen(true)}
-              className="self-start rounded border border-dashed border-neutral-300 px-3 py-1 text-sm text-neutral-500 hover:border-neutral-400 hover:text-neutral-700 dark:border-neutral-700 dark:hover:text-neutral-300">
+              className="self-start rounded border border-dashed border-edge px-3 py-1 text-sm text-muted hover:border-muted hover:text-ink/90">
         + New task
       </button>
     );
@@ -149,20 +149,20 @@ function NewTaskForm({ project, onCreated }: { project: ProjectDetail; onCreated
     <SectionCard title="New task">
       <div className="flex flex-col gap-2 p-3 text-sm">
         <input autoFocus value={title} onChange={e => setTitle(e.target.value)} placeholder="Title"
-               className="rounded border border-neutral-300 bg-white px-2 py-1 dark:border-neutral-700 dark:bg-neutral-900" />
+               className="rounded border border-edge bg-surface px-2 py-1" />
         <select value={type} onChange={e => setType(e.target.value)}
-                className="w-40 rounded border border-neutral-300 bg-white px-2 py-1 dark:border-neutral-700 dark:bg-neutral-900">
+                className="w-40 rounded border border-edge bg-surface px-2 py-1">
           <option value="pr">pr</option>
           <option value="investigation">investigation</option>
         </select>
         <textarea value={context} onChange={e => setContext(e.target.value)} placeholder="Context (optional; lands in ## Context)" rows={3}
-                  className="rounded border border-neutral-300 bg-white px-2 py-1 font-mono dark:border-neutral-700 dark:bg-neutral-900" />
+                  className="rounded border border-edge bg-surface px-2 py-1 font-mono" />
         <div className="flex gap-2">
           <button onClick={() => create(false)} disabled={!title.trim()}
-                  className="rounded bg-blue-600 px-3 py-1 text-white hover:bg-blue-700 disabled:opacity-40">Create</button>
+                  className="rounded bg-accent-solid px-3 py-1 text-on-accent hover:brightness-110 disabled:opacity-40">Create</button>
           <button onClick={() => create(true)} disabled={!title.trim()}
-                  className="rounded border border-blue-600 px-3 py-1 text-blue-600 hover:bg-blue-50 disabled:opacity-40 dark:hover:bg-blue-950">Create &amp; ready</button>
-          <button onClick={() => setOpen(false)} className="rounded border border-neutral-300 px-3 py-1 dark:border-neutral-700">Cancel</button>
+                  className="rounded border border-accent-solid px-3 py-1 text-accent hover:bg-accent/10 disabled:opacity-40">Create &amp; ready</button>
+          <button onClick={() => setOpen(false)} className="rounded border border-edge px-3 py-1">Cancel</button>
         </div>
       </div>
     </SectionCard>

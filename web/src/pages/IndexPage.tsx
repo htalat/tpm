@@ -30,8 +30,8 @@ export default function IndexPage() {
     overview.refresh();
   };
 
-  if (overview.error) return <p className="text-sm text-red-600">Failed to load: {overview.error}</p>;
-  if (!overview.data) return <p className="text-sm text-neutral-500">Loading…</p>;
+  if (overview.error) return <p className="text-sm text-danger">Failed to load: {overview.error}</p>;
+  if (!overview.data) return <p className="text-sm text-muted">Loading…</p>;
   const { projects, inbox, queue, events, harness } = overview.data;
   const inFlight = projects
     .flatMap(p => flatTasks(p.tasks))
@@ -48,7 +48,7 @@ export default function IndexPage() {
               <button
                 onClick={() => act(t, t.status === "blocked" ? "reopen" : "ready")}
                 title={t.status === "blocked" ? "reopen" : "promote to ready"}
-                className="rounded border border-neutral-300 px-2 py-0.5 text-xs text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                className="rounded border border-edge px-2 py-0.5 text-xs text-muted hover:bg-surface-hover"
               >
                 {t.status === "blocked" ? "reopen" : "▶ ready"}
               </button>
@@ -75,15 +75,15 @@ export default function IndexPage() {
 
       <SectionCard title="Activity">
         {events.length === 0 ? <Empty text="No journal entries yet." /> : (
-          <ul className="divide-y divide-neutral-100 text-sm dark:divide-neutral-900">
+          <ul className="divide-y divide-hairline text-sm">
             {events.slice(0, 12).map((e, i) => (
               <li key={`${e.at}-${i}`} className="flex items-center gap-2 px-3 py-1.5">
-                <span className="w-40 shrink-0 font-mono text-xs text-neutral-400">{shortStamp(e.at)}</span>
+                <span className="w-40 shrink-0 font-mono text-xs text-faint">{shortStamp(e.at)}</span>
                 <span className="font-mono text-xs">{e.task}</span>
                 <StatusBadge status={e.from || "?"} />
-                <span className="text-neutral-400">→</span>
+                <span className="text-faint">→</span>
                 <StatusBadge status={e.to} />
-                <span className="min-w-0 flex-1 truncate text-xs text-neutral-500">{e.verb} · {e.actor}</span>
+                <span className="min-w-0 flex-1 truncate text-xs text-muted">{e.verb} · {e.actor}</span>
               </li>
             ))}
           </ul>
@@ -98,14 +98,14 @@ function ProjectBlock({ project }: { project: ProjectSummary }) {
   const visible = flatTasks(project.tasks).filter(t => !t.isParent && !["done", "dropped"].includes(t.status));
   const badgeCounts = Object.entries(project.counts).sort();
   return (
-    <div className="border-b border-neutral-100 last:border-0 dark:border-neutral-900">
-      <button onClick={() => setOpen(o => !o)} className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-neutral-50 dark:hover:bg-neutral-900">
-        <span className="w-4 text-xs text-neutral-400">{open ? "▾" : "▸"}</span>
+    <div className="border-b border-hairline last:border-0">
+      <button onClick={() => setOpen(o => !o)} className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-surface-hover">
+        <span className="w-4 text-xs text-faint">{open ? "▾" : "▸"}</span>
         <span className="font-medium">{project.name}</span>
-        <span className="font-mono text-xs text-neutral-400">{project.slug}</span>
+        <span className="font-mono text-xs text-faint">{project.slug}</span>
         <span className="flex-1" />
         {badgeCounts.map(([status, n]) => (
-          <span key={status} className="flex items-center gap-1 text-xs text-neutral-500">
+          <span key={status} className="flex items-center gap-1 text-xs text-muted">
             <StatusBadge status={status} /> {n}
           </span>
         ))}
@@ -128,7 +128,7 @@ function HarnessPanel({ harness, onChanged }: { harness: { desiredWorkers?: numb
   const stateCls = harness.poolDied
     ? "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300"
     : workers === 0
-      ? "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"
+      ? "bg-hairline text-muted"
       : "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300";
 
   const setWorkers = async (n: number) => {
@@ -143,24 +143,24 @@ function HarnessPanel({ harness, onChanged }: { harness: { desiredWorkers?: numb
   };
 
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm dark:border-neutral-800 dark:bg-neutral-950">
+    <div className="flex items-center gap-3 rounded-xl border border-edge bg-surface px-3 py-2 text-sm">
       <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${stateCls}`}>{state}</span>
-      {harness.poolDied && <span className="text-xs text-red-600">{harness.poolDied}</span>}
-      <span className="text-neutral-500">workers</span>
+      {harness.poolDied && <span className="text-xs text-danger">{harness.poolDied}</span>}
+      <span className="text-muted">workers</span>
       <div className="flex items-center gap-1">
-        <button onClick={() => setWorkers(workers - 1)} className="h-6 w-6 rounded border border-neutral-300 text-xs hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800">−</button>
+        <button onClick={() => setWorkers(workers - 1)} className="h-6 w-6 rounded border border-edge text-xs hover:bg-surface-hover">−</button>
         <span className="w-6 text-center font-mono">{workers}</span>
-        <button onClick={() => setWorkers(workers + 1)} className="h-6 w-6 rounded border border-neutral-300 text-xs hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800">+</button>
+        <button onClick={() => setWorkers(workers + 1)} className="h-6 w-6 rounded border border-edge text-xs hover:bg-surface-hover">+</button>
       </div>
       <button
         onClick={() => setWorkers(workers === 0 ? 1 : 0)}
-        className="rounded border border-neutral-300 px-2 py-0.5 text-xs hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
+        className="rounded border border-edge px-2 py-0.5 text-xs hover:bg-surface-hover"
       >
         {workers === 0 ? "resume" : "pause"}
       </button>
       <span className="flex-1" />
       {harness.lastPoll && (
-        <span className="text-xs text-neutral-400" title={harness.lastPoll.error ?? ""}>
+        <span className="text-xs text-faint" title={harness.lastPoll.error ?? ""}>
           last poll {harness.lastPoll.at.replace("T", " ").slice(0, 19)}{harness.lastPoll.error ? " ⚠" : ""}
         </span>
       )}

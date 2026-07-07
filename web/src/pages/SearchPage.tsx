@@ -16,12 +16,12 @@ export default function SearchPage() {
       <header className="flex items-center gap-3">
         <h1 className="text-xl font-semibold">Search</h1>
         {q && results.data && (
-          <span className="text-sm text-neutral-500">
+          <span className="text-sm text-muted">
             {results.data.hits.length} result{results.data.hits.length === 1 ? "" : "s"} for <code>{q}</code>
           </span>
         )}
         <span className="flex-1" />
-        <label className="flex items-center gap-1 text-xs text-neutral-500">
+        <label className="flex items-center gap-1 text-xs text-muted">
           <input type="checkbox" checked={archived}
                  onChange={e => setParams(e.target.checked ? { q, archived: "1" } : { q })} />
           include archived
@@ -32,17 +32,17 @@ export default function SearchPage() {
         <input
           name="q" type="search" defaultValue={q} autoFocus
           placeholder="slug, title, status, tag, PR URL, body…"
-          className="w-full max-w-xl rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-900"
+          className="w-full max-w-xl rounded-lg border border-edge bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
         />
       </form>
 
-      {results.error && <p className="text-sm text-red-600">{results.error}</p>}
+      {results.error && <p className="text-sm text-danger">{results.error}</p>}
       {q && results.data && (
         <SectionCard title="Results">
           {results.data.hits.length === 0 ? <Empty text={`No tasks match "${q}".`} /> : results.data.hits.map(h => (
             <div key={h.qualifiedSlug}>
               <TaskRow task={h} />
-              {h.snippet && <p className="px-10 pb-1.5 text-xs text-neutral-500"><Mark text={h.snippet} q={q} /></p>}
+              {h.snippet && <p className="px-10 pb-1.5 text-xs text-muted"><Mark text={h.snippet} q={q} /></p>}
             </div>
           ))}
         </SectionCard>
@@ -58,7 +58,7 @@ function Mark({ text, q }: { text: string; q: string }) {
     <>
       {parts.map((p, i) =>
         p.toLowerCase() === q.toLowerCase()
-          ? <mark key={i} className="rounded bg-yellow-200 px-0.5 dark:bg-yellow-800">{p}</mark>
+          ? <mark key={i} className="rounded bg-warn/30 px-0.5">{p}</mark>
           : <span key={i}>{p}</span>,
       )}
     </>
