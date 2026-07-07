@@ -88,9 +88,6 @@ function writeTree(env: GoldenEnv, opts: { type: string; title: string; context:
   }));
   mkdirSync(join(env.root, ".tpm"), { recursive: true });
   const proj = join(env.root, "golden");
-  // Folder-form from the start: dispatch writes runs/ into the task folder,
-  // and seeding file-form trips a fold-then-stale-path bug in the eager claim
-  // flip (filed separately) that real dispatch-ready tasks don't hit.
   mkdirSync(join(proj, "tasks", env.slug), { recursive: true });
   writeFileSync(join(proj, "project.md"), `---
 name: Golden
@@ -287,6 +284,9 @@ export interface GoldenRunOpts {
   model?: string;      // TPM_AGENT_MODEL pin
   minutes?: number;    // per-dispatch time bound
   keep?: boolean;      // keep env dirs for debugging
+  // Test seam: mutate the fixture between setup and dispatch (e.g. convert a
+  // folder task back to file-form for the tpm/188 fold regression).
+  mutateEnv?: (env: GoldenEnv) => void;
   log?: (line: string) => void;
 }
 
@@ -352,6 +352,7 @@ export async function runGoldenSuite(opts: GoldenRunOpts = {}): Promise<GoldenSu
       };
       log(`${def.name} rep ${rep}: setting up ${base}`);
       def.setup(env);
+      opts.mutateEnv?.(env);
 
       const readied = tpm(env, opts, ["ready", env.slug]);
       const claimed = tpm(env, opts, ["next", "--autonomous", "--claim", "evals-runner"]);

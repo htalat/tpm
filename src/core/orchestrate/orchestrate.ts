@@ -1134,7 +1134,16 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
   // tells the post-mortem story).
   let logFile: string | undefined;
   try {
-    logFile = prepareRunLogPath(pick.task).logFile;
+    const prepared = prepareRunLogPath(pick.task);
+    logFile = prepared.logFile;
+    // Folding a legacy file-form task moves task.md into a folder; every
+    // later write against the stale in-memory path (the eager claim flip,
+    // the post-run nets) would ENOENT and kill the dispatch before the agent
+    // ever spawned. Adopt the post-fold path + dir on the in-memory Task.
+    if (prepared.taskPath !== pick.task.path) {
+      pick.task.path = prepared.taskPath;
+      pick.task.dir = dirname(prepared.taskPath);
+    }
   } catch (e) {
     log("WARN", `${slug}: could not prepare run log path (${(e as Error).message}); continuing without capture`);
   }
