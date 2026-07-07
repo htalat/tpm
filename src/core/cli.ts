@@ -32,6 +32,7 @@ import { refreshSkills } from "./refresh_skills.ts";
 import { appendStatusEvent } from "./events.ts";
 import { migrateTree } from "./migrate.ts";
 import { runDoctor, formatDoctor } from "./doctor.ts";
+import { runEvals, formatEvals } from "./evals.ts";
 import { execCommand, COMMAND_VERBS } from "./commands.ts";
 import { tryDaemon } from "./daemon_client.ts";
 
@@ -156,6 +157,24 @@ try {
             for (const c of t.children ?? []) console.log(formatTaskLine(c, 1));
           }
         }
+      }
+      break;
+    }
+    case "evals": {
+      // Layer-1 harness evals: score every run from its transcript + the
+      // status journal. Read-only. --since <days> windows; --json for the
+      // full machine-readable report (the SPA/dashboards consume this).
+      const root = findRoot();
+      const sinceRaw = parseFlag(args, "--since");
+      const sinceDays = sinceRaw !== undefined ? Number(sinceRaw) : undefined;
+      if (sinceRaw !== undefined && (!Number.isFinite(sinceDays) || sinceDays! <= 0)) {
+        usage("tpm evals [--since <days>] [--json]");
+      }
+      const report = runEvals(root, { sinceDays });
+      if (args.includes("--json")) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        print(formatEvals(report));
       }
       break;
     }
@@ -1015,6 +1034,7 @@ Usage:
   tpm disallow <task>                        set allow_orchestrator: false
   tpm archive <task | project/task>          move a done/dropped task to tasks/archive/
   tpm fold <task | project/task>             promote a file-form task to folder-form (idempotent)
+  tpm evals [--since <days>] [--json]        harness metrics from run transcripts + the status journal
   tpm doctor                                 health checks: config, tree, statuses, journal, locks, SPA build, daemon
   tpm migrate [--dry-run]                    rewrite pre-rename statuses in the tree (needs-feedback->rework,
                                              needs-review->review, needs-close->closing); idempotent
