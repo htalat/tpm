@@ -15,7 +15,9 @@ function runCli(
 ): { status: number | null; stdout: string; stderr: string } {
   const r = spawnSync(process.execPath, [CLI, ...args], {
     encoding: "utf8",
-    env: env ? { ...process.env, ...env } : process.env,
+    // TPM_NO_DAEMON: unit tests exercise local execution; the root guard
+    // would already 409 a live daemon, but don't even knock.
+    env: { ...process.env, TPM_NO_DAEMON: "1", ...(env ?? {}) },
   });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }
