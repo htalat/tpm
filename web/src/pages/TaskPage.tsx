@@ -42,7 +42,13 @@ export default function TaskPage() {
   // Route: /t/* under the /app basename — the wildcard is the slug path.
   const segments = useLocation().pathname.replace(/^\/t\//, "").split("/").map(decodeURIComponent);
   const detail = useData(() => api.task(segments), [segments.join("/")]);
-  useSse(detail.refresh);
+  const qualified = segments.join("/");
+  useSse(msg => {
+    // Journal slugs are numbered (demo/001-x); route segments may be too —
+    // refetch only when the event plausibly concerns this task.
+    if (msg.kind === "status" && !msg.event.task.endsWith(qualified) && !qualified.endsWith(msg.event.task)) return;
+    detail.refresh();
+  });
   useRevalidateOnFocus(detail.refresh);
 
   if (detail.error) return <p className="text-sm text-danger">Failed to load: {detail.error}</p>;

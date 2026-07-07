@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { api } from "../api";
-import { useData, useRevalidateOnFocus, useSse } from "../hooks";
+import { useData, useDebounced, useRevalidateOnFocus, useSse } from "../hooks";
 import { Empty, SectionCard, StatusBadge, TaskRow, useFlash } from "../components";
 import type { ProjectSummary, TaskSummary } from "../types";
-import { flatTasks, shortStamp } from "../lib";
+import { flatTasks, patchTaskStatus, shortStamp } from "../lib";
 import { useBulk } from "../bulk";
 import type { RowSelection } from "../components";
 
@@ -19,7 +19,25 @@ export default function IndexPage() {
     ]);
     return { projects: projects.projects, inbox: inbox.items, queue: queue.items, events: events.events, harness };
   });
-  useSse(overview.refresh);
+  // Push path: apply the journal event immediately (badges + activity feed),
+  // reconcile membership (inbox/queue are server logic) with one debounced
+  // refetch per burst — a bulk action emits N events but costs one round trip.
+  const reconcile = useDebounced(overview.refresh, 1_200);
+  useSse(msg => {
+    if (msg.kind === "harness") {
+      reconcile();
+      return;
+    }
+    const e = msg.event;
+    overview.mutate(d => ({
+      ...d,
+      projects: d.projects.map(p => ({ ...p, tasks: patchTaskStatus(p.tasks, e.task, e.to) })),
+      inbox: patchTaskStatus(d.inbox, e.task, e.to),
+      queue: patchTaskStatus(d.queue, e.task, e.to),
+      events: [e, ...d.events].slice(0, 50),
+    }));
+    reconcile();
+  });
   useRevalidateOnFocus(overview.refresh);
 
   const act = async (task: TaskSummary, action: string, fields: Record<string, unknown> = {}) => {

@@ -43,3 +43,21 @@ export function backendIsStale(vocab: { apiVersion?: number } | null): boolean {
   if (!vocab) return false; // still loading / unreachable — not a skew signal
   return (vocab.apiVersion ?? 0) < EXPECTED_API_VERSION;
 }
+
+// Apply a journal event to loaded task summaries in place-ish (new objects on
+// the changed path). Membership in derived lists (inbox/queue) is server
+// logic — callers reconcile with a debounced refetch; this keeps badges live
+// in the meantime.
+export function patchTaskStatus<T extends TaskSummary>(tasks: T[], qualifiedSlug: string, status: string): T[] {
+  let changed = false;
+  const walk = (list: TaskSummary[]): TaskSummary[] => list.map(t => {
+    const children = t.children.length ? walk(t.children) : t.children;
+    if (t.qualifiedSlug === qualifiedSlug) {
+      changed = true;
+      return { ...t, status, ownStatus: status, children };
+    }
+    return children === t.children ? t : { ...t, children };
+  });
+  const next = walk(tasks) as T[];
+  return changed ? next : tasks;
+}
