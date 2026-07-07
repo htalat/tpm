@@ -230,3 +230,38 @@ test("api: every MUTATION_ACTIONS entry is buildable with the right fields", () 
     assert.ok(args, `buildCliArgs returned null for ${action}`);
   }
 });
+
+test("api: task detail digests cached PRs (github badge set, stale fallback)", () => {
+  const url = "https://github.com/o/r/pull/7";
+  const t = task("001-a", "review", { prs: [url] });
+  const p = project("alpha", [t]);
+  const fresh = {
+    fetchedAt: new Date().toISOString(),
+    host: "github",
+    pr: { url, state: "OPEN", title: "Fix things", reviewDecision: "APPROVED", mergeStateStatus: "CLEAN", statusCheckRollup: [{ conclusion: "SUCCESS" }] },
+  };
+  const r = get("/api/tasks/alpha/001-a", "", [p], { prCache: () => fresh })!;
+  const d = r.json.prDetails[0];
+  assert.equal(d.displayId, "#7");
+  assert.equal(d.fresh, true);
+  assert.equal(d.state, "OPEN");
+  assert.equal(d.ci, "PASS");
+  assert.equal(d.review, "APPROVED");
+
+  const stale = { ...fresh, fetchedAt: "2020-01-01T00:00:00Z" };
+  const r2 = get("/api/tasks/alpha/001-a", "", [p], { prCache: () => stale })!;
+  assert.equal(r2.json.prDetails[0].fresh, false);
+  assert.equal(r2.json.prDetails[0].state, undefined);
+
+  const r3 = get("/api/tasks/alpha/001-a", "", [p])!;
+  assert.equal(r3.json.prDetails[0].fresh, false);
+});
+
+test("api: /api/config returns the injected snapshot; /runs falls through", () => {
+  const snapshot = { path: "/x/config.json", raw: "{}", parsed: {}, error: null, missing: false };
+  const r = get("/api/config", "", [], { configSnapshot: () => snapshot })!;
+  assert.deepEqual(r.json.config, snapshot);
+
+  // The runs sub-resource belongs to route() — routeApi must not claim it.
+  assert.equal(get("/api/tasks/alpha/001-a/runs", "", [project("alpha", [task("001-a", "ready")])]), null);
+});

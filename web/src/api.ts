@@ -1,6 +1,7 @@
 import type {
-  HarnessSnapshot, MutationResponse, ProjectDetail, ProjectSummary,
-  QueueItem, SearchHit, StatusEvent, TaskDetail, Vocab,
+  ConfigSnapshot, HarnessSnapshot, LogSource, MutationResponse, ProjectDetail,
+  ProjectSummary, QueueItem, RunsFeed, SearchHit, StatusEvent, TailChunk,
+  TaskDetail, Vocab,
 } from "./types";
 
 // Thin typed client over the JSON API. Paths are same-origin: vite's dev
@@ -61,6 +62,12 @@ export const api = {
   vocab: () => getJson<Vocab>("/api/vocab"),
   recentEvents: () => getJson<{ events: StatusEvent[] }>("/api/events/recent"),
   harness: () => getJson<HarnessSnapshot>("/api/harness"),
+  runs: (segments: string[]) => getJson<RunsFeed>(`/api/tasks/${pathOf(segments)}/runs`),
+  tail: (tailPath: string, offset: number, format: string) =>
+    getJson<TailChunk>(`${tailPath}?offset=${offset}&format=${enc(format)}`),
+  logs: (category?: "orchestrate" | "poller", lines = 200) =>
+    getJson<{ sources: LogSource[] }>(`/api/logs${category ? `/${category}` : ""}?lines=${lines}`),
+  config: () => getJson<{ config: ConfigSnapshot }>("/api/config"),
 
   mutateTask: (qualifiedSlug: string, action: string, fields: Record<string, unknown> = {}) =>
     postJson(`/api/tasks/${enc(qualifiedSlug)}/${action}`, fields),

@@ -47,3 +47,28 @@
 .markdown pre code { @apply bg-transparent p-0; }
 .markdown a { @apply text-blue-600 hover:underline dark:text-blue-400; }
 .markdown blockquote { @apply my-2 border-l-2 border-neutral-300 pl-3 text-neutral-600 dark:border-neutral-700 dark:text-neutral-400; }
+
+/* Run transcript fragments (server-rendered <li class="ev …"> from
+   renderRunEvent) — styles lifted from css.ts so both viewers match. */
+.run-events { list-style: none; padding: 0; margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.82em; line-height: 1.45; }
+.run-events .ev { display: flex; gap: 0.65rem; padding: 0.15rem 0; border-top: 1px solid #f0f3f6; }
+.run-events .ev:first-child { border-top: 0; }
+.run-events .ev-tag { flex: 0 0 auto; min-width: 9.5em; color: #57606a; font-weight: 500; }
+.run-events .ev-body { flex: 1 1 auto; color: #1f2328; word-break: break-word; }
+.run-events .ev-system .ev-tag { color: #8d96a0; }
+.run-events .ev-tool .ev-tag { color: #0969da; }
+.run-events .ev-result .ev-tag { color: #1a7f37; }
+.run-events .ev-final { border-top: 2px solid #d0d7de; margin-top: 0.35rem; padding-top: 0.35rem; }
+.run-events .ev-final .ev-tag { color: #1a7f37; }
+.run-events .ev-error .ev-tag { color: #cf222e; }
+.run-events .ev-raw .ev-tag { color: #8d96a0; }
+@media (prefers-color-scheme: dark) {
+  .run-events .ev { border-color: #21262d; }
+  .run-events .ev-final { border-top-color: #30363d; }
+  .run-events .ev-body { color: #e6edf3; }
+  .run-events .ev-tag { color: #8d96a0; }
+  .run-events .ev-tool .ev-tag { color: #79c0ff; }
+  .run-events .ev-result .ev-tag { color: #56d364; }
+  .run-events .ev-final .ev-tag { color: #56d364; }
+  .run-events .ev-error .ev-tag { color: #ff7b72; }
+}

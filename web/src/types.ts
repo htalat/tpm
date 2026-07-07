@@ -44,11 +44,78 @@ export interface Section {
   html: string;
 }
 
+export interface PrDigest {
+  url: string;
+  displayId: string | null;
+  host: string | null;
+  fetchedAt: string | null;
+  fresh: boolean;
+  title?: string | null;
+  state?: string;
+  ci?: string;
+  review?: string;
+  mergeable?: string;
+}
+
 export interface TaskDetail extends TaskSummary {
   project: { slug: string; name: string };
   sections: Section[];
   sessionId: string | null;
+  prDetails: PrDigest[];
   mtimeMs: number;
+}
+
+// GET /api/tasks/<path>/runs (served by route(): transcript html is
+// server-rendered, same fragments the SSR panel shows).
+export interface RunsFeed {
+  runs: { name: string; timestamp: string }[];
+  latest: {
+    name: string;
+    running: boolean;
+    html: string;
+    totalEvents: number;
+    shownEvents: number;
+    parsed: number;
+    skipped: number;
+    offset: number;
+    format: string;
+    sessionId: string | null;
+    tailPath: string;
+    rawPath: string;
+  } | null;
+}
+
+export interface TailChunk {
+  html: string;
+  offset: number;
+  running: boolean;
+}
+
+// GET /api/logs — parsed harness log sources (core/harness_log.ts shapes).
+export interface LogLine {
+  raw: string;
+  timestamp?: string;
+  level?: "INFO" | "WARN" | "ERROR";
+  script?: string;
+  message?: string;
+  source?: "task-log";
+}
+
+export interface LogSource {
+  name: string;
+  path: string;
+  exists: boolean;
+  lines: LogLine[];
+  totalLines: number;
+}
+
+// GET /api/config — non-throwing snapshot of ~/.tpm/config.json.
+export interface ConfigSnapshot {
+  path: string;
+  raw: string;
+  parsed: Record<string, unknown> | null;
+  error: string | null;
+  missing: boolean;
 }
 
 export interface ProjectDetail extends ProjectSummary {

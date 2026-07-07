@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useState } from "react";
 import type { ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import type { TaskSummary } from "./types";
 import { taskHref } from "./lib";
 
@@ -64,9 +64,9 @@ export function TaskRow({ task, actions }: { task: TaskSummary; actions?: ReactN
   return (
     <div className="flex items-center gap-3 border-b border-neutral-200 px-2 py-1.5 text-sm last:border-0 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-900">
       <StatusBadge status={task.status} />
-      <a href={taskHref(task)} className="shrink-0 font-mono text-[13px] text-blue-700 hover:underline dark:text-blue-400">
+      <Link to={taskHref(task)} className="shrink-0 font-mono text-[13px] text-blue-700 hover:underline dark:text-blue-400">
         {task.qualifiedSlug}
-      </a>
+      </Link>
       <span className="min-w-0 flex-1 truncate text-neutral-700 dark:text-neutral-300">{task.title}</span>
       {task.lock && (
         <span title={`held by ${task.lock.agentId} (pid ${task.lock.pid}) since ${task.lock.acquired}`}
@@ -108,23 +108,39 @@ export function Empty({ text }: { text: string }) {
 
 // ---- masthead ---------------------------------------------------------------
 
+function MastheadSearch() {
+  const navigate = useNavigate();
+  return (
+    <form
+      className="flex-1"
+      onSubmit={e => {
+        e.preventDefault();
+        const q = String(new FormData(e.currentTarget).get("q") ?? "").trim();
+        if (q) navigate(`/search?q=${encodeURIComponent(q)}`);
+      }}
+    >
+      <input
+        type="search"
+        name="q"
+        placeholder="slug, title, status, tag, PR URL, body…"
+        className="w-full max-w-md rounded-lg border border-neutral-300 bg-white px-3 py-1 text-sm outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+      />
+    </form>
+  );
+}
+
 export function Masthead() {
   return (
     <header className="mb-6 flex items-center gap-4 border-b border-neutral-200 pb-3 dark:border-neutral-800">
       <Link to="/" className="text-lg font-bold tracking-tight text-neutral-900 dark:text-neutral-100">
         tpm
       </Link>
-      <form action="/search" method="get" className="flex-1">
-        <input
-          type="search"
-          name="q"
-          placeholder="slug, title, status, tag, PR URL, body…"
-          className="w-full max-w-md rounded-lg border border-neutral-300 bg-white px-3 py-1 text-sm outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
-        />
-      </form>
-      <a href="/" className="text-xs text-neutral-500 hover:underline" title="server-rendered pages">
-        classic
-      </a>
+      <MastheadSearch />
+      <nav className="flex items-center gap-3 text-xs text-neutral-500">
+        <Link to="/logs" className="hover:underline">logs</Link>
+        <Link to="/config" className="hover:underline">config</Link>
+        <a href="/?classic=1" className="hover:underline" title="server-rendered pages">classic</a>
+      </nav>
     </header>
   );
 }
