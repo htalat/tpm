@@ -66,19 +66,23 @@ export function FlashProvider({ children }: { children: ReactNode }) {
 export interface RowSelection {
   selectable: (task: TaskSummary) => boolean;
   isSelected: (slug: string) => boolean;
-  toggle: (slug: string) => void;
+  toggle: (slug: string, shiftKey: boolean) => void;
 }
 
-export function TaskRow({ task, actions, selection }: { task: TaskSummary; actions?: ReactNode; selection?: RowSelection }) {
+export function TaskRow({ task, actions, selection, cursor = false }: { task: TaskSummary; actions?: ReactNode; selection?: RowSelection; cursor?: boolean }) {
   return (
-    <div className="flex items-center gap-3 border-b border-edge px-2 py-1.5 text-sm last:border-0 hover:bg-surface-hover">
+    <div
+      data-row={task.qualifiedSlug}
+      className={`flex items-center gap-3 border-b border-edge px-2 py-1.5 text-sm last:border-0 hover:bg-surface-hover ${cursor ? "ring-1 ring-inset ring-accent/60" : ""}`}
+    >
       {selection && (
         <input
           type="checkbox"
           className="accent-[var(--accent-solid)]"
           disabled={!selection.selectable(task)}
           checked={selection.isSelected(task.qualifiedSlug)}
-          onChange={() => selection.toggle(task.qualifiedSlug)}
+          onChange={() => {}}
+          onClick={e => selection.toggle(task.qualifiedSlug, e.shiftKey)}
           aria-label={`select ${task.qualifiedSlug}`}
         />
       )}

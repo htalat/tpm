@@ -4,7 +4,7 @@ import { useData, useDebounced, useRevalidateOnFocus, useSse } from "../hooks";
 import { Empty, SectionCard, StatusBadge, TaskRow, useFlash } from "../components";
 import type { ProjectSummary, TaskSummary } from "../types";
 import { flatTasks, patchTaskStatus, shortStamp } from "../lib";
-import { useBulk } from "../bulk";
+import { SelectAll, useBulk, useKeyNav } from "../bulk";
 import type { RowSelection } from "../components";
 
 // The control surface: harness panel, inbox, agent queue, in flight, projects,
@@ -54,6 +54,12 @@ export default function IndexPage() {
     ? dedupe([...overview.data.projects.flatMap(p => flatTasks(p.tasks)), ...overview.data.inbox, ...overview.data.queue])
     : [];
   const bulk = useBulk(allTasks, overview.refresh);
+  const inFlightNow = overview.data
+    ? overview.data.projects.flatMap(p => flatTasks(p.tasks)).filter(t => t.status === "in-progress")
+    : [];
+  // j/k cursor walks the three queue sections in visual order.
+  const navOrder = overview.data ? dedupe([...overview.data.inbox, ...inFlightNow, ...overview.data.queue]) : [];
+  const cursor = useKeyNav(navOrder, bulk.selection, bulk.selectable);
 
   if (overview.error) return <p className="text-sm text-danger">Failed to load: {overview.error}</p>;
   if (!overview.data) return <p className="text-sm text-muted">Loading…</p>;
@@ -66,9 +72,9 @@ export default function IndexPage() {
     <div className="flex flex-col gap-5">
       {harness.running && <HarnessPanel harness={harness} onChanged={overview.refresh} />}
 
-      <SectionCard title="Your inbox" meta={`${inbox.length} task${inbox.length === 1 ? "" : "s"}`}>
+      <SectionCard title="Your inbox" meta={<><SelectAll tasks={inbox} selection={bulk.selection} selectable={bulk.selectable} />{`${inbox.length} task${inbox.length === 1 ? "" : "s"}`}</>}>
         {inbox.length === 0 ? <Empty text="Inbox zero." /> : inbox.map(t => (
-          <TaskRow key={t.qualifiedSlug} task={t} selection={bulk.rowSelection} actions={
+          <TaskRow key={t.qualifiedSlug} task={t} cursor={cursor === t.qualifiedSlug} selection={bulk.rowsFor(inbox)} actions={
             (t.status === "open" || t.status === "blocked") ? (
               <button
                 onClick={() => act(t, t.status === "blocked" ? "reopen" : "ready")}
@@ -82,20 +88,20 @@ export default function IndexPage() {
         ))}
       </SectionCard>
 
-      <SectionCard title="Agent queue" meta={`${queue.length} eligible`}>
+      <SectionCard title="Agent queue" meta={<><SelectAll tasks={queue} selection={bulk.selection} selectable={bulk.selectable} />{`${queue.length} eligible`}</>}>
         {queue.length === 0 ? <Empty text="Nothing queued for agents." /> : queue.map(t => (
-          <TaskRow key={t.qualifiedSlug} task={t} selection={bulk.rowSelection} />
+          <TaskRow key={t.qualifiedSlug} task={t} cursor={cursor === t.qualifiedSlug} selection={bulk.rowsFor(queue)} />
         ))}
       </SectionCard>
 
-      <SectionCard title="In flight" meta={`${inFlight.length} running`}>
+      <SectionCard title="In flight" meta={<><SelectAll tasks={inFlight} selection={bulk.selection} selectable={bulk.selectable} />{`${inFlight.length} running`}</>}>
         {inFlight.length === 0 ? <Empty text="No task is in progress." /> : inFlight.map(t => (
-          <TaskRow key={t.qualifiedSlug} task={t} selection={bulk.rowSelection} />
+          <TaskRow key={t.qualifiedSlug} task={t} cursor={cursor === t.qualifiedSlug} selection={bulk.rowsFor(inFlight)} />
         ))}
       </SectionCard>
 
       <SectionCard title="Projects">
-        {projects.map(p => <ProjectBlock key={p.slug} project={p} selection={bulk.rowSelection} />)}
+        {projects.map(p => <ProjectBlock key={p.slug} project={p} rowsFor={bulk.rowsFor} />)}
       </SectionCard>
 
       <SectionCard title="Activity">
@@ -125,7 +131,7 @@ function dedupe(tasks: TaskSummary[]): TaskSummary[] {
   return [...seen.values()];
 }
 
-function ProjectBlock({ project, selection }: { project: ProjectSummary; selection: RowSelection }) {
+function ProjectBlock({ project, rowsFor }: { project: ProjectSummary; rowsFor: (tasks: TaskSummary[]) => RowSelection }) {
   const [open, setOpen] = useState(false);
   const visible = flatTasks(project.tasks).filter(t => !t.isParent && !["done", "dropped"].includes(t.status));
   const badgeCounts = Object.entries(project.counts).sort();
@@ -145,7 +151,7 @@ function ProjectBlock({ project, selection }: { project: ProjectSummary; selecti
       {open && (
         <div className="pb-1 pl-6">
           {visible.length === 0 ? <Empty text="No open tasks." /> : visible.map(t => (
-            <TaskRow key={t.qualifiedSlug} task={t} selection={selection} />
+            <TaskRow key={t.qualifiedSlug} task={t} selection={rowsFor(visible)} />
           ))}
         </div>
       )}
