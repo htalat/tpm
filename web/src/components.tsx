@@ -286,6 +286,7 @@ export function Masthead() {
       </Link>
       <MastheadSearch />
       <nav className="flex items-center gap-3 text-xs text-muted">
+        <Link to="/board" className="hover:underline">board</Link>
         <Link to="/logs" className="hover:underline">logs</Link>
         <Link to="/config" className="hover:underline">config</Link>
       </nav>

@@ -152,3 +152,19 @@ test("selection ergonomics: select-all, shift-range, keyboard j/x/Escape", async
   await page.keyboard.press("/");
   await expect(page.locator('input[type="search"]').first()).toBeFocused();
 });
+
+test("board: columns render and drag-and-drop flips status through the table", async ({ page }) => {
+  await page.goto("/app/board");
+  await expect(page.locator('[data-column="ready"]')).toBeVisible();
+  // born-in-e2e sits at ready (created earlier in this serial suite).
+  const card = page.locator('[data-card="demo/009-born-in-e2e"]');
+  await expect(card).toBeVisible();
+  await card.dragTo(page.locator('[data-column="open"]'));
+  await expect(page.locator('[data-column="open"] [data-card="demo/009-born-in-e2e"]')).toBeVisible();
+  const detail = await page.request.get("/api/tasks/demo/009-born-in-e2e");
+  expect((await detail.json()).status).toBe("open");
+  // An illegal drag (open -> closing has no edge for a task with no merged PR
+  // context? use open -> rework which the table forbids) surfaces the refusal.
+  await card.dragTo(page.locator('[data-column="rework"]'));
+  await expect(page.getByText(/illegal transition|->/).first()).toBeVisible();
+});
