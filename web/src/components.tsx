@@ -3,7 +3,9 @@ import type { SVGProps } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { TaskSummary } from "./types";
-import { taskHref } from "./lib";
+import { backendIsStale, taskHref } from "./lib";
+import { api } from "./api";
+import { useData } from "./hooks";
 
 // ---- status badge -----------------------------------------------------------
 
@@ -186,6 +188,22 @@ export function ThemeToggle() {
           <Icon />
         </button>
       ))}
+    </div>
+  );
+}
+
+// ---- backend skew banner ------------------------------------------------------
+
+// Rendered app-wide (App mounts it above the routes). Fires when the running
+// tpm serve predates this bundle — the exact failure that shows up as dead
+// checkboxes or missing panels otherwise.
+export function SkewBanner() {
+  const vocab = useData(() => api.vocab(), []);
+  if (!backendIsStale(vocab.data)) return null;
+  return (
+    <div className="mb-4 rounded-lg border border-warn/40 bg-warn-soft px-3 py-2 text-sm text-warn">
+      The running <code>tpm serve</code> is older than this UI — restart it to pick up the new backend
+      (some controls are disabled until then).
     </div>
   );
 }

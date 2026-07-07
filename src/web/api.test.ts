@@ -299,3 +299,9 @@ test("api: /api/vocab ships bulk caps keyed by status", () => {
     for (const c of caps) assert.ok(r.json.bulkActions[c], `unknown bulk action ${c}`);
   }
 });
+
+test("api: /api/vocab carries the wire-surface version for skew detection", () => {
+  const r = get("/api/vocab")!;
+  assert.equal(typeof r.json.apiVersion, "number");
+  assert.ok(r.json.apiVersion >= 2);
+});

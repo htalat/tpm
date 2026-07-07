@@ -1,5 +1,5 @@
 import { BrowserRouter, Route, Routes, useLocation } from "react-router-dom";
-import { FlashProvider, Masthead } from "./components";
+import { FlashProvider, Masthead, SkewBanner } from "./components";
 import IndexPage from "./pages/IndexPage";
 import TaskPage from "./pages/TaskPage";
 import ProjectPage from "./pages/ProjectPage";
@@ -17,6 +17,7 @@ export default function App() {
       <FlashProvider>
         <div className="mx-auto max-w-5xl px-4 py-6 text-ink">
           <Masthead />
+          <SkewBanner />
           <Routes>
             <Route path="/" element={<IndexPage />} />
             <Route path="/search" element={<SearchPage />} />

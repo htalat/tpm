@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { flatTasks, intersectCaps, shortStamp, taskHref } from "./lib";
+import { backendIsStale, flatTasks, intersectCaps, shortStamp, taskHref } from "./lib";
 import type { TaskSummary } from "./types";
 
 function task(slug: string, segments: string[], children: TaskSummary[] = []): TaskSummary {
@@ -53,5 +53,17 @@ describe("intersectCaps", () => {
     expect(intersectCaps(["open", "done"], caps)).toEqual([]);
     expect(intersectCaps(["weird"], caps)).toEqual([]);
     expect(intersectCaps([], caps)).toEqual([]);
+  });
+});
+
+describe("backendIsStale", () => {
+  it("flags a backend older than the bundle", () => {
+    expect(backendIsStale({})).toBe(true);            // pre-versioning server
+    expect(backendIsStale({ apiVersion: 1 })).toBe(true);
+  });
+  it("accepts current and newer backends, and stays quiet while loading", () => {
+    expect(backendIsStale({ apiVersion: 2 })).toBe(false);
+    expect(backendIsStale({ apiVersion: 99 })).toBe(false);
+    expect(backendIsStale(null)).toBe(false);
   });
 });

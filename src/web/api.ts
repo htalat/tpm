@@ -34,6 +34,14 @@ import type { RawPrJson } from "../core/orchestrate/pr_signal.ts";
 
 export type CliRunner = (args: string[]) => { ok: boolean; stdout: string; stderr: string };
 
+// Bumped whenever the wire surface changes shape (new fields the SPA relies
+// on, renamed endpoints). The SPA pins the version it was built against and
+// shows a "restart tpm serve" banner on mismatch — a long-running serve
+// process keeps its backend in memory while /app ships the rebuilt bundle
+// from disk, so skew is otherwise silent (disabled checkboxes, missing
+// panels) until the process restarts.
+export const API_VERSION = 2;
+
 export interface ApiResult {
   status: number;
   body: string; // JSON, always
@@ -457,6 +465,7 @@ export function routeApi(
 
   if (pathname === "/api/vocab") {
     return json(200, {
+      apiVersion: API_VERSION,
       statuses: STATUS_VOCAB,
       types: [...KNOWN_TASK_TYPES],
       mutationActions: [...MUTATION_ACTIONS],

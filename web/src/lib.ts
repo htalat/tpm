@@ -32,3 +32,14 @@ export function intersectCaps(statuses: string[], caps: Record<string, string[]>
   }
   return BULK_ACTION_ORDER.filter(a => common.has(a));
 }
+
+// The wire-surface version this bundle was built against (api.ts mirrors it
+// server-side). A long-running tpm serve keeps its backend in memory while
+// /app ships the rebuilt bundle from disk — on mismatch the UI shows a
+// restart banner instead of degrading silently.
+export const EXPECTED_API_VERSION = 2;
+
+export function backendIsStale(vocab: { apiVersion?: number } | null): boolean {
+  if (!vocab) return false; // still loading / unreachable — not a skew signal
+  return (vocab.apiVersion ?? 0) < EXPECTED_API_VERSION;
+}
