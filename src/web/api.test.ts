@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { Project, Task } from "../core/tree.ts";
 import { routeApi, routeApiMutation, buildCliArgs, MUTATION_ACTIONS } from "./api.ts";
 import type { CliRunner } from "./api.ts";
@@ -264,4 +267,25 @@ test("api: /api/config returns the injected snapshot; /runs falls through", () =
 
   // The runs sub-resource belongs to route() — routeApi must not claim it.
   assert.equal(get("/api/tasks/alpha/001-a/runs", "", [project("alpha", [task("001-a", "ready")])]), null);
+});
+
+test("api: task detail carries the report artifact when report.md exists on disk", () => {
+  // Folder-form task with a real report file — taskHasReport/taskReportPath
+  // read the filesystem, so this fixture touches disk.
+  const dir = join(tmpdir(), `tpm-api-report-${process.pid}`);
+  mkdirSync(join(dir, "001-a"), { recursive: true });
+  writeFileSync(join(dir, "001-a", "report.md"), "# Report\n\n## Summary\nall good.\n");
+  const t: Task = {
+    ...task("001-a", "review", { type: "investigation" }),
+    path: join(dir, "001-a", "task.md"),
+    dir: join(dir, "001-a"),
+  };
+  try {
+    const r = get("/api/tasks/alpha/001-a", "", [project("alpha", [t])])!;
+    assert.equal(r.json.hasReport, true);
+    assert.match(r.json.report.raw, /all good/);
+    assert.match(r.json.report.html, /Summary/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

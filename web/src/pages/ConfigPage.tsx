@@ -19,7 +19,6 @@ export default function ConfigPage() {
         <h1 className="text-xl font-semibold">Config</h1>
         <code className="text-xs text-faint">{cfg.path}</code>
         <span className="flex-1" />
-        <a href="/config" className="text-xs text-muted hover:underline">classic</a>
       </header>
 
       {cfg.missing && <Empty text="No config file yet — run `tpm init` to create one." />}

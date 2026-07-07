@@ -47,7 +47,6 @@ export default function ProjectPage() {
                  onChange={e => setParams(e.target.checked ? { archived: "1" } : {})} />
           show archived
         </label>
-        <a href={`/p/${encodeURIComponent(p.slug)}`} className="text-xs text-muted hover:underline">classic</a>
       </header>
 
       <div className="grid gap-4 lg:grid-cols-[280px_1fr]">

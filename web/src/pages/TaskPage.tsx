@@ -65,6 +65,11 @@ export default function TaskPage() {
       <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
         <div className="flex flex-col gap-4">
           {t.prDetails.length > 0 && <PrPanel prs={t.prDetails} />}
+          {t.report && (
+            <SectionCard title="Report" meta="report.md">
+              <div className="markdown px-3 py-2 text-sm" dangerouslySetInnerHTML={{ __html: t.report.html }} />
+            </SectionCard>
+          )}
           {t.sections.filter(s => s.heading !== null).map(s => (
             <EditableSection key={s.heading} task={t} section={s} onSaved={detail.refresh} />
           ))}
@@ -110,10 +115,6 @@ function MetaRail({ task }: { task: TaskDetail }) {
         <Link className="text-accent hover:underline" to={`/t/${task.segments.map(encodeURIComponent).join("/")}/runs`}>
           Runs →
         </Link>
-        <span className="px-2 text-faint">·</span>
-        <a className="text-accent hover:underline" href={"/t/" + task.segments.map(encodeURIComponent).join("/")}>
-          classic view
-        </a>
       </p>
     </SectionCard>
   );

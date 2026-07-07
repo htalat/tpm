@@ -34,7 +34,6 @@ export default function LogsPage() {
                 className="rounded border border-edge bg-surface px-2 py-1 text-sm">
           {[50, 200, 500, 2000].map(n => <option key={n} value={n}>last {n}</option>)}
         </select>
-        <a href="/logs" className="text-xs text-muted hover:underline">classic</a>
       </header>
 
       {feed.error && <p className="text-sm text-danger">{feed.error}</p>}
