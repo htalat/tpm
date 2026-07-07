@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
-import { checkDrift } from "./drift.ts";
+import { checkDrift, branchState } from "./drift.ts";
 
 function git(cwd: string, args: string[]): void {
   execFileSync("git", args, {
@@ -111,6 +111,44 @@ test("checkDrift: dirty + wrong branch surfaces the branch mismatch first", () =
     const r = checkDrift(dir);
     assert.equal(r.clean, false);
     assert.match(r.reason ?? "", /not on default branch/);
+  } finally {
+    rmTempDir(dir);
+  }
+});
+
+test("branchState: not a git repo -> null", () => {
+  const dir = mkTempDir();
+  try {
+    assert.equal(branchState(dir), null);
+  } finally {
+    rmTempDir(dir);
+  }
+});
+
+test("branchState: clean tree reports branch + dirty=false", () => {
+  const dir = setupRepo();
+  try {
+    assert.deepEqual(branchState(dir), { branch: "main", dirty: false });
+  } finally {
+    rmTempDir(dir);
+  }
+});
+
+test("branchState: uncommitted change reports dirty=true", () => {
+  const dir = setupRepo();
+  try {
+    writeFileSync(join(dir, "README.md"), "modified\n");
+    assert.deepEqual(branchState(dir), { branch: "main", dirty: true });
+  } finally {
+    rmTempDir(dir);
+  }
+});
+
+test("branchState: reports the current feature branch (no default-branch judgement)", () => {
+  const dir = setupRepo();
+  try {
+    git(dir, ["checkout", "-b", "feature/foo", "--quiet"]);
+    assert.deepEqual(branchState(dir), { branch: "feature/foo", dirty: false });
   } finally {
     rmTempDir(dir);
   }

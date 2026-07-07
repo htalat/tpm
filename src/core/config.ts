@@ -30,6 +30,12 @@ export interface Config {
   // hammer the host API for PRs that haven't moved. See src/orchestrate/poll.ts
   // for resolution + built-in defaults (conservative for ADO).
   poll?: PollConfig;
+  // Orchestrator retry cap: how many runs a task gets before the dispatcher
+  // auto-blocks it instead of claiming it again (a perma-failing task must
+  // not burn an agent run on every tick forever). Cascade: task > project >
+  // this > built-in default 3. The counter (`orchestrator_attempts` in task
+  // frontmatter) clears when a run ships or a human re-promotes.
+  max_attempts?: number;
 }
 
 export interface PollConfig {

@@ -44,17 +44,34 @@ function posInt(v: unknown): number | null {
   return null;
 }
 
+// Retry cap cascade: task > project > config > default. Same shape as
+// resolveTimeBound. A task that has already burned this many runs without
+// shipping is auto-blocked at claim time instead of dispatched again.
+export const DEFAULT_MAX_ATTEMPTS = 3;
+export function resolveMaxAttempts(
+  input: { task: Task; project: Project },
+  globalMax?: number,
+): number {
+  const t = posInt(input.task.data.max_attempts);
+  if (t !== null) return t;
+  const p = posInt(input.project.data.max_attempts);
+  if (p !== null) return p;
+  const g = posInt(globalMax);
+  if (g !== null) return g;
+  return DEFAULT_MAX_ATTEMPTS;
+}
+
 // Did the spawned agent move the task forward? Classification happens after
 // the child exits, against a snapshot of the task taken before the spawn.
 //
 //   shipped  — the agent delivered: prs grew, status reached a delivery state
-//              (needs-review, needs-close, done, dropped, blocked), or the task
+//              (review, closing, done, dropped, blocked), or the task
 //              disappeared from the live tree (archived mid-run by the poller).
 //              Credited regardless of exit code — a SIGTERM at the time bound
 //              after `tpm pr` is a *timing* signal, not a *delivery* signal.
 //   stalled  — exit 0 but the task didn't make meaningful progress. Includes
 //              the case where the agent flipped to `in-progress` from `ready`
-//              or `needs-feedback` and exited without opening a PR or further
+//              or `rework` and exited without opening a PR or further
 //              advancing — that flip is `tpm start`'s entry, not progress.
 //              The case the "ship the smaller change" rule is meant to
 //              eliminate; worth counting.
@@ -90,11 +107,11 @@ export interface ClassifyDispositionInput {
 
 // Statuses that signal the agent delivered something this run. Excludes
 // `in-progress` (still mid-work), `ready` (self-revert handing back to the
-// queue), `needs-feedback` (round incomplete — more agent work needed), and
+// queue), `rework` (round incomplete — more agent work needed), and
 // `open` (pre-shaping).
 const DELIVERY_STATES = new Set([
-  "needs-review",
-  "needs-close",
+  "review",
+  "closing",
   "done",
   "dropped",
   "blocked",
@@ -112,12 +129,12 @@ export function classifyDisposition(input: ClassifyDispositionInput): Dispositio
   const prsGrew = after.prs > input.before.prs;
   const reportAppeared = (after.report ?? false) && !(input.before.report ?? false);
   const statusChanged = after.status !== input.before.status;
-  // `tpm start` flips `ready -> in-progress` or `needs-feedback -> in-progress`
+  // `tpm start` flips `ready -> in-progress` or `rework -> in-progress`
   // on entry. Without further progress (no PR, no report, no delivery-state
   // advance), that's claim-not-progress — per task 064.
   const entryFlip =
     after.status === "in-progress" &&
-    (input.before.status === "ready" || input.before.status === "needs-feedback") &&
+    (input.before.status === "ready" || input.before.status === "rework") &&
     !prsGrew &&
     !reportAppeared;
   // Did the agent ship? PR opened, report attached, or status reached a
@@ -125,7 +142,7 @@ export function classifyDisposition(input: ClassifyDispositionInput): Dispositio
   const shippedFlip =
     !entryFlip && (prsGrew || reportAppeared || (statusChanged && DELIVERY_STATES.has(after.status)));
 
-  // Delivery wins over timeout: the 057 trace was `status=ready->needs-review
+  // Delivery wins over timeout: the 057 trace was `status=ready->review
   // prs=0->1 exit=124` and got reported as `timeout`. Per task 068, that's the
   // symmetric inverse of 064 — the agent shipped, then lingered past the time
   // bound. Headline disposition should track what landed, not the SIGTERM.
@@ -140,7 +157,7 @@ export function classifyDisposition(input: ClassifyDispositionInput): Dispositio
 
 // Does the task look like it has hit a terminal state externally? Returns the
 // reason string ("archived" / "done" / "dropped") or null if the orchestrator
-// should keep running. `needs-close` is *not* terminal — it's a transient
+// should keep running. `closing` is *not* terminal — it's a transient
 // state the poller sets just before its inline auto-close, and killing the
 // agent during that window would race the close-out for no benefit.
 export type TerminalReason = "archived" | "done" | "dropped" | "pulled";
@@ -201,9 +218,9 @@ export interface AutoRevertInput {
 //   - the child exited cleanly (exit 0, no orchestrator-initiated SIGTERM)
 //   - the task still exists in the tree (wasn't archived)
 //   - status is `in-progress` after the run
-//   - prs count didn't grow (a PR opened would have flipped to needs-review)
-//   - report.md didn't appear (a report attach would have flipped to needs-review)
-//   - `before.status` wasn't `needs-feedback` — a feedback round legitimately
+//   - prs count didn't grow (a PR opened would have flipped to review)
+//   - report.md didn't appear (a report attach would have flipped to review)
+//   - `before.status` wasn't `rework` — a feedback round legitimately
 //     ends at `in-progress` with unchanged prs after addressing CI/threads.
 export function shouldAutoRevert(input: AutoRevertInput): boolean {
   if (input.exitCode !== 0) return false;
@@ -212,7 +229,7 @@ export function shouldAutoRevert(input: AutoRevertInput): boolean {
   if (input.after.status !== "in-progress") return false;
   if (input.after.prs !== input.before.prs) return false;
   if ((input.after.report ?? false) && !(input.before.report ?? false)) return false;
-  if (input.before.status === "needs-feedback") return false;
+  if (input.before.status === "rework") return false;
   return true;
 }
 
@@ -239,16 +256,16 @@ You are executing this task. Rules:
 - If \`prs:\` is non-empty and any linked PR is OPEN, fetch its comments and reviews via the host CLI (dispatch on \`Host:\` in the briefing) before any other discovery. Unaddressed comments are almost certainly why you're seeing this task — address them first.
 - Before cutting your feature branch, refresh \`main\`: \`git checkout main && git pull --ff-only\`. If the working tree is dirty or the pull doesn't fast-forward, run \`tpm block <slug> "stale checkout — needs human reconcile"\` and exit — don't rebase, stash, or push through. (PR #120 failure mode: branched off stale main, conflicted at merge.)
 - Follow the Plan above.
-- If type=pr: after opening a PR, run \`tpm pr <slug> <url>\` (CLI auto-flips to needs-review). Stop.
-- If type=investigation: your deliverable is a **report**, not a PR. Run \`tpm report <slug>\` to fold the task into a folder and scaffold \`<project>/tasks/<slug>/report.md\` from the template. Write findings into that file. When done, re-run \`tpm report <slug>\` — the CLI auto-flips to needs-review. Don't run \`tpm pr\`.
+- If type=pr: after opening a PR, run \`tpm pr <slug> <url>\` (CLI auto-flips to review). Stop.
+- If type=investigation: your deliverable is a **report**, not a PR. Run \`tpm report <slug>\` to fold the task into a folder and scaffold \`<project>/tasks/<slug>/report.md\` from the template. Write findings into that file. When done, re-run \`tpm report <slug>\` — the CLI auto-flips to review. Don't run \`tpm pr\`.
 - Can't proceed? \`tpm revert <slug> "<reason>"\` (back to ready) or \`tpm block <slug> "<reason>"\` (human queue). Never exit at in-progress.
 - Unanticipated decision? Ship the smaller / more local change, file follow-ups, don't halt.`;
 }
 
 // Feedback-mode prompt for tasks that re-enter the orchestrator at
-// `needs-feedback` (the poller flagged a signal, or a human bounced a
-// needs-review task via serve's "Reopen for agent" — post-087 those land at
-// needs-feedback). The prompt embeds the PR JSON inline so the agent's first
+// `rework` (the poller flagged a signal, or a human bounced a
+// review task via serve's "Reopen for agent" — post-087 those land at
+// rework). The prompt embeds the PR JSON inline so the agent's first
 // action can be a code Edit instead of a `gh pr view` round-trip.
 //
 // 089 is the structural follow-up to 088's instruction-only rule: if the
@@ -273,7 +290,7 @@ You are addressing feedback on the PR(s) above. Rules:
 - For concrete code-suggestion threads: apply the fix, commit, push. Resolve the thread if the fix matches the suggestion exactly.
 - For CI failures: fetch the failed run log (\`gh run view <id> --log-failed\` for github), fix, commit, push.
 - For rebase needs (BEHIND / DIRTY): rebase against the default branch; on a conflict you can't resolve cleanly, escalate (don't commit a resolution you can't verify with the workflow doc's tests).
-- For ambiguous / design-level threads: flip to \`needs-review\` with a Log entry naming what's unclear, or \`tpm block <slug> "<reason>"\` for a hard blocker.
+- For ambiguous / design-level threads: flip to \`review\` with a Log entry naming what's unclear, or \`tpm block <slug> "<reason>"\` for a hard blocker.
 - The PR is already open; don't run \`tpm pr\` again. After pushing, the poller re-flags on the next signal.
 - When the round is done: \`tpm log <slug> "addressed feedback — <one-line summary>"\` then \`tpm status <slug> in-progress\`. Never exit at in-progress without that explicit flip, a delivery state, or \`tpm revert\` / \`tpm block\`.
 - Never ask questions in your output. Take the smaller / safer action and log what you did.`;
@@ -311,7 +328,7 @@ export async function fetchFeedbackContexts(urls: string[]): Promise<string> {
 }
 
 // Verb written to the task body Log section when the orchestrator eager-flips
-// `ready` (or `needs-feedback`) to `in-progress` *before* spawning the agent.
+// `ready` (or `rework`) to `in-progress` *before* spawning the agent.
 // Distinct from the agent's own `tpm start` verb ("started") so the audit
 // trail differentiates the orchestrator-side claim from the agent's self-
 // claim. Exported so the spawn-failure-revert message can name the same
@@ -381,7 +398,7 @@ export function checkProjectRepo(
 //   - repo usable                  → spawn (cwd is the clone)
 //   - repo missing, task !blocked  → block: flip to `blocked` so it surfaces in
 //                                    `tpm inbox` and drops off the ready /
-//                                    needs-feedback queue instead of re-failing
+//                                    rework queue instead of re-failing
 //                                    (and re-logging) on every tick
 //   - repo missing, task blocked   → skip: already blocked on a prior tick;
 //                                    don't double-block or double-log
@@ -425,6 +442,12 @@ export interface OrchestrateOpts {
   // `workers` when provided. Default: every worker uses `agentName` (or the
   // registry default).
   cliPerWorker?: string[];
+  // Daemon mode (`tpm up`): no pool deadline — the pool reconciles and the
+  // workers drain the queue until `stopRequested()` flips true, at which
+  // point every worker finishes its in-flight iteration and exits (same
+  // graceful path as a scale-down drain). Ignored in single-shot mode.
+  daemon?: boolean;
+  stopRequested?: () => boolean;
 }
 
 export interface OrchestrateResult {
@@ -442,7 +465,7 @@ export function noPickLogEntry(candidatesCount: number): { level: "INFO" | "WARN
   if (candidatesCount === 0) {
     return {
       level: "INFO",
-      message: "no eligible tasks (no ready/needs-feedback with allow_orchestrator: true)",
+      message: "no eligible tasks (no ready/rework with allow_orchestrator: true)",
     };
   }
   return {
@@ -467,7 +490,11 @@ function sleep(ms: number): Promise<void> {
 // the first reconcile tick, see task 113).
 export function resolvePoolShape(opts: OrchestrateOpts): { workers: number } {
   const workers = opts.workers ?? 1;
-  if (!Number.isInteger(workers) || workers <= 0) {
+  // 0 = start parked. Only meaningful for a daemon (tpm up), where the pool
+  // keeps ticking and a later `workers` config set un-parks it; a deadline-
+  // bounded cron orchestrate with 0 workers would just idle to its deadline.
+  const min = opts.daemon ? 0 : 1;
+  if (!Number.isInteger(workers) || workers < min) {
     throw new Error(`--workers must be a positive integer, got ${workers}`);
   }
   if (opts.cliPerWorker && opts.cliPerWorker.length !== workers) {
@@ -556,7 +583,11 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   // Hygiene: clear stale per-task locks before claiming. TTL = global time
   // bound + 5m buffer (per-task overrides apply on acquire, not on cleanup).
   const ttl = (cfg.time_bound_minutes ?? DEFAULT_TIME_BOUND_MINUTES) + 5;
-  lock.releaseStaleTaskLocks(root, ttl);
+  for (const e of lock.releaseStaleTaskLocks(root, ttl)) {
+    if (e.reverted) {
+      logLine("WARN", `${e.qualifiedSlug}: stale lock (was ${e.data.agentId}); reverted in-progress -> ready`);
+    }
+  }
 
   if (opts.preClaimedTask) {
     const agentId = process.env.TPM_AGENT_ID ?? `${hostname()}-${process.pid}`;
@@ -579,10 +610,12 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
   // is unset.
   const { workers: bootstrapWorkers } = resolvePoolShape(opts);
   const deadlineMinutes = opts.minutesOverride ?? cfg.time_bound_minutes ?? DEFAULT_TIME_BOUND_MINUTES;
-  const deadlineMs = Date.now() + deadlineMinutes * 60_000;
+  // Daemon mode has no deadline: the pool runs until stopRequested() flips.
+  // Workers share deadlineMs, so MAX_SAFE_INTEGER means "never" for them too.
+  const deadlineMs = opts.daemon ? Number.MAX_SAFE_INTEGER : Date.now() + deadlineMinutes * 60_000;
   logLine(
     "INFO",
-    `pool start bootstrap-workers=${bootstrapWorkers} deadline=${deadlineMinutes}m`,
+    `pool start bootstrap-workers=${bootstrapWorkers} deadline=${opts.daemon ? "none (daemon)" : `${deadlineMinutes}m`}`,
   );
 
   await runPool({
@@ -590,6 +623,7 @@ export async function runOrchestrate(opts: OrchestrateOpts = {}): Promise<Orches
     deadlineMs,
     reconcileIntervalMs: POOL_RECONCILE_INTERVAL_MS,
     readDesired: () => readDesiredWorkers(bootstrapWorkers),
+    shouldStop: opts.stopRequested,
     log: logLine,
     spawnWorker: (id, shouldDrain) => runWorkerLoop({
       root,
@@ -659,6 +693,10 @@ export interface RunPoolOpts {
   initialDesired: number;
   deadlineMs: number;
   reconcileIntervalMs: number;
+  // Daemon stop signal: checked once per reconcile tick. When it flips true,
+  // every live worker is marked for drain (finish in-flight iteration, then
+  // exit) and runPool returns after all workers settle.
+  shouldStop?: () => boolean;
   // Re-read the desired worker count each tick (typically from config.json).
   readDesired: () => number;
   // Spawn a worker with the given id. The returned promise should resolve
@@ -732,17 +770,27 @@ export async function runPool(opts: RunPoolOpts): Promise<void> {
   // dispatches workers immediately instead of waiting one reconcile interval.
   reconcile();
 
-  while (Date.now() < opts.deadlineMs) {
+  while (Date.now() < opts.deadlineMs && !opts.shouldStop?.()) {
     const remaining = opts.deadlineMs - Date.now();
     const sleepMs = Math.min(opts.reconcileIntervalMs, remaining);
     if (sleepMs <= 0) break;
-    await sleepFn(sleepMs);
-    if (Date.now() >= opts.deadlineMs) break;
+    // Wake early on a stop request so a daemon shutdown doesn't sit out the
+    // rest of a reconcile interval before starting to drain. An injected
+    // test sleep wins (tests control time explicitly).
+    if (opts.sleep) await sleepFn(sleepMs);
+    else if (opts.shouldStop) await sleepInterruptible(sleepMs, opts.shouldStop);
+    else await sleepFn(sleepMs);
+    if (Date.now() >= opts.deadlineMs || opts.shouldStop?.()) break;
     reconcile();
   }
 
-  // Deadline reached — every worker loop also checks Date.now() against the
-  // shared deadlineMs, so they'll exit on their own. Await to collect.
+  // Deadline reached or stop requested. On deadline every worker loop also
+  // checks Date.now() against the shared deadlineMs; on stop (daemon mode,
+  // where the deadline never fires) the drain flag is the exit signal — the
+  // worker's idle sleep wakes on it and an in-flight iteration finishes
+  // before the loop re-checks. Mark all workers either way (harmless when
+  // the deadline already passed) and await to collect.
+  for (const h of handles.values()) h.drain = true;
   await Promise.allSettled([...handles.values()].map(h => h.promise));
 }
 
@@ -877,7 +925,7 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
     // the next candidate if a sibling task is already running in this repo.
     // Pass `hasTaskLock` so stranded in-progress tasks (status didn't flip out
     // on a prior agent exit; lock since released) get admitted alongside ready
-    // / needs-feedback. The stale-lock sweep above guarantees a lock file we
+    // / rework. The stale-lock sweep above guarantees a lock file we
     // see at this point is current, not a leftover from a dead pid.
     const candidates = selectCandidates(projects, {
       autonomous: true,
@@ -948,6 +996,20 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
   // `blocked` so it surfaces in `tpm inbox` and drops off the queue (operator
   // clones, then `tpm ready <task>` to re-enter). repoGuardAction keeps a task
   // already blocked on a prior tick from being re-blocked / re-logged.
+  // Release the claim locks on any refuse-to-dispatch path (repo guard,
+  // retry cap, eager-flip failure) so the task is claimable once the
+  // blocker is resolved.
+  const releaseClaimLocks = () => {
+    try { lock.releaseTask(root, slug, agentId); } catch (e) {
+      log("ERROR", `lock release failed for ${slug}: ${(e as Error).message}`);
+    }
+    if (resolveSameRepoStrategy(pick.project) === "serialize") {
+      try { lock.releaseRepo(root, pick.project.slug, agentId); } catch (e) {
+        log("ERROR", `repo lock release failed for ${pick.project.slug}: ${(e as Error).message}`);
+      }
+    }
+  };
+
   const repo = resolveRepo(pick.project, pick.task);
   const repoCheck = checkProjectRepo(slug, repo, existsSync);
   const guard = repoGuardAction(String(pick.task.data.status ?? ""), repoCheck);
@@ -960,21 +1022,33 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
         log("ERROR", `block ${slug} failed: ${(e as Error).message}`);
       }
     }
-    try { lock.releaseTask(root, slug, agentId); } catch (e) {
-      log("ERROR", `lock release failed for ${slug}: ${(e as Error).message}`);
+    releaseClaimLocks();
+    return { exitCode: 1 };
+  }
+
+  // Retry cap: a task that already burned max_attempts runs without shipping
+  // gets auto-blocked, not re-dispatched — otherwise a perma-failing task
+  // costs an agent run on every tick forever. The counter clears when a run
+  // ships or a human re-promotes (`tpm ready` / `tpm reopen`), so blocking
+  // here is a one-way gate until a human looks at the run logs.
+  const attempts = mutate.readOrchestratorAttempts(pick.task.data);
+  const maxAttempts = resolveMaxAttempts({ task: pick.task, project: pick.project }, cfg.max_attempts);
+  if (attempts >= maxAttempts) {
+    const reason = `auto-blocked: ${attempts} orchestrator run${attempts === 1 ? "" : "s"} without shipping (max_attempts=${maxAttempts}); review the run logs, then \`tpm ready ${slug}\` to retry`;
+    try {
+      mutate.block(pick.task, reason);
+      log("WARN", `${slug}: ${reason}`);
+    } catch (e) {
+      log("ERROR", `retry-cap block ${slug} failed: ${(e as Error).message}`);
     }
-    if (resolveSameRepoStrategy(pick.project) === "serialize") {
-      try { lock.releaseRepo(root, pick.project.slug, agentId); } catch (e) {
-        log("ERROR", `repo lock release failed for ${pick.project.slug}: ${(e as Error).message}`);
-      }
-    }
+    releaseClaimLocks();
     return { exitCode: 1 };
   }
 
   const beforeStatus = String(pick.task.data.status ?? "");
   const before = snapshotTask(pick.task);
   const prUrls = parsePrUrls(pick.task);
-  const useFeedbackPrompt = beforeStatus === "needs-feedback" && prUrls.length > 0;
+  const useFeedbackPrompt = beforeStatus === "rework" && prUrls.length > 0;
 
   // Per-run log: capture the agent's session output so `tpm serve` can show
   // what the agent is doing live, and so a post-mortem after a failed run has
@@ -1014,7 +1088,7 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
   // followed by the execution rules. The agent reads the Plan and starts
   // working — no skill discovery, no `tpm context` round-trip first.
   //
-  // For tasks arriving at `needs-feedback` with linked PRs, swap in the
+  // For tasks arriving at `rework` with linked PRs, swap in the
   // feedback-mode prompt (task 089): pre-fetch PR comments + reviews via the
   // host registry and inject the JSON so the agent's first tool call can be a
   // code Edit, not a `gh pr view`. Falls back to the execution prompt if the
@@ -1041,15 +1115,18 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
     mutate.start(pick.task, ORCHESTRATOR_CLAIM_VERB);
   } catch (e) {
     log("ERROR", `${slug}: eager claim flip failed: ${(e as Error).message}`);
-    try { lock.releaseTask(root, slug, agentId); } catch (le) {
-      log("ERROR", `lock release failed for ${slug}: ${(le as Error).message}`);
-    }
-    if (resolveSameRepoStrategy(pick.project) === "serialize") {
-      try { lock.releaseRepo(root, pick.project.slug, agentId); } catch (le) {
-        log("ERROR", `repo lock release failed for ${pick.project.slug}: ${(le as Error).message}`);
-      }
-    }
+    releaseClaimLocks();
     return { exitCode: 1 };
+  }
+
+  // Count this dispatch against the retry cap. Bumped after the eager flip
+  // so a flip failure doesn't consume an attempt; cleared below when the
+  // disposition is `shipped`.
+  try {
+    const attemptNo = mutate.bumpOrchestratorAttempts(pick.task);
+    log("INFO", `${slug}: attempt ${attemptNo}/${maxAttempts}`);
+  } catch (e) {
+    log("WARN", `${slug}: could not record attempt: ${(e as Error).message}`);
   }
 
   let result: OrchestrateResult;
@@ -1156,6 +1233,17 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
   });
   const level = disposition === "stalled" ? "WARN" : "INFO";
   log(level, formatDispositionLine(slug, disposition, result.exitCode, before, after));
+
+  // A shipping run resets the retry counter: the cap is about consecutive
+  // burns, not lifetime dispatch count (a rework round after a
+  // shipped PR starts fresh).
+  if (disposition === "shipped" && matchAfter && !matchAfter.task.archived) {
+    try {
+      mutate.clearOrchestratorAttempts(matchAfter.task);
+    } catch (e) {
+      log("WARN", `${slug}: could not clear attempt counter: ${(e as Error).message}`);
+    }
+  }
 
   // Strand-on-exit safety net (task 063). If the agent left the task at
   // in-progress with no shipping signal, revert to ready so the next

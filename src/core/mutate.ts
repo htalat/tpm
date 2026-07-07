@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, statSync, unlinkSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, mkdirSync, readdirSync, existsSync, statSync, unlinkSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse, stringify } from "../util/frontmatter.ts";
 import { now } from "../util/time.ts";
@@ -6,19 +6,36 @@ import { archiveTask, foldTask, isParent, taskHasReport, taskReportPath } from "
 import type { Project, Task } from "./tree.ts";
 import { REPORT_TEMPLATE } from "./defaults.ts";
 import { validateType } from "./new.ts";
+import { assertTransition, isStatus, VALID_STATUSES } from "./transitions.ts";
+import type { Status } from "./transitions.ts";
 
-export const VALID_STATUSES = [
-  "open",
-  "ready",
-  "in-progress",
-  "needs-feedback",
-  "needs-close",
-  "needs-review",
-  "blocked",
-  "done",
-  "dropped",
-] as const;
-export type Status = typeof VALID_STATUSES[number];
+// The status vocabulary and legality table live in transitions.ts; re-export
+// so existing importers keep one import site for the mutation layer.
+export { TRANSITIONS, canTransition, legalTargets, VALID_STATUSES } from "./transitions.ts";
+export type { Status } from "./transitions.ts";
+
+// Status-change listener: a process-wide hook fired after every status write
+// lands on disk, from any path (transition(), addPr, complete, drop, …). The
+// CLI entry registers the events.ts journal here; mutate itself stays a
+// single-task-file layer with no root context. Listener errors are swallowed —
+// observability must never break the mutation that already landed.
+export interface StatusChange {
+  task: Task;
+  from: string;
+  to: Status;
+  verb: string;
+}
+let statusChangeListener: ((change: StatusChange) => void) | null = null;
+export function onStatusChange(listener: ((change: StatusChange) => void) | null): void {
+  statusChangeListener = listener;
+}
+function emitStatusChange(task: Task, from: string, to: Status, verb: string): void {
+  try {
+    statusChangeListener?.({ task, from, to, verb });
+  } catch {
+    // listener failures are the listener's problem
+  }
+}
 
 export interface MutateResult {
   message: string;
@@ -44,32 +61,33 @@ export interface ReparentResult extends MutateResult {
 // `tpm start`. Idempotent: re-calls on an already-in-progress task short-
 // circuit before the verb is ever written.
 export function start(task: Task, verb: string = "started"): MutateResult {
-  return transition(task, "in-progress", verb, {
-    refusal: ["done", "dropped"],
-  });
+  return transition(task, "in-progress", verb);
 }
 
+// Promote clears the orchestrator retry counter: a human re-promoting an
+// auto-blocked (or just unlucky) task is the explicit "try again" signal.
+// `revert` (the orchestrator's own ready-flip on timeout/no-progress) goes
+// through transition() directly and does NOT clear — otherwise the retry cap
+// could never trip.
 export function ready(task: Task): MutateResult {
-  return transition(task, "ready", "promoted to ready", {
-    refusal: ["done", "dropped"],
-  });
+  return transition(task, "ready", "promoted to ready", { clearAttempts: true });
 }
 
 export function block(task: Task, reason: string): MutateResult {
   if (!reason || !reason.trim()) {
     throw new Error("tpm block requires a reason");
   }
-  return transition(task, "blocked", `blocked — ${reason.trim()}`, {
-    refusal: ["done", "dropped"],
-  });
+  return transition(task, "blocked", `blocked — ${reason.trim()}`);
 }
 
+// Reopen is the sanctioned exit from the terminal statuses (done/dropped) —
+// the transition table allows `open` as a target from everywhere, so this
+// verb never refuses. Clears the retry counter for the same reason `ready`
+// does: pulling a task back to open means a human is reshaping it.
 export function reopen(task: Task, reason?: string): MutateResult {
   const trimmed = reason?.trim();
   const verb = trimmed ? `reopened — ${trimmed}` : "reopened";
-  return transition(task, "open", verb, {
-    refusal: [],
-  });
+  return transition(task, "open", verb, { clearAttempts: true });
 }
 
 // Revert an in-progress task back to ready — used when the orchestrator
@@ -84,25 +102,30 @@ export function revert(task: Task, reason?: string): MutateResult {
   }
   const trimmed = reason?.trim();
   const verb = trimmed ? `timed out — reverted to ready (${trimmed})` : "timed out — reverted to ready";
-  return transition(task, "ready", verb, { refusal: ["done", "dropped"] });
+  return transition(task, "ready", verb);
 }
 
 // `verb` overrides the Log line. Default is the generic `status -> <new>`
 // used by `tpm status` / `tpm poll`. The orchestrator's spawn-failure path
 // passes a custom verb so the rollback log reads as a single coherent line
 // ("claim failed: …; reverted to ready") instead of a generic flip.
-export function setStatus(task: Task, newStatus: string, verb?: string): MutateResult {
+export function setStatus(
+  task: Task,
+  newStatus: string,
+  verb?: string,
+  opts: { force?: boolean } = {},
+): MutateResult {
   if (!isStatus(newStatus)) {
     throw new Error(`Unknown status: ${newStatus}. Valid: ${VALID_STATUSES.join(", ")}.`);
   }
-  return transition(task, newStatus, verb ?? `status -> ${newStatus}`, { refusal: [] });
+  return transition(task, newStatus, verb ?? `status -> ${newStatus}`, { force: opts.force });
 }
 
 // Symmetric inverse of the inbox play-button promote: pull a queued — or
 // running — task back into the human pile. Status-aware:
 //   - ready          -> open          (operator wants to pause / reshape the Plan)
 //   - in-progress    -> open          (stop a running task; pull it off the agent)
-//   - needs-feedback -> needs-review  (escalate ambiguous agent signal to the human)
+//   - rework -> review  (escalate ambiguous agent signal to the human)
 // Other statuses are refused — the caller (web or CLI) should hide / gate the
 // button so a refusal only fires on a stale form replay.
 //
@@ -127,13 +150,13 @@ export function pullFromQueue(task: Task): MutateResult {
   const current = String(data.status ?? "");
   const target = current === "ready" || current === "in-progress"
     ? "open"
-    : current === "needs-feedback"
-      ? "needs-review"
+    : current === "rework"
+      ? "review"
       : null;
   if (!target) {
-    throw new Error(`${task.slug}: pull only applies to ready / in-progress / needs-feedback (status=${current || "?"})`);
+    throw new Error(`${task.slug}: pull only applies to ready / in-progress / rework (status=${current || "?"})`);
   }
-  const r = transition(task, target, `pulled from queue (${current} -> ${target})`, { refusal: [] });
+  const r = transition(task, target, `pulled from queue (${current} -> ${target})`);
   // Tell the operator what to expect when they stop a running task: the agent
   // isn't killed synchronously here (see the layering note above), but the
   // orchestrator's mid-run poll picks up the `open` flip and SIGTERMs the agent
@@ -153,7 +176,7 @@ export function logEntry(task: Task, message: string): MutateResult {
   guardArchived(task);
   const { data, body } = readParsed(task);
   const newBody = appendLog(body, `${now()}: ${message.trim()}`);
-  writeFileSync(task.path, stringify(data, newBody));
+  atomicWriteFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
   return { message: `logged on ${task.slug}` };
 }
@@ -166,30 +189,94 @@ export function addPr(task: Task, url: string): MutateResult {
   const trimmed = url.trim();
   const { data, body } = readParsed(task);
   const existing = Array.isArray(data.prs) ? (data.prs as unknown[]).map(String) : [];
-  if (existing.includes(trimmed)) {
-    return { message: `${task.slug}: PR already linked (${trimmed})` };
+  const alreadyLinked = existing.includes(trimmed);
+
+  // Append the URL only if it's new. A *different* URL on top of an existing
+  // one is a supported action, not a dedupe target: a stacked-base merge can
+  // auto-close a PR, so the agent opens a fresh one and re-runs `tpm pr`
+  // (agrotech 002 / PR #11 -> #12). The log line names the supersede so the
+  // audit trail shows which PR is current.
+  let newBody = body;
+  let appended = false;
+  if (!alreadyLinked) {
+    data.prs = [...existing, trimmed];
+    const verb = existing.length ? "linked additional PR" : "opened PR";
+    newBody = appendLog(newBody, `${now()}: ${verb} ${trimmed}`);
+    appended = true;
   }
-  data.prs = [...existing, trimmed];
-  let newBody = appendLog(body, `${now()}: opened PR ${trimmed}`);
-  // Attaching a PR is the agent's handoff: next move is on the human
-  // (review + merge). Flip in-progress -> needs-review so the task lands in
-  // `tpm inbox`. Other statuses are left alone — needs-feedback means a
-  // round is still in flight, needs-review/blocked are already on the
-  // human side, terminal states shouldn't transition.
+
+  // The status flip is INDEPENDENT of whether the URL was new. Re-running
+  // `tpm pr` with an already-linked URL must still advance in-progress ->
+  // review: agents routinely write `prs:` themselves before calling the
+  // CLI, and the old short-circuit on a duplicate URL skipped the flip — so
+  // they fell back to raw `tpm status` (run-log theme 3). Flip is idempotent:
+  // it only fires from in-progress; rework means a round is still in
+  // flight, review/blocked are already on the human side, and terminal
+  // states shouldn't transition.
   const current = String(data.status ?? "");
   let flipped = false;
   if (current === "in-progress") {
-    data.status = "needs-review";
-    newBody = appendLog(newBody, `${now()}: status -> needs-review (PR opened, awaiting review)`);
+    assertTransition(task.slug, current, "review");
+    data.status = "review";
+    newBody = appendLog(newBody, `${now()}: status -> review (PR opened, awaiting review)`);
     flipped = true;
   }
-  writeFileSync(task.path, stringify(data, newBody));
+
+  // Skip the write when nothing changed so a true no-op stays byte-identical
+  // idempotent (matches `tpm report`'s contract).
+  if (appended || flipped) {
+    atomicWriteFileSync(task.path, stringify(data, newBody));
+    syncInMemory(task, data, newBody);
+  }
+  if (flipped) emitStatusChange(task, current, "review", "PR opened, awaiting review");
+
+  if (flipped) {
+    const terminus = "\n✓ PR opened. Your turn is complete — exit. The poller closes the task when the PR merges; do not poll CI from this run.";
+    return { message: `${task.slug}: linked ${trimmed} — status -> review${terminus}` };
+  }
+  if (appended) {
+    // URL added but status was already past in-progress — no flip to make.
+    return { message: `${task.slug}: linked ${trimmed} (status: ${current || "?"} — unchanged)` };
+  }
+  // Genuine no-op: URL already linked and status not in-progress. Name the
+  // exact follow-up instead of leaving the agent to guess (it used to hunt
+  // through `tpm --help` for "the right status command").
+  if (current === "review") {
+    return { message: `${task.slug}: PR already linked (${trimmed}); status already review — handed off, nothing to do.` };
+  }
+  return {
+    message: `${task.slug}: PR already linked (${trimmed}); status is ${current || "?"}, not in-progress — no flip. ` +
+      `To re-flag for review run \`tpm review ${task.slug}\`.`,
+  };
+}
+
+// `tpm review <task>` — the discoverable verb for the in-progress ->
+// review hand-off, decoupled from attaching a PR. Mirrors the flip
+// inside `addPr` so an agent that already linked its PR (or had one reopened
+// out from under it) has a named command instead of grepping `cli.ts` for
+// `VALID_STATUSES` and falling back to raw `tpm status` (run-log theme 3,
+// task 147). Idempotent on the target state; rejects other source states with
+// a message that names why.
+export function review(task: Task): MutateResult {
+  guardArchived(task);
+  const { data, body } = readParsed(task);
+  const current = String(data.status ?? "");
+  if (current === "review") {
+    return { message: `${task.slug}: already review — nothing to do` };
+  }
+  if (current !== "in-progress") {
+    throw new Error(
+      `${task.slug}: tpm review flips in-progress -> review (current: ${current || "?"}). ` +
+      `Use \`tpm start ${task.slug}\` to claim it first, or \`tpm status ${task.slug} <status>\` for an explicit set.`,
+    );
+  }
+  assertTransition(task.slug, current, "review");
+  data.status = "review";
+  const newBody = appendLog(body, `${now()}: status -> review (flagged for review)`);
+  atomicWriteFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
-  const suffix = flipped ? " — status -> needs-review" : "";
-  const terminus = flipped
-    ? "\n✓ PR opened. Your turn is complete — exit. The poller closes the task when the PR merges; do not poll CI from this run."
-    : "";
-  return { message: `${task.slug}: linked ${trimmed}${suffix}${terminus}` };
+  emitStatusChange(task, current, "review", "flagged for review");
+  return { message: `${task.slug}: status -> review` };
 }
 
 // Attach a report artifact to a task: the investigation-flow analogue of
@@ -211,7 +298,7 @@ export function addPr(task: Task, url: string): MutateResult {
 //     if it doesn't exist yet — agent gets a skeleton to fill in.
 //   - Logs `opened report <relpath>` on first creation (or on the fold-then-
 //     attach path where the file existed but wasn't co-located yet).
-//   - Auto-flips `in-progress -> needs-review` (mirrors `addPr`), re-fires
+//   - Auto-flips `in-progress -> review` (mirrors `addPr`), re-fires
 //     on every call so a re-attach after a feedback round bounces the task
 //     back into the human queue.
 export function addReport(task: Task): MutateResult {
@@ -257,16 +344,18 @@ export function addReport(task: Task): MutateResult {
   const current = String(data.status ?? "");
   let flipped = false;
   if (current === "in-progress") {
-    data.status = "needs-review";
-    newBody = appendLog(newBody, `${now()}: status -> needs-review (report attached, awaiting review)`);
+    assertTransition(task.slug, current, "review");
+    data.status = "review";
+    newBody = appendLog(newBody, `${now()}: status -> review (report attached, awaiting review)`);
     flipped = true;
   }
 
   // Skip the write when nothing changed: keep `tpm report <slug>` byte-
   // identical idempotent for re-runs that aren't actually advancing state.
   if (registered || flipped) {
-    writeFileSync(task.path, stringify(data, newBody));
+    atomicWriteFileSync(task.path, stringify(data, newBody));
     syncInMemory(task, data, newBody);
+    if (flipped) emitStatusChange(task, current, "review", "report attached, awaiting review");
   }
 
   const parts: string[] = [];
@@ -274,7 +363,7 @@ export function addReport(task: Task): MutateResult {
   else if (!flipped && !folded) parts.push(`report on file (${relPath})`);
   if (folded) parts.push("folded task");
   const summary = parts.length ? parts.join(", ") : `report on file (${relPath})`;
-  const suffix = flipped ? " — status -> needs-review" : "";
+  const suffix = flipped ? " — status -> review" : "";
   const terminus = flipped
     ? "\n✓ Report attached. Your turn is complete — exit. A reviewer LGTMs or requests changes via `tpm serve`."
     : "";
@@ -283,7 +372,7 @@ export function addReport(task: Task): MutateResult {
 
 // Append a reviewer-feedback block to the report artifact and log the
 // request on the task body. Powers `tpm serve`'s "Request changes" button:
-//   - Flips needs-review -> needs-feedback so the agent re-picks the task.
+//   - Flips review -> rework so the agent re-picks the task.
 //   - Appends `## Reviewer feedback` to the report file with a timestamped
 //     entry (single artifact = full round-trip history).
 //   - Logs a one-line pointer on the task body Log section.
@@ -299,8 +388,8 @@ export function requestReportChanges(task: Task, comment: string): MutateResult 
     throw new Error(`${task.slug}: no report attached. Run \`tpm report <slug>\` first.`);
   }
   const current = String(data.status ?? "");
-  if (current !== "needs-review") {
-    throw new Error(`${task.slug}: request-changes requires status=needs-review (current: ${current || "?"})`);
+  if (current !== "review") {
+    throw new Error(`${task.slug}: request-changes requires status=review (current: ${current || "?"})`);
   }
   const absPath = taskReportPath(task);
 
@@ -311,15 +400,17 @@ export function requestReportChanges(task: Task, comment: string): MutateResult 
   const updatedReport = reportText.includes("## Reviewer feedback")
     ? appendUnderReviewerFeedback(reportText, block)
     : `${reportText.replace(/\s+$/, "")}\n\n## Reviewer feedback\n${block}`;
-  writeFileSync(absPath, updatedReport);
+  atomicWriteFileSync(absPath, updatedReport);
 
-  data.status = "needs-feedback";
+  assertTransition(task.slug, current, "rework");
+  data.status = "rework";
   const firstLine = trimmedComment.split(/\r?\n/, 1)[0];
   let newBody = appendLog(body, `${stamp}: review requested — ${firstLine}`);
-  newBody = appendLog(newBody, `${stamp}: status -> needs-feedback (review requested)`);
-  writeFileSync(task.path, stringify(data, newBody));
+  newBody = appendLog(newBody, `${stamp}: status -> rework (review requested)`);
+  atomicWriteFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
-  return { message: `${task.slug}: review requested — status -> needs-feedback` };
+  emitStatusChange(task, current, "rework", `review requested — ${firstLine}`);
+  return { message: `${task.slug}: review requested — status -> rework` };
 }
 
 // Path to the task's report.md relative to the project root — for log lines
@@ -395,9 +486,41 @@ export function setAllowOrchestrator(task: Task, allow: boolean): MutateResult {
     ? "allow_orchestrator: true (safe for autonomous runs)"
     : "allow_orchestrator: false";
   const newBody = appendLog(body, `${now()}: ${verb}`);
-  writeFileSync(task.path, stringify(data, newBody));
+  atomicWriteFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
   return { message: `${task.slug}: allow_orchestrator -> ${allow}` };
+}
+
+// Orchestrator retry accounting. The counter lives in frontmatter
+// (`orchestrator_attempts`) so it survives process restarts and is visible
+// when reading the file. Lifecycle: bumped by the orchestrator at claim time,
+// cleared when a run ships (PR/report delivered) or when a human re-promotes
+// (`tpm ready` / `tpm reopen` — the explicit "try again" signals). The
+// orchestrator refuses to dispatch past the max_attempts cascade and
+// auto-blocks instead, so a perma-failing task can't burn an agent run on
+// every tick forever.
+export function readOrchestratorAttempts(data: Record<string, unknown>): number {
+  const v = data.orchestrator_attempts;
+  return typeof v === "number" && Number.isInteger(v) && v > 0 ? v : 0;
+}
+
+export function bumpOrchestratorAttempts(task: Task): number {
+  guardArchived(task);
+  const { data, body } = readParsed(task);
+  const next = readOrchestratorAttempts(data) + 1;
+  data.orchestrator_attempts = next;
+  atomicWriteFileSync(task.path, stringify(data, body));
+  syncInMemory(task, data, body);
+  return next;
+}
+
+export function clearOrchestratorAttempts(task: Task): void {
+  guardArchived(task);
+  const { data, body } = readParsed(task);
+  if (data.orchestrator_attempts === undefined) return; // nothing to clear, skip the write
+  delete data.orchestrator_attempts;
+  atomicWriteFileSync(task.path, stringify(data, body));
+  syncInMemory(task, data, body);
 }
 
 // Reclassify a task's `type:` (pr / investigation). Type drives
@@ -415,7 +538,7 @@ export function setType(task: Task, newType: string): MutateResult {
   }
   data.type = newType;
   const newBody = appendLog(body, `${now()}: type ${current || "?"} -> ${newType}`);
-  writeFileSync(task.path, stringify(data, newBody));
+  atomicWriteFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
   return { message: `${task.slug}: type ${current || "?"} -> ${newType}` };
 }
@@ -430,6 +553,7 @@ export function complete(task: Task, opts: CompleteOptions = {}): MutateResult {
   if (current === "dropped") {
     throw new Error(`Cannot complete ${task.slug}: status is dropped`);
   }
+  assertTransition(task.slug, current, "done");
   data.status = "done";
   data.closed = now();
   let newBody = body;
@@ -440,8 +564,9 @@ export function complete(task: Task, opts: CompleteOptions = {}): MutateResult {
     newBody = setSection(newBody, "Outcome", opts.outcome);
   }
   newBody = appendLog(newBody, `${now()}: closed`);
-  writeFileSync(task.path, stringify(data, newBody));
+  atomicWriteFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
+  emitStatusChange(task, current, "done", "closed");
 
   const type = String(data.type ?? "");
   const shouldArchive = opts.archive !== undefined
@@ -481,6 +606,7 @@ export function drop(task: Task, reason?: string): MutateResult {
   if (current === "done") {
     throw new Error(`Cannot drop ${task.slug}: status is done`);
   }
+  assertTransition(task.slug, current, "dropped");
   data.status = "dropped";
   data.closed = now();
   const trimmed = reason?.trim();
@@ -491,9 +617,11 @@ export function drop(task: Task, reason?: string): MutateResult {
     }
     newBody = setSection(newBody, "Outcome", trimmed);
   }
-  newBody = appendLog(newBody, `${now()}: ${trimmed ? `dropped — ${trimmed}` : "dropped"}`);
-  writeFileSync(task.path, stringify(data, newBody));
+  const dropVerb = trimmed ? `dropped — ${trimmed}` : "dropped";
+  newBody = appendLog(newBody, `${now()}: ${dropVerb}`);
+  atomicWriteFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
+  emitStatusChange(task, current, "dropped", dropVerb);
   return { message: `${task.slug} -> dropped` };
 }
 
@@ -679,7 +807,7 @@ export function editTaskSection(
     }
     data.title = value;
     const newBody = appendLog(body, `${now()}: edited title (via serve)`);
-    writeFileSync(task.path, stringify(data, newBody));
+    atomicWriteFileSync(task.path, stringify(data, newBody));
     syncInMemory(task, data, newBody);
     return { message: `${task.slug}: edited title` };
   }
@@ -688,7 +816,7 @@ export function editTaskSection(
     return { message: `${task.slug}: ${canonical} unchanged` };
   }
   const newBody = appendLog(proposedBody, `${now()}: edited ${canonical} (via serve)`);
-  writeFileSync(task.path, stringify(data, newBody));
+  atomicWriteFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
   return { message: `${task.slug}: edited ${canonical}` };
 }
@@ -734,7 +862,7 @@ export function editProjectSection(
     }
     data.name = value;
     const newBody = appendProjectLog(body, `${now()}: edited name (via serve)`);
-    writeFileSync(project.path, stringify(data, newBody));
+    atomicWriteFileSync(project.path, stringify(data, newBody));
     project.data = data;
     project.body = newBody;
     return { message: `${project.slug}: edited name` };
@@ -744,7 +872,7 @@ export function editProjectSection(
     return { message: `${project.slug}: ${canonical} unchanged` };
   }
   const newBody = appendProjectLog(proposedBody, `${now()}: edited ${canonical} (via serve)`);
-  writeFileSync(project.path, stringify(data, newBody));
+  atomicWriteFileSync(project.path, stringify(data, newBody));
   project.data = data;
   project.body = newBody;
   return { message: `${project.slug}: edited ${canonical}` };
@@ -766,18 +894,24 @@ function appendProjectLog(body: string, line: string): string {
 // ---- internals ------------------------------------------------------------
 
 interface TransitionOpts {
-  refusal: readonly string[]; // current statuses from which the transition is invalid
+  force?: boolean; // bypass the legality table (tpm status --force repair path)
+  // Drop the orchestrator retry counter as part of this transition (human
+  // promote/reopen paths). Folded into the same write — no second I/O.
+  clearAttempts?: boolean;
 }
 
-function transition(task: Task, target: Status, logVerb: string, opts: TransitionOpts): MutateResult {
+function transition(task: Task, target: Status, logVerb: string, opts: TransitionOpts = {}): MutateResult {
   guardArchived(task);
   const { data, body } = readParsed(task);
   const current = String(data.status ?? "");
   if (current === target) {
     return { message: `${task.slug} is already ${target}` };
   }
-  if (opts.refusal.includes(current)) {
-    throw new Error(`Cannot transition ${task.slug} from "${current}" to "${target}".`);
+  if (!opts.force) {
+    assertTransition(task.slug, current, target);
+  }
+  if (opts.clearAttempts && data.orchestrator_attempts !== undefined) {
+    delete data.orchestrator_attempts;
   }
   data.status = target;
   if (target !== "done" && data.closed) {
@@ -797,9 +931,25 @@ function transition(task: Task, target: Status, logVerb: string, opts: Transitio
     data.allow_orchestrator = true;
     newBody = appendLog(newBody, `${now()}: allow_orchestrator: true (set on ready)`);
   }
-  writeFileSync(task.path, stringify(data, newBody));
+  atomicWriteFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
+  emitStatusChange(task, current, target, logVerb);
   return { message: `${task.slug} -> ${target}` };
+}
+
+// Write via temp file + rename so a crash mid-write can't leave a truncated
+// task file. rename(2) within the same directory is atomic on POSIX; on
+// Windows Node maps renameSync to MoveFileEx with MOVEFILE_REPLACE_EXISTING,
+// which also replaces the destination in one step.
+export function atomicWriteFileSync(path: string, text: string): void {
+  const tmp = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, text);
+    renameSync(tmp, path);
+  } catch (e) {
+    try { unlinkSync(tmp); } catch { /* tmp may not exist */ }
+    throw e;
+  }
 }
 
 function guardArchived(task: Task): void {
@@ -818,10 +968,6 @@ function syncInMemory(task: Task, data: Record<string, unknown>, body: string): 
   // see the new state.
   task.data = data;
   task.body = body;
-}
-
-function isStatus(s: string): s is Status {
-  return (VALID_STATUSES as readonly string[]).includes(s);
 }
 
 // Insert/replace/remove `parent:` while preserving the canonical key order

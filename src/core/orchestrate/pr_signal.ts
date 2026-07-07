@@ -59,9 +59,9 @@ export type RawPrJson = GithubPrJson;
 
 export type PrAction =
   | "no-signal"
-  | "flip-to-needs-feedback"
-  | "flip-to-needs-review"
-  | "flip-to-needs-close";
+  | "flip-to-rework"
+  | "flip-to-review"
+  | "flip-to-closing";
 
 export type PrDecision = {
   url: string;
@@ -126,7 +126,7 @@ function pickCi(pr: RawPrJson): PrDecision["ci"] {
 // ---- Aggregation: PR signals → status flip ------------------------------
 
 export type Classification = {
-  status: "needs-review" | "needs-feedback" | "needs-close";
+  status: "review" | "rework" | "closing";
   reasons: string[];
 };
 
@@ -138,17 +138,17 @@ export interface ClassifiedSignal {
 // Aggregate per-PR signals into the single flip the poller acts on.
 //
 // Precedence (unchanged from the prior GitHub-only classifier):
-//   needs-close (any PR merged — work shipped, close the task) >
-//   needs-review (any needs-human OR abandoned PR) >
-//   needs-feedback (any needs-agent).
+//   closing (any PR merged — work shipped, close the task) >
+//   review (any needs-human OR abandoned PR) >
+//   rework (any needs-agent).
 //
-// Once a needs-review trigger fires, subsequent needs-agent reasons are
+// Once a review trigger fires, subsequent needs-agent reasons are
 // suppressed (the human reviews first; the agent doesn't churn). needs-agent
 // only records the first reason — within one tick we want the agent to pick
-// the most urgent fix, not be told about every problem. needs-review reasons
+// the most urgent fix, not be told about every problem. review reasons
 // accumulate so the operator sees every blocking issue at once.
 //
-// abandoned (closed-without-merge) routes to needs-review rather than being
+// abandoned (closed-without-merge) routes to review rather than being
 // ignored: a PR that died without merging means the task needs human triage —
 // reopen the PR, drop the task, or something in between. The previous
 // behaviour silently swallowed the signal and stranded the task.
@@ -156,7 +156,7 @@ export function aggregateSignals(items: ClassifiedSignal[]): Classification | nu
   const merged = items.filter((i) => i.signal.kind === "merged");
   if (merged.length > 0) {
     return {
-      status: "needs-close",
+      status: "closing",
       reasons: merged.map((i) => `merged ${i.url || "<unknown>"}`),
     };
   }
@@ -166,13 +166,13 @@ export function aggregateSignals(items: ClassifiedSignal[]): Classification | nu
 
   for (const { url, signal } of items) {
     if (signal.kind === "needs-human") {
-      status = "needs-review";
+      status = "review";
       reasons.push(signal.reason);
     } else if (signal.kind === "abandoned") {
-      status = "needs-review";
+      status = "review";
       reasons.push(`PR abandoned: ${url || "<unknown>"}`);
     } else if (!status && signal.kind === "needs-agent") {
-      status = "needs-feedback";
+      status = "rework";
       reasons.push(signal.reason);
     }
   }
@@ -184,7 +184,7 @@ export function aggregateSignals(items: ClassifiedSignal[]): Classification | nu
 // `merged` signal it finds — multiple merged PRs on one task are rare; the
 // canonical case is one PR shipping the work. Returns null when there's
 // nothing useful to derive (no merged signal, or both title and body empty
-// after stripping) — caller leaves the task at needs-close for the manual
+// after stripping) — caller leaves the task at closing for the manual
 // /tpm done escape hatch.
 export function deriveOutcomeFromSignals(items: ClassifiedSignal[]): string | null {
   const merged = items.find((i) => i.signal.kind === "merged");
@@ -243,8 +243,8 @@ export function stripPrBody(body: string): string {
 // plausibly change in a way that matters." Status indicates which inbox the
 // task is parked in right now, but the PR is alive across statuses — review
 // states, CI runs, and merges all keep landing after a task moves past
-// in-progress. Stranding the task at needs-review / needs-feedback /
-// needs-close (the post-049 forward-direction gap) made the poller blind to
+// in-progress. Stranding the task at review / rework /
+// closing (the post-049 forward-direction gap) made the poller blind to
 // reviewer comments on PRs the agent had already handed off.
 //
 // Excluded statuses: `open` (not yet shaped), `blocked` (deliberately parked
@@ -256,9 +256,9 @@ export function stripPrBody(body: string): string {
 const WATCHED_STATUSES = new Set([
   "in-progress",
   "ready",
-  "needs-review",
-  "needs-feedback",
-  "needs-close",
+  "review",
+  "rework",
+  "closing",
 ]);
 
 export type WatchableTask = { status?: unknown; prs?: unknown };
@@ -275,13 +275,13 @@ export function shouldWatchForPrSignal(task: WatchableTask): boolean {
 function actionFor(signal: PrSignal): PrAction {
   switch (signal.kind) {
     case "merged":
-      return "flip-to-needs-close";
+      return "flip-to-closing";
     case "needs-human":
-      return "flip-to-needs-review";
+      return "flip-to-review";
     case "abandoned":
-      return "flip-to-needs-review";
+      return "flip-to-review";
     case "needs-agent":
-      return "flip-to-needs-feedback";
+      return "flip-to-rework";
     case "no-action":
       return "no-signal";
   }
@@ -343,7 +343,7 @@ async function main(): Promise<void> {
   if (!decision) return;
   process.stdout.write(`FLIP ${decision.status} ${decision.reasons.join("; ")}\n`);
 
-  if (decision.status === "needs-close") {
+  if (decision.status === "closing") {
     const outcome = deriveOutcomeFromSignals(items);
     if (outcome !== null) {
       process.stdout.write("OUTCOME_BEGIN\n");

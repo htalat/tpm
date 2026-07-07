@@ -16,7 +16,7 @@ import { getScheduler } from "./types.ts";
 
 const JOB = {
   name: "poll",
-  args: ["C:\\Users\\me\\tpm\\bin\\tpm.cmd", "poll"],
+  args: ["C:\\Users\\me\\tpm\\bin\\tpmgr.cmd", "poll"],
   intervalSeconds: 60,
 };
 
@@ -35,15 +35,15 @@ test("intervalMinutes: rounds to nearest minute, clamps to >=1", () => {
 
 test("trCommand: bare path-safe args pass through unquoted", () => {
   assert.equal(
-    trCommand(["C:\\tpm\\bin\\tpm.cmd", "poll"]),
-    "C:\\tpm\\bin\\tpm.cmd poll",
+    trCommand(["C:\\tpm\\bin\\tpmgr.cmd", "poll"]),
+    "C:\\tpm\\bin\\tpmgr.cmd poll",
   );
 });
 
 test("trCommand: args with spaces get wrapped in double quotes", () => {
   assert.equal(
-    trCommand(["C:\\tpm\\bin\\tpm.cmd", "log", "needs space"]),
-    'C:\\tpm\\bin\\tpm.cmd log "needs space"',
+    trCommand(["C:\\tpm\\bin\\tpmgr.cmd", "log", "needs space"]),
+    'C:\\tpm\\bin\\tpmgr.cmd log "needs space"',
   );
 });
 
@@ -61,7 +61,7 @@ test("buildCreateArgs: produces the expected schtasks invocation", () => {
     "/TN", "tpm-poll",
     "/SC", "MINUTE",
     "/MO", "1",
-    "/TR", "C:\\Users\\me\\tpm\\bin\\tpm.cmd poll",
+    "/TR", "C:\\Users\\me\\tpm\\bin\\tpmgr.cmd poll",
     "/RU", "DESKTOP-X\\me",
     "/IT",
     "/F",

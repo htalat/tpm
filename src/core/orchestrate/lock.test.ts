@@ -25,6 +25,35 @@ function writeLockFile(root: string, pid: number, startedAt = "2026-01-01 00:00 
   writeFileSync(lockPath(root), JSON.stringify({ pid, started_at: startedAt }, null, 2) + "\n");
 }
 
+// Scaffold a project + single top-level task on disk so loadProjects/findTask
+// can resolve the lock's qualified slug back to a real task. Returns the task
+// file path so callers can read back its status after a sweep.
+function seedTask(root: string, project: string, slug: string, status: string): string {
+  const dir = join(root, project);
+  mkdirSync(join(dir, "tasks"), { recursive: true });
+  writeFileSync(
+    join(dir, "project.md"),
+    `---\nname: ${project}\nslug: ${project}\nstatus: active\ncreated: 2026-01-01 00:00 PDT\ntags: []\n---\n\n# ${project}\n`,
+  );
+  const taskPath = join(dir, "tasks", `${slug}.md`);
+  writeFileSync(
+    taskPath,
+    `---\ntitle: Task ${slug}\nslug: ${slug}\nproject: ${project}\nstatus: ${status}\ntype: pr\ncreated: 2026-01-01 00:00 PDT\nclosed:\nprs: []\ntags: []\n---\n\n# Task ${slug}\n\n## Log\n- 2026-01-01 00:00 PDT: created\n`,
+  );
+  return taskPath;
+}
+
+// Backdate a lock file's mtime so the next sweep sees it as stale.
+function backdateLock(path: string, minutes: number): void {
+  const t = (Date.now() - minutes * 60_000) / 1000;
+  utimesSync(path, t, t);
+}
+
+function statusOf(taskPath: string): string {
+  const m = readFileSync(taskPath, "utf8").match(/^status:\s*(.+)$/m);
+  return m ? m[1].trim() : "";
+}
+
 test("acquire: creates lock file with our pid and a timestamp", () => {
   const root = setupRoot();
   try {
@@ -410,6 +439,63 @@ test("releaseStaleTaskLocks: rejects non-positive ttl", () => {
   try {
     assert.throws(() => releaseStaleTaskLocks(root, 0), /positive number/);
     assert.throws(() => releaseStaleTaskLocks(root, -1), /positive number/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("releaseStaleTaskLocks: stale lock at in-progress -> released and reverted to ready", () => {
+  const root = setupRoot();
+  try {
+    const taskPath = seedTask(root, "alpha", "001-foo", "in-progress");
+    acquireTask(root, "alpha/001-foo", "claude-1");
+    backdateLock(taskLockPath(root, "alpha/001-foo"), 60);
+
+    const removed = releaseStaleTaskLocks(root, 30);
+    assert.equal(removed.length, 1);
+    assert.equal(removed[0].qualifiedSlug, "alpha/001-foo");
+    assert.equal(removed[0].reverted, true);
+    assert.equal(existsSync(taskLockPath(root, "alpha/001-foo")), false);
+    assert.equal(statusOf(taskPath), "ready");
+    // The revert leaves an audit trail in the task's Log.
+    assert.match(readFileSync(taskPath, "utf8"), /stranded — lock expired/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("releaseStaleTaskLocks: stale lock at ready -> released, status untouched", () => {
+  const root = setupRoot();
+  try {
+    const taskPath = seedTask(root, "alpha", "001-foo", "ready");
+    acquireTask(root, "alpha/001-foo", "claude-1");
+    backdateLock(taskLockPath(root, "alpha/001-foo"), 60);
+
+    const removed = releaseStaleTaskLocks(root, 30);
+    assert.equal(removed.length, 1);
+    assert.equal(removed[0].reverted, false);
+    assert.equal(existsSync(taskLockPath(root, "alpha/001-foo")), false);
+    assert.equal(statusOf(taskPath), "ready");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("releaseStaleTaskLocks: stale repo lock -> released, no status change attempted", () => {
+  const root = setupRoot();
+  try {
+    // A repo lock isn't per-task; there's no task to revert. The presence of an
+    // unrelated in-progress task proves the sweep doesn't touch it.
+    const taskPath = seedTask(root, "alpha", "001-foo", "in-progress");
+    acquireRepo(root, "alpha", "claude-1");
+    backdateLock(repoLockPath(root, "alpha"), 60);
+
+    const removed = releaseStaleTaskLocks(root, 30);
+    assert.equal(removed.length, 1);
+    assert.equal(removed[0].qualifiedSlug, "repo--alpha");
+    assert.equal(removed[0].reverted, false);
+    assert.equal(existsSync(repoLockPath(root, "alpha")), false);
+    assert.equal(statusOf(taskPath), "in-progress");
   } finally {
     rmTempDir(root);
   }

@@ -31,7 +31,11 @@ See `skills/tpm/SKILL.md` for the full action procedures.
 
 ## Permissions
 
-To skip permission prompts for the tpm CLI, add `Bash(tpm:*)` to `permissions.allow` in `~/.claude/settings.json`. The easiest path: ask Claude Code "add `Bash(tpm:*)` to my user settings."
+To skip permission prompts for the tpm CLI, add `Bash(tpm:*)` to `permissions.allow` in `~/.claude/settings.json` (on Windows, `Bash(tpmgr:*)` — see the note below). The easiest path: ask Claude Code "add `Bash(tpm:*)` to my user settings."
+
+## Windows: the command is `tpmgr`
+
+On Windows, bare `tpm` collides with the built-in `tpm.msc` (Trusted Platform Module console), which always shadows a user shim. The CLI is invoked as **`tpmgr`** there (see the [Windows setup](../../README.md#windows)). The `/tpm` slash command is unaffected — it's invoked by skill name, not the OS command — but when the skill shells out, it runs `tpmgr` on Windows.
 
 ## Repo-scoped skills
 

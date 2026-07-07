@@ -20,6 +20,8 @@ import {
   repoGuardAction,
   resolvePoolShape,
   resolveTimeBound,
+  resolveMaxAttempts,
+  DEFAULT_MAX_ATTEMPTS,
   runPool,
   runWithTimeout,
   shouldAutoRevert,
@@ -121,7 +123,7 @@ test("classifyDisposition: exit 0 with status flipped → shipped", () => {
     classifyDisposition({
       exitCode: 0,
       before: { status: "ready", prs: 0 },
-      after: { status: "needs-review", prs: 0 },
+      after: { status: "review", prs: 0 },
     }),
     "shipped",
   );
@@ -140,26 +142,26 @@ test("classifyDisposition: ready → in-progress, prs unchanged → stalled (ent
   );
 });
 
-test("classifyDisposition: needs-feedback → in-progress, prs unchanged → stalled (feedback-round entry flip)", () => {
+test("classifyDisposition: rework → in-progress, prs unchanged → stalled (feedback-round entry flip)", () => {
   // Feedback dispatch flips status to in-progress on entry; exiting without
   // addressing anything (no commit, no new PR) is the same non-progress case.
   assert.equal(
     classifyDisposition({
       exitCode: 0,
-      before: { status: "needs-feedback", prs: 1 },
+      before: { status: "rework", prs: 1 },
       after: { status: "in-progress", prs: 1 },
     }),
     "stalled",
   );
 });
 
-test("classifyDisposition: in-progress → needs-review with PR opened → shipped", () => {
+test("classifyDisposition: in-progress → review with PR opened → shipped", () => {
   // Canonical ship: agent ran `tpm pr`, status flipped, prs grew.
   assert.equal(
     classifyDisposition({
       exitCode: 0,
       before: { status: "in-progress", prs: 0 },
-      after: { status: "needs-review", prs: 1 },
+      after: { status: "review", prs: 1 },
     }),
     "shipped",
   );
@@ -261,27 +263,27 @@ test("classifyDisposition: exit 124 with ready -> in-progress entry flip only �
   );
 });
 
-test("classifyDisposition: exit 124 with ready -> needs-review and prs +1 → shipped (the 057 trace)", () => {
+test("classifyDisposition: exit 124 with ready -> review and prs +1 → shipped (the 057 trace)", () => {
   // The canonical 068 case: agent ran `tpm pr` then lingered past the time
   // bound and got SIGTERM'd. The PR exists; the headline should report that.
   assert.equal(
     classifyDisposition({
       exitCode: 124,
       before: { status: "ready", prs: 0 },
-      after: { status: "needs-review", prs: 1 },
+      after: { status: "review", prs: 1 },
     }),
     "shipped",
   );
 });
 
-test("classifyDisposition: exit 124 with in-progress -> needs-review and prs +1 → shipped", () => {
+test("classifyDisposition: exit 124 with in-progress -> review and prs +1 → shipped", () => {
   // Same shape as the 057 trace but starting from in-progress (agent resumed
   // an already-claimed task before opening the PR).
   assert.equal(
     classifyDisposition({
       exitCode: 124,
       before: { status: "in-progress", prs: 0 },
-      after: { status: "needs-review", prs: 1 },
+      after: { status: "review", prs: 1 },
     }),
     "shipped",
   );
@@ -352,14 +354,14 @@ test("classifyDisposition: non-zero non-124 exit → failed regardless of progre
     classifyDisposition({
       exitCode: 137,
       before: { status: "ready", prs: 0 },
-      after: { status: "needs-review", prs: 1 },
+      after: { status: "review", prs: 1 },
     }),
     "failed",
   );
 });
 
 test("classifyDisposition: in-progress → in-progress with report attached → shipped (task 080)", () => {
-  // `tpm report` flips in-progress -> needs-review under normal flow, so we
+  // `tpm report` flips in-progress -> review under normal flow, so we
   // shouldn't usually see this exact transition. But if the agent attaches
   // a report and the orchestrator's snapshot races a status flip, the
   // empty→set transition is itself the shipping signal.
@@ -373,12 +375,12 @@ test("classifyDisposition: in-progress → in-progress with report attached → 
   );
 });
 
-test("classifyDisposition: in-progress → needs-review with report attached → shipped (canonical investigation flow)", () => {
+test("classifyDisposition: in-progress → review with report attached → shipped (canonical investigation flow)", () => {
   assert.equal(
     classifyDisposition({
       exitCode: 0,
       before: { status: "in-progress", prs: 0, report: false },
-      after: { status: "needs-review", prs: 0, report: true },
+      after: { status: "review", prs: 0, report: true },
     }),
     "shipped",
   );
@@ -386,7 +388,7 @@ test("classifyDisposition: in-progress → needs-review with report attached →
 
 test("classifyDisposition: ready → in-progress with report attached counts as shipping (overrides entry-flip rule)", () => {
   // Agent did the full ready → start → report cycle in one run but didn't
-  // emit the needs-review flip yet — report-set still wins, mirroring the
+  // emit the review flip yet — report-set still wins, mirroring the
   // ready→in-progress+prs=+1 case.
   assert.equal(
     classifyDisposition({
@@ -399,7 +401,7 @@ test("classifyDisposition: ready → in-progress with report attached counts as 
 });
 
 test("classifyDisposition: existing report (no transition) on stalled run stays stalled", () => {
-  // Round-trip case: report already set, agent picked up needs-feedback,
+  // Round-trip case: report already set, agent picked up rework,
   // re-attached (no transition because report:empty→set didn't happen, but
   // status flipped via the re-fire path). Without a status change AND no
   // report transition, the run is genuinely stalled.
@@ -420,7 +422,7 @@ test("classifyDisposition: exit 124 with report attached → shipped", () => {
     classifyDisposition({
       exitCode: 124,
       before: { status: "ready", prs: 0, report: false },
-      after: { status: "needs-review", prs: 0, report: true },
+      after: { status: "review", prs: 0, report: true },
     }),
     "shipped",
   );
@@ -446,9 +448,9 @@ test("formatDispositionLine: shipped run shows after-state diff", () => {
       "shipped",
       0,
       { status: "ready", prs: 0 },
-      { status: "needs-review", prs: 1 },
+      { status: "review", prs: 1 },
     ),
-    "disposition tpm/051-foo shipped exit=0 status=ready->needs-review prs=0->1",
+    "disposition tpm/051-foo shipped exit=0 status=ready->review prs=0->1",
   );
 });
 
@@ -472,9 +474,9 @@ test("formatDispositionLine: appends report=empty->set when the report field fli
       "shipped",
       0,
       { status: "in-progress", prs: 0, report: false },
-      { status: "needs-review", prs: 0, report: true },
+      { status: "review", prs: 0, report: true },
     ),
-    "disposition tpm/080-investigation shipped exit=0 status=in-progress->needs-review prs=0->0 report=empty->set",
+    "disposition tpm/080-investigation shipped exit=0 status=in-progress->review prs=0->0 report=empty->set",
   );
 });
 
@@ -487,9 +489,9 @@ test("formatDispositionLine: omits report= field when no report has ever been at
       "shipped",
       0,
       { status: "in-progress", prs: 0, report: false },
-      { status: "needs-review", prs: 1, report: false },
+      { status: "review", prs: 1, report: false },
     ),
-    "disposition tpm/045-pr shipped exit=0 status=in-progress->needs-review prs=0->1",
+    "disposition tpm/045-pr shipped exit=0 status=in-progress->review prs=0->1",
   );
 });
 
@@ -534,14 +536,14 @@ test("evaluateTerminalState: status=in-progress → null (still running)", () =>
   assert.equal(evaluateTerminalState(task({ status: "in-progress" })), null);
 });
 
-test("evaluateTerminalState: status=needs-close → null (transient, don't kill)", () => {
-  // needs-close is the poller's transient state right before its inline
+test("evaluateTerminalState: status=closing → null (transient, don't kill)", () => {
+  // closing is the poller's transient state right before its inline
   // auto-close; SIGTERMing here would race the close-out for no benefit.
-  assert.equal(evaluateTerminalState(task({ status: "needs-close" })), null);
+  assert.equal(evaluateTerminalState(task({ status: "closing" })), null);
 });
 
-test("evaluateTerminalState: status=needs-feedback → null (agent should react, not be killed)", () => {
-  assert.equal(evaluateTerminalState(task({ status: "needs-feedback" })), null);
+test("evaluateTerminalState: status=rework → null (agent should react, not be killed)", () => {
+  assert.equal(evaluateTerminalState(task({ status: "rework" })), null);
 });
 
 test("evaluateTerminalState: status=open → 'pulled' (operator stopped the run with tpm pull)", () => {
@@ -627,26 +629,26 @@ test("shouldAutoRevert: in-progress -> in-progress with no PR opened → true", 
   );
 });
 
-test("shouldAutoRevert: needs-feedback -> in-progress with no PR opened → false", () => {
+test("shouldAutoRevert: rework -> in-progress with no PR opened → false", () => {
   // A feedback round legitimately ends here: the agent addressed CI/threads
   // and ran `tpm status <slug> in-progress`. Don't revert that.
   assert.equal(
     shouldAutoRevert({
       exitCode: 0,
-      before: { status: "needs-feedback", prs: 1 },
+      before: { status: "rework", prs: 1 },
       after: { status: "in-progress", prs: 1 },
     }),
     false,
   );
 });
 
-test("shouldAutoRevert: after status is needs-review (PR opened) → false", () => {
+test("shouldAutoRevert: after status is review (PR opened) → false", () => {
   // `tpm pr` flipped status, so this is the shipped path.
   assert.equal(
     shouldAutoRevert({
       exitCode: 0,
       before: { status: "ready", prs: 0 },
-      after: { status: "needs-review", prs: 1 },
+      after: { status: "review", prs: 1 },
     }),
     false,
   );
@@ -788,8 +790,8 @@ test("buildExecutionPrompt: includes all execution rules verbatim", () => {
   assert.match(prompt, /You are executing this task\. Rules:/);
   assert.match(prompt, /- If `prs:` is non-empty and any linked PR is OPEN, fetch its comments and reviews via the host CLI \(dispatch on `Host:` in the briefing\) before any other discovery\. Unaddressed comments are almost certainly why you're seeing this task — address them first\./);
   assert.match(prompt, /- Follow the Plan above\./);
-  assert.match(prompt, /- If type=pr: after opening a PR, run `tpm pr <slug> <url>` \(CLI auto-flips to needs-review\)\. Stop\./);
-  assert.match(prompt, /- If type=investigation: your deliverable is a \*\*report\*\*, not a PR\. Run `tpm report <slug>` to fold the task into a folder and scaffold `<project>\/tasks\/<slug>\/report\.md` from the template\. Write findings into that file\. When done, re-run `tpm report <slug>` — the CLI auto-flips to needs-review\. Don't run `tpm pr`\./);
+  assert.match(prompt, /- If type=pr: after opening a PR, run `tpm pr <slug> <url>` \(CLI auto-flips to review\)\. Stop\./);
+  assert.match(prompt, /- If type=investigation: your deliverable is a \*\*report\*\*, not a PR\. Run `tpm report <slug>` to fold the task into a folder and scaffold `<project>\/tasks\/<slug>\/report\.md` from the template\. Write findings into that file\. When done, re-run `tpm report <slug>` — the CLI auto-flips to review\. Don't run `tpm pr`\./);
   assert.match(prompt, /- Can't proceed\? `tpm revert <slug> "<reason>"` \(back to ready\) or `tpm block <slug> "<reason>"` \(human queue\)\. Never exit at in-progress\./);
   assert.match(prompt, /- Unanticipated decision\? Ship the smaller \/ more local change, file follow-ups, don't halt\./);
 });
@@ -797,7 +799,7 @@ test("buildExecutionPrompt: includes all execution rules verbatim", () => {
 test("buildExecutionPrompt: PR-comments-first rule appears before the Plan-execution rule (task 088)", () => {
   // Live failure 2026-05-17 on task 085: agent picked up `ready` with open PR,
   // saw the commit was shipped, never fetched the PR's comments, flipped to
-  // needs-review without addressing the user's feedback. The rule must
+  // review without addressing the user's feedback. The rule must
   // precede "Follow the Plan above." so the agent reads the PR's comment
   // state before any other discovery. Phrased host-agnostically (dispatch on
   // `Host:` in the briefing) — the agent picks the right CLI for github vs ado.
@@ -1004,8 +1006,8 @@ test("runWithTimeout: early-term fires immediately when task already archived", 
   assert.equal(result.exitCode, 0);
 });
 
-test("runWithTimeout: does not SIGTERM when task stays at needs-close (transient)", async () => {
-  // Mimic the poller window: status is needs-close, but evaluateTerminalState
+test("runWithTimeout: does not SIGTERM when task stays at closing (transient)", async () => {
+  // Mimic the poller window: status is closing, but evaluateTerminalState
   // returns null for that. The child should exit on its own.
   const result = await runWithTimeout(
     "sleep",
@@ -1269,12 +1271,12 @@ test("eager claim: ready -> in-progress writes the orchestrator verb before any 
   }
 });
 
-test("eager claim: needs-feedback -> in-progress also gets the claim verb (feedback dispatch path)", () => {
+test("eager claim: rework -> in-progress also gets the claim verb (feedback dispatch path)", () => {
   // The orchestrator pre-claims the same way for feedback-mode dispatches.
-  // mutate.start refuses only done/dropped, so needs-feedback is accepted.
+  // mutate.start refuses only done/dropped, so rework is accepted.
   const dir = mkdtempSync(resolve(tmpdir(), "tpm-orch-eager-feedback-"));
   try {
-    const task = writeClaimableTask(dir, "001-a", "needs-feedback");
+    const task = writeClaimableTask(dir, "001-a", "rework");
     mutate.start(task, ORCHESTRATOR_CLAIM_VERB);
     const text = readFileSync(task.path, "utf8");
     assert.match(text, /status: in-progress/);
@@ -1331,22 +1333,22 @@ test("spawn-failure rollback: reverts in-progress back to the pre-claim status w
   }
 });
 
-test("spawn-failure rollback: needs-feedback round bounces back to needs-feedback (not ready)", () => {
-  // Feedback-mode dispatches must roll back to the original needs-feedback
+test("spawn-failure rollback: rework round bounces back to rework (not ready)", () => {
+  // Feedback-mode dispatches must roll back to the original rework
   // status, not to ready — otherwise the next tick would lose the "addressing
   // PR feedback" signal and re-shape the task as a fresh ready entry.
   const dir = mkdtempSync(resolve(tmpdir(), "tpm-orch-rollback-feedback-"));
   try {
-    const task = writeClaimableTask(dir, "001-a", "needs-feedback");
+    const task = writeClaimableTask(dir, "001-a", "rework");
     mutate.start(task, ORCHESTRATOR_CLAIM_VERB);
     mutate.setStatus(
       task,
-      "needs-feedback",
-      "claim failed: agent spawn failed (exit 127, bin=/nope/claude); reverted to needs-feedback",
+      "rework",
+      "claim failed: agent spawn failed (exit 127, bin=/nope/claude); reverted to rework",
     );
     const text = readFileSync(task.path, "utf8");
-    assert.match(text, /status: needs-feedback/);
-    assert.match(text, /: claim failed: agent spawn failed .* reverted to needs-feedback$/m);
+    assert.match(text, /status: rework/);
+    assert.match(text, /: claim failed: agent spawn failed .* reverted to rework$/m);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1786,4 +1788,47 @@ test("runPool: a bad config value (clamped to 1) reconciles to a single worker",
     Date.now = realNow;
   }
   assert.deepEqual(fake.spawned, [1], "bad value clamped to 1 should still spawn worker-1");
+});
+
+test("runPool: shouldStop (daemon shutdown) drains every worker and returns", async () => {
+  const fake = makeFakePool();
+  let stop = false;
+  // Real-timer pump: resolve fake workers once their drain flag flips, the
+  // way a real worker loop notices shouldDrain() between iterations.
+  const drainPump = setInterval(() => fake.flushDrained(), 5);
+  try {
+    let tick = 0;
+    await runPool({
+      initialDesired: 2,
+      deadlineMs: Date.now() + 60_000, // far future: stop drives the exit, not the deadline
+      reconcileIntervalMs: 10,
+      readDesired: () => 2,
+      shouldStop: () => stop,
+      spawnWorker: (id, shouldDrain) => fake.spawnWorker(id, shouldDrain),
+      log: () => {},
+      sleep: async () => {
+        tick++;
+        if (tick === 1) stop = true;
+      },
+    });
+  } finally {
+    clearInterval(drainPump);
+  }
+  assert.deepEqual(fake.spawned, [1, 2], "initial reconcile spawned both workers");
+  assert.deepEqual([...fake.drainedAtExit].sort(), [1, 2], "stop marked every worker for drain");
+});
+
+// ---- retry cap (max_attempts cascade) -----------------------------------------
+
+test("resolveMaxAttempts: task > project > global > default 3", () => {
+  const mk = (taskMax?: unknown, projectMax?: unknown) => ({
+    task: { slug: "t", path: "/tmp/t.md", archived: false, body: "", data: taskMax === undefined ? {} : { max_attempts: taskMax } },
+    project: { slug: "p", path: "/tmp/p.md", dir: "/tmp/p", body: "", tasks: [], data: projectMax === undefined ? {} : { max_attempts: projectMax } },
+  });
+  assert.equal(resolveMaxAttempts(mk(), undefined), DEFAULT_MAX_ATTEMPTS);
+  assert.equal(resolveMaxAttempts(mk(), 7), 7);
+  assert.equal(resolveMaxAttempts(mk(undefined, 5), 7), 5);
+  assert.equal(resolveMaxAttempts(mk(2, 5), 7), 2);
+  // Non-positive / non-integer values fall through the cascade.
+  assert.equal(resolveMaxAttempts(mk(0, -1), 1.5 as number), DEFAULT_MAX_ATTEMPTS);
 });
