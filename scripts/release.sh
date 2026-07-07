@@ -64,6 +64,15 @@ fi
 printf 'release: running tests...\n'
 npm test --silent
 
+# The SPA ships as a release artifact: install/deploy targets get a working
+# /app without a node_modules install. Build fresh so the tarball matches the
+# tagged source; vitest rides along as a cheap gate.
+printf 'release: building the web app...\n'
+npm --prefix web ci --silent
+npm --prefix web run build --silent
+npm --prefix web test --silent
+tar -czf "/tmp/tpm-web-dist.tar.gz" -C web dist
+
 # ---- bump -----------------------------------------------------------------
 # `npm version --no-git-tag-version` updates package.json (and package-lock.json
 # when present) without git side effects.
@@ -100,10 +109,11 @@ git push --quiet origin main
 git push --quiet origin "$NEW_TAG"
 
 # ---- gh release -----------------------------------------------------------
+WEB_DIST="/tmp/tpm-web-dist.tar.gz"
 if [ -n "$NOTES_FILE" ]; then
-  URL="$(gh release create "$NEW_TAG" --title "$NEW_TAG" --notes-file "$NOTES_FILE")"
+  URL="$(gh release create "$NEW_TAG" --title "$NEW_TAG" --notes-file "$NOTES_FILE" "$WEB_DIST#web-dist (prebuilt SPA — untar into web/ )")"
 else
-  URL="$(gh release create "$NEW_TAG" --title "$NEW_TAG" --generate-notes)"
+  URL="$(gh release create "$NEW_TAG" --title "$NEW_TAG" --generate-notes "$WEB_DIST#web-dist (prebuilt SPA — untar into web/ )")"
 fi
 
 printf 'release: shipped %s -> %s\n' "$NEW_TAG" "$URL"
