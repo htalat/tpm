@@ -1,6 +1,7 @@
 import { BrowserRouter, Route, Routes, useLocation } from "react-router-dom";
 import { ErrorBoundary, FlashProvider, Masthead, SkewBanner } from "./components";
 import IndexPage from "./pages/IndexPage";
+import BoardPage from "./pages/BoardPage";
 import TaskPage from "./pages/TaskPage";
 import ProjectPage from "./pages/ProjectPage";
 import SearchPage from "./pages/SearchPage";
@@ -21,6 +22,7 @@ export default function App() {
           <RoutedBoundary>
           <Routes>
             <Route path="/" element={<IndexPage />} />
+            <Route path="/board" element={<BoardPage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/config" element={<ConfigPage />} />
