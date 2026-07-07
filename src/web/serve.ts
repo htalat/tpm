@@ -96,7 +96,20 @@ export async function runServe(opts: ServeOpts = {}): Promise<void> {
   const port = opts.port ?? DEFAULT_SERVE_PORT;
   const mutationsEnabled = isLoopback(host);
 
-  const server = createServer((req, res) => handleRequest(req, res, { host, mutationsEnabled, harness: opts.harness }));
+  // handleRequest is async: without this catch, any throw inside it (a tree
+  // parse error, a missing config) becomes an unhandled rejection and kills
+  // the daemon. Surface it as a 500 instead — found by the e2e suite's very
+  // first run, whose readiness probe hit the server before its tree existed.
+  const server = createServer((req, res) => {
+    handleRequest(req, res, { host, mutationsEnabled, harness: opts.harness }).catch((e: unknown) => {
+      try {
+        res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+        res.end(`500: ${e instanceof Error ? e.message : String(e)}`);
+      } catch {
+        // headers already sent — nothing more to do
+      }
+    });
+  });
   server.listen(port, host, () => {
     const where = host === "127.0.0.1" ? "localhost" : host;
     console.error(`tpm serve: http://${where}:${port}/  (Ctrl-C to stop)`);

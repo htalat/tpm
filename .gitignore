@@ -7,3 +7,5 @@ tmp/*
 !tmp/.gitkeep
 web/dist/
 web/*.tsbuildinfo
+web/test-results/
+web/playwright-report/
