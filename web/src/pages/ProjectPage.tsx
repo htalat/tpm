@@ -4,6 +4,7 @@ import { api } from "../api";
 import { useData, useRevalidateOnFocus, useSse } from "../hooks";
 import { Empty, SectionCard, StatusBadge, TaskRow, useFlash } from "../components";
 import { flatTasks } from "../lib";
+import { useBulk } from "../bulk";
 import type { ProjectDetail, Section } from "../types";
 
 // Project view: frontmatter meta, editable Goal/Context/Notes, tasks grouped
@@ -19,6 +20,9 @@ export default function ProjectPage() {
   const detail = useData(() => api.project(slug, showArchived), [slug, showArchived]);
   useSse(detail.refresh);
   useRevalidateOnFocus(detail.refresh);
+
+  const allTasks = detail.data ? flatTasks(detail.data.tasks).filter(t => !t.isParent) : [];
+  const bulk = useBulk(allTasks, detail.refresh);
 
   if (detail.error) return <p className="text-sm text-danger">Failed to load: {detail.error}</p>;
   if (!detail.data) return <p className="text-sm text-muted">Loading…</p>;
@@ -59,12 +63,13 @@ export default function ProjectPage() {
           <NewTaskForm project={p} onCreated={detail.refresh} />
           {ordered.map(status => (
             <SectionCard key={status} title={status} meta={`${groups.get(status)!.length}`}>
-              {groups.get(status)!.map(t => <TaskRow key={t.qualifiedSlug} task={t} />)}
+              {groups.get(status)!.map(t => <TaskRow key={t.qualifiedSlug} task={t} selection={bulk.rowSelection} />)}
             </SectionCard>
           ))}
           {ordered.length === 0 && <Empty text="No tasks yet." />}
         </div>
       </div>
+      {bulk.bar}
     </div>
   );
 }

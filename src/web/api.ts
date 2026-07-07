@@ -63,6 +63,25 @@ export const BULK_ACTIONS: Record<string, { verb: string; label: string; needsRe
   archive: { verb: "archive", label: "Archive" },
 };
 
+// Which bulk actions each status can plausibly accept. Drives UI affordance
+// only — the per-row CLI call is the real enforcer, so a stale selection just
+// surfaces as a per-row refusal in the summary rather than corrupting state.
+// Every non-terminal status can be closed, dropped, or blocked; ready /
+// in-progress / rework can be pulled; open / blocked promoted; blocked
+// reopened; terminal (done/dropped) only archived. A row is selectable iff
+// its status appears here.
+export const BULK_CAPS: Record<string, string[]> = {
+  open: ["promote", "close", "drop", "block"],
+  ready: ["pull", "close", "drop", "block"],
+  blocked: ["promote", "reopen", "close", "drop"],
+  "in-progress": ["pull", "close", "drop", "block"],
+  rework: ["pull", "close", "drop", "block"],
+  closing: ["close", "drop", "block"],
+  review: ["close", "drop", "block"],
+  done: ["archive"],
+  dropped: ["archive"],
+};
+
 // Map a (slug, action, fields) triple to CLI argv. Returns null when a
 // required field is missing. This is the single form→verb mapping for the
 // whole web layer — HTML forms pass URLSearchParams, the JSON API wraps its
@@ -442,6 +461,7 @@ export function routeApi(
       types: [...KNOWN_TASK_TYPES],
       mutationActions: [...MUTATION_ACTIONS],
       bulkActions: BULK_ACTIONS,
+      bulkCaps: BULK_CAPS,
     });
   }
 

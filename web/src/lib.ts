@@ -18,3 +18,17 @@ export function flatTasks(tasks: TaskSummary[]): TaskSummary[] {
 export function shortStamp(iso: string): string {
   return iso.replace("T", " ").slice(0, 16);
 }
+
+// Intersection of the selected statuses' bulk capabilities, in a stable
+// render order — only actions valid for every selected task are offered.
+export const BULK_ACTION_ORDER = ["promote", "pull", "close", "reopen", "drop", "block", "archive"];
+
+export function intersectCaps(statuses: string[], caps: Record<string, string[]>): string[] {
+  if (statuses.length === 0) return [];
+  let common = new Set<string>(caps[statuses[0]] ?? []);
+  for (const s of statuses.slice(1)) {
+    const own = new Set<string>(caps[s] ?? []);
+    common = new Set<string>([...common].filter(a => own.has(a)));
+  }
+  return BULK_ACTION_ORDER.filter(a => common.has(a));
+}

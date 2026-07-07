@@ -152,6 +152,7 @@ export interface Vocab {
   types: string[];
   mutationActions: string[];
   bulkActions: Record<string, { verb: string; label: string; needsReason?: boolean }>;
+  bulkCaps: Record<string, string[]>;
 }
 
 // GET /api/harness (pre-v1 endpoint, still served by route()): {running:false}
@@ -164,6 +165,13 @@ export interface HarnessSnapshot {
   stopping?: boolean;
   lastPoll?: { at: string; summary?: Record<string, unknown>; error?: string } | null;
   poolDied?: string | null;
+}
+
+export interface BulkResponse {
+  ok: boolean;
+  succeeded: number;
+  failed: number;
+  results: { slug: string; ok: boolean; message: string }[];
 }
 
 export interface MutationResponse {
