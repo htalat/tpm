@@ -162,7 +162,7 @@ test("context: renders PRs line when prs is non-empty", () => {
     );
     writeFileSync(
       join(root, "p", "tasks", "001-t.md"),
-      `---\ntitle: T\nslug: t\nproject: p\nstatus: needs-review\ntype: pr\nprs:\n  - https://github.com/example/repo/pull/42\n---\n\n# T\n`,
+      `---\ntitle: T\nslug: t\nproject: p\nstatus: review\ntype: pr\nprs:\n  - https://github.com/example/repo/pull/42\n---\n\n# T\n`,
     );
     const out = context(root, "p/t");
     assert.match(out, /^- PRs: https:\/\/github\.com\/example\/repo\/pull\/42$/m);

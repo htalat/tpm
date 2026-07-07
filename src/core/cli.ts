@@ -19,8 +19,9 @@ import * as lock from "./orchestrate/lock.ts";
 import { runOrchestrate } from "./orchestrate/orchestrate.ts";
 import { runPoll } from "./orchestrate/poll.ts";
 import { runLoop, parseLoopArgs } from "./orchestrate/loop.ts";
+import { startHarness } from "./orchestrate/supervisor.ts";
 import { latestSessionId } from "./orchestrate/run_log.ts";
-import { runServe } from "../web/serve.ts";
+import { runServe, broadcastSse } from "../web/serve.ts";
 import { shouldNotify, fireNotification, NOTIFY_EVENTS } from "./notify.ts";
 import { taskDeepLink } from "../web/serve_url.ts";
 import type { NotifyEvent } from "./notify.ts";
@@ -28,11 +29,24 @@ import { resolveRepo } from "./context.ts";
 import { checkDrift } from "./drift.ts";
 import { getScheduler } from "./scheduler/types.ts";
 import { refreshSkills } from "./refresh_skills.ts";
+import { appendStatusEvent } from "./events.ts";
+import { migrateTree } from "./migrate.ts";
 
 const VERSION = readVersion();
 
 const args = process.argv.slice(2);
 const cmd = args[0];
+
+// Journal every status transition to <root>/.tpm/events.ndjson. Registered
+// here rather than inside mutate because mutate is the single-task-file layer
+// with no root context. Pre-init commands (`tpm init`, `tpm help`) have no
+// root to journal into — skip silently.
+try {
+  const eventsRoot = findRoot();
+  mutate.onStatusChange(change => appendStatusEvent(eventsRoot, change));
+} catch {
+  // no tree yet — journaling off for this invocation
+}
 
 // Hoisted above the dispatch (not parked next to the other helpers below)
 // because the `help`, `config get`, and `config set` case branches all run
@@ -123,6 +137,20 @@ try {
       if (!match) throw new Error(`No task matched "${query}". Try \`tpm ls --all\`.`);
       const path = archiveTask(match.task);
       console.log(`Archived ${qualifySlug(match.project.slug, match.task)} -> ${path}`);
+      break;
+    }
+    case "migrate": {
+      // One-time data migration for the status vocabulary rename
+      // (needs-feedback -> rework, needs-review -> review,
+      // needs-close -> closing). Idempotent; run once per tree after
+      // updating the CLI. --dry-run previews without writing.
+      const root = findRoot();
+      const dryRun = args.includes("--dry-run");
+      const r = migrateTree(root, { dryRun });
+      for (const c of r.changes) {
+        console.log(`${dryRun ? "would migrate" : "migrated"} ${c.slug}: ${c.from} -> ${c.to}`);
+      }
+      console.log(`${dryRun ? "[dry-run] " : ""}${r.changes.length} of ${r.scanned} tasks ${dryRun ? "need" : "got"} a status rename`);
       break;
     }
     case "fold": {
@@ -347,9 +375,19 @@ try {
       break;
     }
     case "status": {
-      const newStatus = args[2];
-      if (!args[1] || !newStatus) usage("tpm status <task> <new-status>");
-      const r = mutate.setStatus(resolveLiveTask(args[1], "tpm status <task> <new-status>"), newStatus);
+      // --force bypasses the transition legality table (transitions.ts) — the
+      // repair hatch for hand-mangled frontmatter or a flow the table doesn't
+      // model yet. Normal moves should go through the purpose-built verbs.
+      const force = args.includes("--force");
+      const positional = args.slice(1).filter(a => a !== "--force");
+      const newStatus = positional[1];
+      if (!positional[0] || !newStatus) usage("tpm status <task> <new-status> [--force]");
+      const r = mutate.setStatus(
+        resolveLiveTask(positional[0], "tpm status <task> <new-status> [--force]"),
+        newStatus,
+        undefined,
+        { force },
+      );
       print(r.message);
       break;
     }
@@ -624,7 +662,7 @@ try {
         if (!pick) {
           const where = projectFilter ? ` in project "${projectFilter}"` : "";
           const gate = autonomous ? " with allow_orchestrator: true" : "";
-          console.error(`No ready or needs-feedback tasks${where}${gate}.`);
+          console.error(`No ready or rework tasks${where}${gate}.`);
           process.exit(1);
         }
         console.log(qualifySlug(pick.project.slug, pick.task));
@@ -661,7 +699,7 @@ try {
       }
       const where = projectFilter ? ` in project "${projectFilter}"` : "";
       const gate = autonomous ? " with allow_orchestrator: true" : "";
-      console.error(`No claimable ready or needs-feedback tasks${where}${gate} (all candidates locked or their repos busy).`);
+      console.error(`No claimable ready or rework tasks${where}${gate} (all candidates locked or their repos busy).`);
       process.exit(1);
     }
     case "serve": {
@@ -774,12 +812,69 @@ try {
       await runLoop(fileURLToPath(import.meta.url), opts);
       break;
     }
+    case "up": {
+      // The whole harness in one process: web UI + PR-signal poll loop +
+      // daemon-mode orchestrate pool (no deadline; scaled live via the
+      // `workers` config knob / the UI's harness panel). Supersedes the
+      // serve-in-one-tmux-pane + loop-in-another pattern: a single supervisor
+      // knows the harness state, reports it at /api/harness, and pushes
+      // journal lines to the UI over /events.
+      const root = findRoot();
+      const portArg = parseFlag(args, "--port");
+      const hostArg = parseFlag(args, "--host");
+      const workersArg = parseFlag(args, "--workers");
+      const pollIntervalArg = parseFlag(args, "--poll-interval");
+      const agentArg = parseFlag(args, "--agent");
+      const serveOpts: { port?: number; host?: string } = {};
+      if (portArg !== undefined) {
+        const n = Number(portArg);
+        if (!Number.isInteger(n) || n <= 0 || n > 65535) usage("--port must be an integer 1..65535");
+        serveOpts.port = n;
+      }
+      if (hostArg !== undefined) serveOpts.host = hostArg;
+      let workers: number | undefined;
+      if (workersArg !== undefined) {
+        const n = Number(workersArg);
+        if (!Number.isInteger(n) || n < 0 || n > 16) usage("--workers must be an integer 0..16");
+        workers = n;
+      }
+      let pollIntervalSec: number | undefined;
+      if (pollIntervalArg !== undefined) {
+        const n = Number(pollIntervalArg);
+        if (!Number.isInteger(n) || n < 10) usage("--poll-interval must be an integer >= 10 (seconds)");
+        pollIntervalSec = n;
+      }
+      const harness = startHarness({
+        root,
+        workers,
+        pollIntervalSec,
+        agentName: agentArg,
+        onEvent: e => broadcastSse("harness", JSON.stringify(e)),
+      });
+      // Graceful on the first signal (stop picking work, drain in-flight
+      // iterations), force on the second (stale-lock sweep + stranded
+      // re-admission recover whatever the force-exit strands).
+      let stopRequested = false;
+      const onSignal = (sig: string) => {
+        if (stopRequested) {
+          console.error(`tpm up: ${sig} again — force exit (in-flight agents keep running; stale-lock sweep recovers their tasks)`);
+          process.exit(130);
+        }
+        stopRequested = true;
+        console.error(`tpm up: ${sig} — draining workers (in-flight tasks finish; ${sig} again to force exit)`);
+        harness.stop().then(() => process.exit(0));
+      };
+      process.on("SIGINT", () => onSignal("SIGINT"));
+      process.on("SIGTERM", () => onSignal("SIGTERM"));
+      await runServe({ ...serveOpts, harness: () => harness.snapshot() });
+      break;
+    }
     case "inbox": {
       const root = findRoot();
       const projects = loadProjects(root);
       const items = inboxItems(projects);
       if (items.length === 0) {
-        console.log("Inbox empty (no needs-review, blocked, or open tasks).");
+        console.log("Inbox empty (no review, blocked, or open tasks).");
         break;
       }
       console.log(`Inbox (${items.length} task${items.length === 1 ? "" : "s"}):`);
@@ -1060,27 +1155,29 @@ Usage:
   tpm drop <task> ["<reason>"]               set status: dropped, stamp closed; optional reason fills ## Outcome + Log
   tpm block <task> "<reason>"                set status: blocked, log the reason
   tpm reopen <task> ["<reason>"]             set status: open, log it (optional reason on the Log)
-  tpm pull <task>                            pull a queued or running task back into the human pile: ready/in-progress -> open, needs-feedback -> needs-review
+  tpm pull <task>                            pull a queued or running task back into the human pile: ready/in-progress -> open, rework -> review
   tpm revert <task> ["<reason>"]             flip in-progress -> ready, log a timeout/revert (no-op otherwise)
-  tpm status <task> <new-status>             generic status setter (validated)
+  tpm status <task> <new-status> [--force]   generic status setter (validated against the transition table; --force bypasses)
   tpm set-type <task> <pr|investigation>   reclassify a task's type: (validated); back-end for tpm serve's type dropdown
   tpm log <task> "<message>"                 append a single timestamped Log line
   tpm edit <task> <title|context|plan|outcome> "<value>" [--expect-mtime <ms>]
                                              rewrite the title (frontmatter) or one prose section; back-end for tpm serve's inline editor
   tpm edit-project <project> <name|goal|context|notes> "<value>" [--expect-mtime <ms>]
                                              rewrite the project name (frontmatter) or one prose section (Goal/Context/Notes); back-end for tpm serve's project editor
-  tpm pr <task> <url>                        link a PR: append URL to prs: + flip in-progress -> needs-review (idempotent;
+  tpm pr <task> <url>                        link a PR: append URL to prs: + flip in-progress -> review (idempotent;
                                              re-run to re-flag, pass a new URL to supersede a reopened/closed PR)
-  tpm review <task>                          flag a task for review: flip in-progress -> needs-review (the PR-less sugar over tpm pr)
+  tpm review <task>                          flag a task for review: flip in-progress -> review (the PR-less sugar over tpm pr)
   tpm report <task>                          attach a report artifact at <project>/tasks/<slug>/report.md (auto-folds file-form tasks);
-                                             auto-flips in-progress -> needs-review (investigation analogue of tpm pr)
+                                             auto-flips in-progress -> review (investigation analogue of tpm pr)
   tpm report <task> --export text            print the report as plain text (drops HTML comments)
   tpm lgtm <task>                            reviewer approval on a report task: derive Outcome + complete
-  tpm request-changes <task> "<comment>"     reviewer pushback on a report: append to ## Reviewer feedback + flip to needs-feedback
+  tpm request-changes <task> "<comment>"     reviewer pushback on a report: append to ## Reviewer feedback + flip to rework
   tpm allow <task>                           set allow_orchestrator: true (safe for autonomous runs)
   tpm disallow <task>                        set allow_orchestrator: false
   tpm archive <task | project/task>          move a done/dropped task to tasks/archive/
   tpm fold <task | project/task>             promote a file-form task to folder-form (idempotent)
+  tpm migrate [--dry-run]                    rewrite pre-rename statuses in the tree (needs-feedback->rework,
+                                             needs-review->review, needs-close->closing); idempotent
   tpm reparent <task> <new-parent | --top>   move a task under a new parent (or to top-level); folds the new parent if needed
   tpm lock acquire <task> --as <id>          claim a per-task lock (atomic O_CREAT|O_EXCL)
   tpm lock release <task> --as <id> [--force]  release a per-task lock
@@ -1090,8 +1187,8 @@ Usage:
   tpm lock release-stale [--ttl <minutes>]   clear locks whose heartbeat is older than ttl
   tpm drift-check <project | task>           verify the project's repo.local is on its default branch + clean
   tpm next [--project <slug>] [--autonomous] [--claim <id>]
-                                             print next leaf task (needs-feedback > ready, oldest first); --claim atomically locks
-  tpm inbox                                  list human-queue tasks (needs-review, blocked, open) cross-project
+                                             print next leaf task (rework > ready, oldest first); --claim atomically locks
+  tpm inbox                                  list human-queue tasks (review, blocked, open) cross-project
   tpm orchestrate [--workers <N>] [--cli claude,copilot,…] [--minutes <N>] [--agent <name>] [--claude <path>] [--task <slug>]
                                              run a pool of concurrent worker loops in one invocation. pool size tracks
                                              \`workers\` in ~/.tpm/config.json (default: 1) — \`tpm config set workers N\`
@@ -1113,6 +1210,9 @@ Usage:
   tpm notify <start|finish|fail> <task>      best-effort osascript notification (cascade: task > project > global)
   tpm refresh-skills                         install/refresh user-scoped skills into ~/.claude/skills/ (macOS/Linux: symlink, Windows: copy)
   tpm serve [--port 7777] [--host 127.0.0.1] start a localhost HTTP UI for the queues (read-only)
+  tpm up [--port 7777] [--workers N] [--poll-interval 60] [--agent <name>]
+                                             the whole harness in one process: web UI + PR poller +
+                                             orchestrate pool (no deadline; Ctrl-C drains, twice forces)
   tpm report [--md]                          generate a rollup of every project/task to reports/index.{html,md}
   tpm root                                   print the tree root
   tpm path <project | task | project/task>   print the local repo path

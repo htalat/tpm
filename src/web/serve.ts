@@ -29,6 +29,7 @@ import {
   parseRunLog,
 } from "../core/orchestrate/run_log.ts";
 import type { RunEvent } from "../core/orchestrate/run_log.ts";
+import type { AgentOutputFormat } from "../core/agent_cli.ts";
 import {
   CONFIG_PATH,
   DEFAULT_NOTIFICATIONS,
@@ -38,6 +39,9 @@ import {
   DEFAULT_SERVE_PORT,
 } from "../core/config.ts";
 import type { Config } from "../core/config.ts";
+import type { HarnessSnapshot } from "../core/orchestrate/supervisor.ts";
+import { eventsPath, readJournalLinesFrom, readRecentEvents } from "../core/events.ts";
+import type { StatusEventRecord } from "../core/events.ts";
 import { taskPath } from "./serve_url.ts";
 import { defaultHarnessLogReader, parseTaskLogEntries } from "../core/harness_log.ts";
 import type { HarnessLogReader, HarnessLogSource, HarnessLogLine } from "../core/harness_log.ts";
@@ -105,6 +109,10 @@ const PR_CACHE_STALE_MS = 60 * 60 * 1000;
 export interface ServeOpts {
   host?: string;
   port?: number;
+  // Live harness snapshot getter, wired by `tpm up` when the poll loop and
+  // orchestrate pool run in this same process. Plain `tpm serve` leaves it
+  // unset and the index renders no harness panel.
+  harness?: () => HarnessSnapshot | null;
 }
 
 // ── Canonical UI action vocabulary ──────────────────────────────────────────
@@ -160,7 +168,7 @@ const BULK_ACTIONS: Record<string, { verb: string; label: string; needsReason?: 
 // just surfaces as a "refused" in the summary rather than corrupting state.
 // Mirrors the single-row action rails (renderActions / promoteButton /
 // renderArchiveAction): every non-terminal status can be closed, dropped, or
-// blocked; `ready`/`in-progress`/`needs-feedback` can be pulled; `open`/`blocked` promoted;
+// blocked; `ready`/`in-progress`/`rework` can be pulled; `open`/`blocked` promoted;
 // `blocked` reopened; terminal (done/dropped) only archived. A row is
 // selectable iff its status appears here (so corrupt/unknown statuses render no
 // checkbox).
@@ -169,9 +177,9 @@ const BULK_CAPS: Record<string, string[]> = {
   ready: ["pull", "close", "drop", "block"],
   blocked: ["promote", "reopen", "close", "drop"],
   "in-progress": ["pull", "close", "drop", "block"],
-  "needs-feedback": ["pull", "close", "drop", "block"],
-  "needs-close": ["close", "drop", "block"],
-  "needs-review": ["close", "drop", "block"],
+  "rework": ["pull", "close", "drop", "block"],
+  "closing": ["close", "drop", "block"],
+  "review": ["close", "drop", "block"],
   done: ["archive"],
   dropped: ["archive"],
 };
@@ -189,7 +197,7 @@ export async function runServe(opts: ServeOpts = {}): Promise<void> {
   const port = opts.port ?? DEFAULT_SERVE_PORT;
   const mutationsEnabled = isLoopback(host);
 
-  const server = createServer((req, res) => handleRequest(req, res, { host, mutationsEnabled }));
+  const server = createServer((req, res) => handleRequest(req, res, { host, mutationsEnabled, harness: opts.harness }));
   server.listen(port, host, () => {
     const where = host === "127.0.0.1" ? "localhost" : host;
     console.error(`tpm serve: http://${where}:${port}/  (Ctrl-C to stop)`);
@@ -206,6 +214,78 @@ export async function runServe(opts: ServeOpts = {}): Promise<void> {
 interface ServeContext {
   host: string;
   mutationsEnabled: boolean;
+  harness?: () => HarnessSnapshot | null;
+}
+
+// ── Server-sent events (`/events`) ──────────────────────────────────────────
+// One stream per browser tab. Two sources fan into it:
+//   - the status-transition journal (<root>/.tpm/events.ndjson, written by
+//     every CLI mutation since the phase-1 hardening) — tailed by offset, so
+//     a flip made by ANY process (cron orchestrate, a manual `tpm done`, an
+//     agent's `tpm pr`) reaches the UI within a second;
+//   - in-process harness pulses (`broadcastSse` from `tpm up`'s supervisor).
+// The client treats every event identically: debounce, then re-run the same
+// fetch-and-swap the soft-poll interval uses. The interval stays on as the
+// fallback for missed events; SSE just collapses 30s of latency to ~1s.
+//
+// Tail-by-polling (1s stat) rather than fs.watch: the tree may live in
+// Dropbox/iCloud where watch events are unreliable, and one stat per second
+// is free. Only whole lines are forwarded; a partially-flushed last line
+// stays buffered until its newline lands.
+const SSE_TAIL_INTERVAL_MS = 1_000;
+const SSE_HEARTBEAT_MS = 25_000;
+const sseClients = new Set<ServerResponse>();
+let sseTailTimer: ReturnType<typeof setInterval> | null = null;
+let sseHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let sseOffset = -1; // -1 = first pump: start at EOF, don't replay history
+
+export function broadcastSse(event: string, data: string): void {
+  const payload = `event: ${event}\ndata: ${data}\n\n`;
+  for (const res of sseClients) {
+    try {
+      res.write(payload);
+    } catch {
+      sseClients.delete(res);
+    }
+  }
+}
+
+function pumpSseTail(journalPath: string): void {
+  if (sseClients.size === 0) return;
+  const { lines, offset } = readJournalLinesFrom(journalPath, sseOffset);
+  sseOffset = offset;
+  for (const line of lines) broadcastSse("status", line);
+}
+
+function stopSseTimers(): void {
+  if (sseTailTimer) clearInterval(sseTailTimer);
+  if (sseHeartbeatTimer) clearInterval(sseHeartbeatTimer);
+  sseTailTimer = null;
+  sseHeartbeatTimer = null;
+  // Next client starts at EOF again — no replay of what happened in between.
+  sseOffset = -1;
+}
+
+function handleSse(req: IncomingMessage, res: ServerResponse, root: string): void {
+  res.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    "connection": "keep-alive",
+  });
+  res.write("retry: 3000\n\n");
+  sseClients.add(res);
+  req.on("close", () => {
+    sseClients.delete(res);
+    // Last tab closed: stop polling the journal until someone reconnects.
+    if (sseClients.size === 0) stopSseTimers();
+  });
+  if (!sseTailTimer) {
+    const journal = eventsPath(root);
+    sseTailTimer = setInterval(() => pumpSseTail(journal), SSE_TAIL_INTERVAL_MS);
+    sseTailTimer.unref?.();
+    sseHeartbeatTimer = setInterval(() => broadcastSse("ping", "{}"), SSE_HEARTBEAT_MS);
+    sseHeartbeatTimer.unref?.();
+  }
 }
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: ServeContext): Promise<void> {
@@ -240,6 +320,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Ser
   }
   const url = new URL(req.url ?? "/", "http://localhost");
   const root = findRoot();
+  if (url.pathname === "/events") {
+    // SSE stream: held open, never goes through route()'s request/response shape.
+    handleSse(req, res, root);
+    return;
+  }
   // Always load archived so `/t/<project>/<slug>` resolves an archived task and
   // `/p/<slug>?archived=1` has them available. Filtering happens per-route.
   const projects = loadProjects(root, { archived: true });
@@ -248,6 +333,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Ser
     flash,
     mutationsEnabled: ctx.mutationsEnabled,
     taskLocks: () => snapshotTaskLocks(root),
+    harness: ctx.harness?.() ?? null,
+    recentEvents: () => readRecentEvents(root, 12),
   });
   if (result.location && result.status >= 300 && result.status < 400) {
     res.writeHead(result.status, { location: result.location });
@@ -337,7 +424,21 @@ export interface RouteOpts {
   // with a "🔒 working" / "unclaimed" chip so the UI never disagrees with
   // lock truth (task 109).
   taskLocks?: TaskLockReader;
+  // Live harness snapshot when serve runs inside `tpm up` (poll loop +
+  // orchestrate pool in this process). Null/absent under plain `tpm serve`:
+  // the index renders no harness panel and /api/harness reports running:false.
+  harness?: HarnessSnapshot | null;
+  // Recent status-journal events for the index activity feed. Defaults to
+  // empty (route() stays disk-free); `handleRequest` wires the events.ndjson
+  // tail reader.
+  recentEvents?: () => StatusEventRecord[];
+  // Incremental run-log tail for the live transcript endpoint. Returns the
+  // complete lines appended since `offset` plus the advanced offset, or null
+  // for an invalid/missing log. Defaults to the on-disk reader; tests stub.
+  runLogTail?: RunLogTailReader;
 }
+
+export type RunLogTailReader = (task: Task, name: string, offset: number) => { lines: string[]; offset: number } | null;
 
 // Default tail size for the `/logs` page. Big enough that the operator can
 // reconstruct an incident without paging; small enough that the page renders
@@ -357,7 +458,17 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
   const taskLocks: Map<string, TaskLockSnapshotEntry> =
     (opts.taskLocks ?? (() => new Map<string, TaskLockSnapshotEntry>()))();
   if (pathname === "/" || pathname === "") {
-    return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project"), prCache, taskLocks, opts.flash, opts.mutationsEnabled !== false));
+    const recentEvents = (opts.recentEvents ?? (() => []))();
+    return ok("text/html; charset=utf-8", renderIndex(projects, params.get("project"), prCache, taskLocks, opts.flash, opts.mutationsEnabled !== false, opts.harness ?? null, recentEvents));
+  }
+  if (pathname === "/search") {
+    const q = (params.get("q") ?? "").trim();
+    const includeArchived = params.get("archived") === "1";
+    return ok("text/html; charset=utf-8", renderSearch(projects, q, includeArchived, prCache, taskLocks));
+  }
+  if (pathname === "/api/harness") {
+    const h = opts.harness ?? null;
+    return ok("application/json", JSON.stringify(h ? { running: true, ...h } : { running: false }));
   }
   if (pathname === "/api/refresh") {
     return ok("application/json", renderRefresh(projects));
@@ -486,6 +597,39 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     if (!match) return notFound(`No task: ${query}`);
     return ok("text/html; charset=utf-8", renderTaskReport(projects, match.project, match.task, opts));
   }
+  // Incremental transcript tail: `/t/<proj>/<slug>/runs/<basename>/tail
+  // ?offset=N&format=F` → JSON {html, offset, running}. The runs page's
+  // client polls this every couple of seconds while the task is in-progress
+  // and appends the server-rendered event fragments — same renderer as the
+  // full panel, so escaping and shape stay identical. Byte-offset framing
+  // comes from readJournalLinesFrom (complete lines only). `format` is the
+  // NDJSON dialect from the run header, embedded at first render — the tail
+  // chunk doesn't carry the header line itself.
+  const taskRunTailMatch = pathname.match(/^\/t\/(.+)\/runs\/([^/]+)\/tail\/?$/);
+  if (taskRunTailMatch) {
+    const query = decodeURIComponent(taskRunTailMatch[1]);
+    const name = decodeURIComponent(taskRunTailMatch[2]);
+    let match: { project: Project; task: Task } | null = null;
+    try { match = findTask(projects, query); } catch { match = null; }
+    if (!match) return notFound(`No task: ${query}`);
+    const tailReader = opts.runLogTail ?? defaultRunLogTailReader;
+    const offsetRaw = params.get("offset") ?? "";
+    // Garbage / missing offset skips to EOF (-1) instead of replaying a
+    // potentially huge file from 0.
+    const offset = /^\d+$/.test(offsetRaw) ? Number(offsetRaw) : -1;
+    const formatRaw = params.get("format") ?? "";
+    const format: AgentOutputFormat = formatRaw === "copilot-json" || formatRaw === "text"
+      ? formatRaw
+      : "claude-stream-json";
+    const tail = tailReader(match.task, name, offset);
+    if (!tail) return notFound(`No run log: ${name}`);
+    const { events } = parseRunLog(tail.lines.join("\n"), { format });
+    return ok("application/json", JSON.stringify({
+      html: events.map(renderRunEvent).join(""),
+      offset: tail.offset,
+      running: rollupStatus(match.task) === "in-progress",
+    }));
+  }
   // Per-task raw run-log viewer: `/t/<proj>/<slug>/runs/<basename>`. The
   // basename pattern depends on the task: top-level uses `<utc>.log`, child
   // uses `<child-slug>--<utc>.log` (children share the parent's runs/ on
@@ -601,6 +745,16 @@ function defaultRunLogRawReader(task: Task, name: string): string | null {
   }
 }
 
+// On-disk incremental tail for the live-transcript endpoint: validate the
+// name (same gate as the raw viewer, so the join can't escape runs/), find
+// the file, and read complete lines from the byte offset.
+function defaultRunLogTailReader(task: Task, name: string, offset: number): { lines: string[]; offset: number } | null {
+  if (!isValidRunLogName(name, task)) return null;
+  const path = allRunLogs(task).find(p => basename(p) === name);
+  if (!path || !existsSync(path)) return null;
+  return readJournalLinesFrom(path, offset);
+}
+
 // Map a pre-095 flat-dir filename back to the per-task viewer URL. The
 // legacy filename is `<encoded-slug>--<utc>.log`; we walk the project tree
 // once and look up the task whose encoded qualified slug matches the
@@ -693,6 +847,23 @@ export function routeMutation(pathname: string, body: URLSearchParams, runner: C
   const bulkMatch = pathname.match(/^\/bulk\/([a-z][a-z0-9-]*)\/?$/);
   if (bulkMatch) {
     return routeBulk(bulkMatch[1], body, runner);
+  }
+  // Harness pool control: scale the worker count. Shells to `tpm config set
+  // workers N` — the same knob the CLI exposes — so the pool's reconcile tick
+  // applies it whether the pool runs in this process (tpm up) or in an
+  // external cron orchestrate. 0 = pause (drain all workers, pool keeps
+  // ticking and resumes on the next non-zero set).
+  if (pathname === "/harness/workers" || pathname === "/harness/workers/") {
+    const raw = (body.get("value") ?? "").trim();
+    const n = Number(raw);
+    if (!/^\d+$/.test(raw) || !Number.isInteger(n) || n > 16) {
+      return { status: 303, location: `/?flash=${encodeURIComponent("workers must be an integer 0-16")}` };
+    }
+    const result = runner(["config", "set", "workers", String(n)]);
+    const flash = result.ok
+      ? (result.stdout.trim() || `workers -> ${n}`)
+      : (result.stderr.trim() || "config set workers: failed");
+    return { status: 303, location: `/?flash=${encodeURIComponent(flash)}` };
   }
   // Match /t/<slugPath>/<action>. slugPath is greedy so it captures any
   // intermediate parent segments; action is the last path segment.
@@ -1004,18 +1175,181 @@ function notFound(message: string): RouteResult {
 
 // ---- pages ----------------------------------------------------------------
 
-function renderIndex(projects: Project[], projectFilter: string | null, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, flash?: string, mutationsEnabled = false): string {
+// Relative-time hint for harness panel timestamps. Falls back to the raw
+// string when the input doesn't parse (defensive: snapshot data crosses the
+// pure-route boundary as plain JSON in tests).
+function ago(iso: string): string {
+  const ms = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(ms) || ms < 0) return iso;
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+// The `tpm up` control strip: pool size, poll cadence, last poll outcome.
+// Rendered only when the harness runs in this process — plain `tpm serve`
+// has nothing trustworthy to show (an external cron pool's state isn't
+// observable beyond the lock files already decorating the rows).
+function renderHarnessPanel(harness: HarnessSnapshot | null, mutationsEnabled: boolean): string {
+  if (!harness) return "";
+  const lp = harness.lastPoll;
+  const pollBit = !lp
+    ? "first poll pending"
+    : lp.error
+      ? `poll ${ago(lp.at)}: <span class="harness-error">${esc(lp.error)}</span>`
+      : `poll ${ago(lp.at)}: checked ${lp.summary?.checked ?? 0}, flipped ${lp.summary?.flipped ?? 0}` +
+        ((lp.summary?.fetchFailed ?? 0) > 0 ? `, <span class="harness-error">${lp.summary?.fetchFailed} fetch-failed</span>` : "");
+  const paused = harness.desiredWorkers === 0;
+  const stateChip = harness.poolDied
+    ? `<span class="harness-chip harness-stopping" title="${escAttr(harness.poolDied)}">pool died</span>`
+    : harness.stopping
+      ? `<span class="harness-chip harness-stopping">draining</span>`
+      : paused
+        ? `<span class="harness-chip harness-paused">paused</span>`
+        : `<span class="harness-chip harness-running">running</span>`;
+  // Scale form posts to /harness/workers -> `tpm config set workers N`; the
+  // pool's reconcile tick picks the change up within ~10s, whether the pool
+  // lives in this process or in an external cron orchestrate.
+  const controls = mutationsEnabled
+    ? `<form method="post" action="/harness/workers" class="harness-controls">
+  <label>workers <input type="number" name="value" min="0" max="16" value="${harness.desiredWorkers}"></label>
+  <button type="submit">Scale</button>
+</form>
+<form method="post" action="/harness/workers" class="harness-controls">
+  <input type="hidden" name="value" value="${paused ? 1 : 0}">
+  <button type="submit">${paused ? "Resume (1 worker)" : "Pause (drain to 0)"}</button>
+</form>`
+    : "";
+  return `<section class="harness" id="harness-panel">
+  <h2>Harness ${stateChip}</h2>
+  <p class="meta">up ${esc(ago(harness.startedAt))} · ${harness.desiredWorkers} worker${harness.desiredWorkers === 1 ? "" : "s"} · polls every ${harness.pollIntervalSec}s · ${pollBit}</p>
+  ${controls}
+</section>`;
+}
+
+// Recent-activity feed from the status journal: who moved what, when. Each
+// line is a transition the audit trail recorded — from any process, not just
+// this server. Hidden entirely when the journal is empty (pre-journal trees).
+function renderActivityFeed(events: StatusEventRecord[]): string {
+  if (events.length === 0) return "";
+  const rows = events.map(e => {
+    const segs = e.task.split("/").map(encodeURIComponent).join("/");
+    const arrow = e.from ? `${esc(e.from)} → ${esc(e.to)}` : esc(e.to);
+    return `<li class="activity-row"><span class="activity-when">${esc(ago(e.at))}</span> <a href="/t/${segs}"><code>${esc(e.task)}</code></a> <span class="activity-arrow status-${cls(e.to)}">${arrow}</span> <span class="activity-verb">${esc(e.verb)}</span> <span class="activity-actor">${esc(e.actor)}</span></li>`;
+  }).join("\n");
+  return `<section class="queue activity">
+  <h2>Activity <span class="meta">(${events.length})</span></h2>
+  <ul class="activity-list">
+${rows}
+  </ul>
+</section>`;
+}
+
+// Global task search: case-insensitive substring over slug, title, status,
+// tags, linked PR URLs, and the body. Title/slug hits rank above
+// status/tag/PR hits, which rank above body hits; ties keep tree order.
+// Archived tasks excluded unless ?archived=1 — same toggle the project page
+// uses. Server-rendered on each query: the tree is already loaded per
+// request, and a few hundred tasks is microseconds of substring scans.
+interface SearchHit {
+  project: Project;
+  task: Task;
+  rank: number;
+  snippet: string | null; // first matching body line, for body hits
+}
+
+function searchTasks(projects: Project[], q: string, includeArchived: boolean): SearchHit[] {
+  const needle = q.toLowerCase();
+  const hits: SearchHit[] = [];
+  for (const p of projects) {
+    for (const t of flatTasks(p.tasks)) {
+      if (isParent(t)) continue;
+      if (!includeArchived && t.archived) continue;
+      const title = String(t.data.title ?? "");
+      const tags = Array.isArray(t.data.tags) ? (t.data.tags as unknown[]).map(String) : [];
+      const prs = Array.isArray(t.data.prs) ? (t.data.prs as unknown[]).map(String) : [];
+      if (t.slug.toLowerCase().includes(needle) || title.toLowerCase().includes(needle)) {
+        hits.push({ project: p, task: t, rank: 0, snippet: null });
+        continue;
+      }
+      const meta = [String(t.data.status ?? ""), ...tags, ...prs];
+      if (meta.some(v => v.toLowerCase().includes(needle))) {
+        hits.push({ project: p, task: t, rank: 1, snippet: null });
+        continue;
+      }
+      const bodyLine = t.body.split("\n").find(l => l.toLowerCase().includes(needle));
+      if (bodyLine !== undefined) {
+        hits.push({ project: p, task: t, rank: 2, snippet: bodyLine.trim().slice(0, 160) });
+      }
+    }
+  }
+  hits.sort((a, b) => a.rank - b.rank);
+  return hits;
+}
+
+// Highlight the query inside an already-escaped snippet. Escapes first, then
+// marks — so the regex runs over entity-encoded text using the entity-encoded
+// needle, never raw user input.
+function markMatches(text: string, q: string): string {
+  const escaped = esc(text);
+  const needle = esc(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return escaped.replace(new RegExp(needle, "ig"), m => `<mark>${m}</mark>`);
+}
+
+function renderSearch(projects: Project[], q: string, includeArchived: boolean, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>): string {
+  const hits = q ? searchTasks(projects, q, includeArchived) : [];
+  const archivedToggle = q
+    ? includeArchived
+      ? ` · <a href="/search?q=${encodeURIComponent(q)}">hide archived</a>`
+      : ` · <a href="/search?q=${encodeURIComponent(q)}&archived=1">include archived</a>`
+    : "";
+  const results = !q
+    ? ""
+    : hits.length === 0
+      ? `<p class="queue-empty">No tasks match <code>${esc(q)}</code>.</p>`
+      : hits.map(h => {
+          const row = taskRow(h.project, h.task, String(h.task.data.status ?? "?"), prCache, taskLocks, {});
+          const snippet = h.snippet !== null
+            ? `<p class="search-snippet">${markMatches(h.snippet, q)}</p>`
+            : "";
+          return row + snippet;
+        }).join("");
+  const body = `
+${projectChips(projects, null)}
+<header>
+  <h1>Search</h1>
+</header>
+<section class="queue">
+  <form method="get" action="/search" class="search-form">
+    <input type="search" name="q" value="${escAttr(q)}" placeholder="slug, title, status, tag, PR URL, body…" autofocus>
+    ${includeArchived ? `<input type="hidden" name="archived" value="1">` : ""}
+    <button type="submit">Search</button>
+  </form>
+  ${q ? `<p class="meta">${hits.length} result${hits.length === 1 ? "" : "s"} for <code>${esc(q)}</code>${archivedToggle}</p>` : ""}
+  ${results}
+</section>
+`;
+  return layout(`search — tpm`, body);
+}
+
+function renderIndex(projects: Project[], projectFilter: string | null, prCache: PrCacheReader, taskLocks: Map<string, TaskLockSnapshotEntry>, flash?: string, mutationsEnabled = false, harness: HarnessSnapshot | null = null, recentEvents: StatusEventRecord[] = []): string {
   const filtered = projectFilter ? projects.filter(p => p.slug === projectFilter) : projects;
 
-  // Inbox = needs-review > blocked > open across the filtered set.
+  // Inbox = closing > review > blocked > open across the filtered
+  // set. closing moved here from the agent queue: the orchestrator never
+  // dispatches it — a task parked there is an auto-close failure waiting on a
+  // human `tpm done`, which is inbox semantics.
   const inbox = inboxItems(filtered);
-  // Agent queue = next-eligible (needs-feedback > needs-close > ready). Show
-  // all candidates, not just the head, so the page is a useful overview.
+  // Agent queue = next-eligible (rework > ready). Show all
+  // candidates, not just the head, so the page is a useful overview.
   const agentItems: Array<{ project: Project; task: Task; status: string }> = [];
   const agentStatuses: Record<string, number> = {
-    "needs-feedback": 0,
-    "needs-close": 1,
-    "ready": 2,
+    "rework": 0,
+    "ready": 1,
   };
   for (const p of filtered) {
     for (const t of flatTasks(p.tasks)) {
@@ -1051,18 +1385,20 @@ ${flashBanner}
   <p class="meta">${esc(now())}  ·  ${projects.length} project${projects.length === 1 ? "" : "s"}</p>
   ${filterChip}
 </header>
+${renderHarnessPanel(harness, mutationsEnabled)}
 <section class="queue">
   <h2>Your inbox <span class="meta">(${inbox.length})</span></h2>
   ${inbox.length === 0 ? `<p class="queue-empty">Inbox empty.</p>` : inbox.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPromote: true, showClose: true, closeRedirect: "/", showReopenForAgent: true, reopenRedirect: "/", showDrop: true, dropRedirect: "/", selectable: mutationsEnabled })).join("")}
 </section>
 <section class="queue">
   <h2>Agent queue <span class="meta">(${agentItems.length})</span></h2>
-  ${agentItems.length === 0 ? `<p class="queue-empty">Nothing ready, needing feedback, or awaiting close.</p>` : agentItems.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPull: true, pullRedirect: "/", showClose: true, closeRedirect: "/", showDrop: true, dropRedirect: "/" })).join("")}
+  ${agentItems.length === 0 ? `<p class="queue-empty">Nothing ready or needing feedback.</p>` : agentItems.map(it => taskRow(it.project, it.task, it.status, prCache, taskLocks, { showPull: true, pullRedirect: "/", showClose: true, closeRedirect: "/", showDrop: true, dropRedirect: "/" })).join("")}
 </section>
 <section class="queue">
   <h2>In flight <span class="meta">(${inFlight.length})</span></h2>
   ${inFlight.length === 0 ? `<p class="queue-empty">No in-progress tasks.</p>` : inFlight.map(it => taskRow(it.project, it.task, "in-progress", prCache, taskLocks, { showPull: true, pullRedirect: "/", showClose: true, closeRedirect: "/", showDrop: true, dropRedirect: "/" })).join("")}
 </section>
+${renderActivityFeed(recentEvents)}
 `;
   return layout("tpm", body, { autoRefresh: 30, afterRoot: bulkBar("/", mutationsEnabled) });
 }
@@ -1078,7 +1414,7 @@ function renderProject(project: Project, allProjects: Project[], showArchived: b
     byStatus.set(s, arr);
   }
   // Live queues first, archived terminal states last.
-  const order = ["needs-review", "needs-feedback", "needs-close", "in-progress", "blocked", "ready", "open", "done", "dropped"];
+  const order = ["review", "rework", "closing", "in-progress", "blocked", "ready", "open", "done", "dropped"];
   const sectionsHtml = order
     .filter(s => byStatus.has(s))
     .map(s => {
@@ -1365,7 +1701,7 @@ function renderArtifactRow(
   const archivedTag = task.archived ? `<span class="archived-tag">archived</span>` : "";
   const prChips = prChipsFor(task, prCache);
   const reportChip = hasReport
-    ? `<a class="report-chip badge s-needs-review" href="${href}/report">[report]</a>`
+    ? `<a class="report-chip badge s-review" href="${href}/report">[report]</a>`
     : "";
   return `<div class="${classes.join(" ")}">
     <span class="badge s-${cls(status)}${task.archived ? " s-archived" : ""}">${esc(status)}</span>
@@ -1725,13 +2061,13 @@ function renderTaskReport(projects: Project[], project: Project, task: Task, opt
 // Sticky LGTM / Request-changes bar at the top of the report page. The bar is
 // where the reviewer's attention is when they decide — task 083 moved these
 // verbs off the task rail to remove the back-and-forth context switch. Gated
-// on needs-review + a report file: other statuses (in-progress, done, etc.)
+// on review + a report file: other statuses (in-progress, done, etc.)
 // shouldn't surface review verbs at all.
 function renderReportActionsBar(project: Project, task: Task, hasReport: boolean, opts: RouteOpts): string {
   if (opts.mutationsEnabled === false) return "";
   if (task.archived) return "";
   if (!hasReport) return "";
-  if (rollupStatus(task) !== "needs-review") return "";
+  if (rollupStatus(task) !== "review") return "";
   const href = taskHref(project, task);
   return `<div class="report-actions-bar">
   ${lgtmForm(href)}
@@ -2152,9 +2488,11 @@ function renderTaskRuns(
 </section>`;
   }
   // Auto-refresh while in-progress so an operator camped on `/runs` sees the
-  // live run stream update without manual reload. Cadence matches the task
-  // detail page's old refresh from task 057.
+  // live run stream update without manual reload; the 2s live-tail appender
+  // (RUN_TAIL_SCRIPT) layers on top for event-level latency, and the slower
+  // full swap reconciles anything the appender missed.
   const autoRefresh = status === "in-progress" ? 10 : undefined;
+  const tailScript = status === "in-progress" ? `<script>${RUN_TAIL_SCRIPT}</script>` : "";
   const body = `
 ${projectChips(projects, project.slug)}
 ${breadcrumbFor(project, task, { suffix: "runs" })}
@@ -2165,7 +2503,7 @@ ${breadcrumbFor(project, task, { suffix: "runs" })}
 ${latestPanel}
 ${listSection}
 `;
-  return layout(`tpm · ${title} · runs`, body, { autoRefresh });
+  return layout(`tpm · ${title} · runs`, body, { autoRefresh, afterRoot: tailScript });
 }
 
 // On-disk run-log filenames: top-level is `<utc>.log`, child is
@@ -2201,9 +2539,15 @@ function renderRunPanel(task: Task, slugSegs: string, status: string, runLog: Ru
   <p class="run-empty">${esc(note)}</p>
 </section>`;
   }
-  const { events, parsed, skipped, sessionId } = parseRunLog(snapshot.text);
+  const { events, parsed, skipped, format, sessionId } = parseRunLog(snapshot.text);
   const tail = events.slice(-RUN_PANEL_EVENTS);
-  const rendered = tail.length === 0
+  const live = status === "in-progress";
+  // While in-progress, always render the <ol> (even empty) so the live-tail
+  // script has an append target, and stamp the tail endpoint + byte offset +
+  // NDJSON dialect on the section. The script re-reads these from the DOM on
+  // every tick, so a soft-poll swap (which re-renders the panel with a fresh
+  // offset) can't desync the appender.
+  const rendered = tail.length === 0 && !live
     ? `<p class="run-empty">Log file is empty — the agent hasn't written anything yet.</p>`
     : `<ol class="run-events">${tail.map(renderRunEvent).join("")}</ol>`;
   const truncated = events.length > tail.length
@@ -2213,13 +2557,16 @@ function renderRunPanel(task: Task, slugSegs: string, status: string, runLog: Ru
     ? `<p class="run-warning">${parsed} events parsed, ${skipped} skipped — file may have been truncated or partially written.</p>`
     : "";
   const rawLink = `<p class="run-meta"><a href="/t/${slugSegs}/runs/${encodeURIComponent(snapshot.name)}">View raw log →</a></p>`;
+  const tailAttrs = live
+    ? ` data-tail="/t/${slugSegs}/runs/${encodeURIComponent(snapshot.name)}/tail" data-offset="${Buffer.byteLength(snapshot.text)}" data-format="${escAttr(format)}"`
+    : "";
   // Surface the agent's session id so an operator can resume the exact session
   // the orchestrator spawned (`claude --resume <id>`). The CLI mirror is
   // `tpm session <slug>`. Rendered in a copy-friendly <code> span.
   const session = sessionId
     ? `<p class="run-meta">session <code>${esc(sessionId)}</code></p>`
     : "";
-  return `<section class="run-panel">
+  return `<section class="run-panel"${tailAttrs}>
   <h2>${esc(label)} <span class="meta">${esc(snapshot.name)}</span></h2>
   ${warning}
   ${rendered}
@@ -2228,6 +2575,38 @@ function renderRunPanel(task: Task, slugSegs: string, status: string, runLog: Ru
   ${rawLink}
 </section>`;
 }
+
+// Live transcript appender for the runs page. Lives OUTSIDE #poll-root (via
+// layout's afterRoot) so the page's soft-poll swaps never recreate the
+// interval. State (offset) lives on the panel's data attributes, which the
+// soft-poll replaces with a server-stamped value on every swap — the guard
+// below drops a response whose request offset no longer matches the DOM, so
+// swap + in-flight tail can't double-append.
+const RUN_TAIL_SCRIPT = `(function(){
+var timer=setInterval(tick,2000);
+function tick(){
+  // No tail-armed panel yet: the run log may not exist (orchestrator just
+  // spawned) — keep waiting; the soft-poll swap arms the panel once the
+  // first bytes land. A cheap no-op querySelector per tick otherwise.
+  var p=document.querySelector('.run-panel[data-tail]');
+  if(!p)return;
+  var off=p.getAttribute('data-offset');
+  fetch(p.getAttribute('data-tail')+'?offset='+encodeURIComponent(off)+'&format='+encodeURIComponent(p.getAttribute('data-format')||''))
+    .then(function(r){return r.ok?r.json():null;})
+    .then(function(j){
+      if(!j)return;
+      var p2=document.querySelector('.run-panel[data-tail]');
+      if(!p2)return;
+      if(p2.getAttribute('data-offset')!==off)return; // swapped mid-flight
+      if(j.html){
+        var ol=p2.querySelector('ol.run-events');
+        if(ol)ol.insertAdjacentHTML('beforeend',j.html);
+      }
+      p2.setAttribute('data-offset',String(j.offset));
+      if(!j.running)clearInterval(timer);
+    }).catch(function(){});
+}
+})();`;
 
 function renderRunEvent(ev: RunEvent): string {
   switch (ev.kind) {
@@ -2304,14 +2683,14 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       forms.push(prForm(href));
       forms.push(dropForm(href));
       break;
-    case "needs-feedback":
-      forms.push(pullForm(href, "needs-feedback"));
+    case "rework":
+      forms.push(pullForm(href, "rework"));
       forms.push(logForm(href));
       forms.push(completeForm(href));
       forms.push(blockForm(href));
       forms.push(dropForm(href));
       break;
-    case "needs-close":
+    case "closing":
       // Merged-PR sweep: the dominant action is closing out. Keep log/block
       // as escape hatches if the user needs to annotate or pause.
       forms.push(completeForm(href));
@@ -2319,7 +2698,7 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       forms.push(blockForm(href));
       forms.push(dropForm(href));
       break;
-    case "needs-review": {
+    case "review": {
       // Report-shaped reviews surface LGTM + Request-changes on the report
       // page itself (see `renderReportActionsBar`) — the reviewer's attention
       // is there, not on the task page. The rail keeps log/block/reopen as
@@ -2329,7 +2708,7 @@ function renderActions(project: Project, task: Task, status: string, opts: Route
       forms.push(logForm(href));
       forms.push(completeForm(href));
       forms.push(blockForm(href));
-      forms.push(statusForm(href, "needs-feedback", "Reopen for agent (→ needs-feedback)"));
+      forms.push(statusForm(href, "rework", "Reopen for agent (→ rework)"));
       forms.push(dropForm(href));
       break;
     }
@@ -2382,7 +2761,7 @@ function renderSettings(project: Project, task: Task, status: string, opts: Rout
   // promoting it). Self-contained dropdown, so it's not gated like the toggle.
   parts.push(typeForm(href, strOr(task.data.type, "")));
   // `open` tasks aren't claimable regardless of the flag (the queue gate skips
-  // anything not ready/needs-feedback/stranded), and "Promote to ready" already
+  // anything not ready/rework/stranded), and "Promote to ready" already
   // sets allow_orchestrator: true — so a separate "Enable autonomous" toggle
   // here is the exact two-clicks-for-one-intent friction we avoid. The toggle
   // returns once the task is promoted, for the supervised-only override.
@@ -2485,11 +2864,11 @@ function statusForm(href: string, value: string, label: string): string {
 // "Pull from queue" — symmetric inverse of the inbox promote button. The label
 // names the destination so the operator sees the intended landing slot before
 // clicking (ready -> open is a re-shape moment; in-progress -> open stops a
-// running task; needs-feedback -> needs-review is an escalation to the human
+// running task; rework -> review is an escalation to the human
 // queue). Server-side `tpm pull` is the only thing that enforces the status ->
 // target mapping; the form text just labels.
 function pullForm(href: string, status: string): string {
-  const dest = status === "needs-feedback" ? "needs-review" : "open";
+  const dest = status === "rework" ? "review" : "open";
   return `<form method="POST" action="${href}/pull" class="action-form">
     <button type="submit">Pull from queue (→ ${esc(dest)})</button>
   </form>`;
@@ -2527,13 +2906,13 @@ function archiveForm(href: string): string {
 interface TaskRowOpts {
   // Render an inline "promote to ready" button for open/blocked rows. Only the
   // inbox section opts in — task 110: one-click promote without leaving the
-  // landing page. needs-review rows skip the button because the dominant action
-  // there is "Reopen for agent (→ needs-feedback)", which now has its own
+  // landing page. review rows skip the button because the dominant action
+  // there is "Reopen for agent (→ rework)", which now has its own
   // per-row button (`showReopenForAgent` — task 146); a one-click
   // promote-to-ready would silently mis-route a review bounce through the wrong
   // queue.
   showPromote?: boolean;
-  // Render an inline "pull from queue" button for ready / needs-feedback rows
+  // Render an inline "pull from queue" button for ready / rework rows
   // (symmetric inverse of the promote button — task 117). Callers in the
   // agent-queue contexts (index page agent queue, project page queues, task
   // page rail) opt in; the button is self-gating on status so other contexts
@@ -2570,11 +2949,11 @@ interface TaskRowOpts {
   // Where to land the operator after the drop mutation, same contract as
   // `closeRedirect`. Defaults to the task page when omitted.
   dropRedirect?: string;
-  // Render an inline "Reopen for agent" button (→ needs-feedback) for
-  // needs-review rows — task 146. The per-row analogue of the detail-page
-  // `statusForm(href, "needs-feedback", "Reopen for agent …")` so a review
+  // Render an inline "Reopen for agent" button (→ rework) for
+  // review rows — task 146. The per-row analogue of the detail-page
+  // `statusForm(href, "rework", "Reopen for agent …")` so a review
   // bounce-back is one click from the inbox instead of a click-through.
-  // Self-gating on status (needs-review only) / parent so opting in can't
+  // Self-gating on status (review only) / parent so opting in can't
   // surface the button on any other row.
   showReopenForAgent?: boolean;
   // Where to land the operator after the reopen mutation, same contract as
@@ -2636,7 +3015,7 @@ function promoteButton(href: string, task: Task, status: string, opts: TaskRowOp
   if (task.archived) return "";
   if (isParent(task)) return "";
   // open: deliberate "skip discuss" fast-path. blocked: blocker resolved,
-  // bounce back. needs-review: skipped — see TaskRowOpts comment above.
+  // bounce back. review: skipped — see TaskRowOpts comment above.
   const fastPath = status === "open";
   if (status !== "open" && status !== "blocked") return "";
   const cls = fastPath ? "promote-form promote-fast" : "promote-form";
@@ -2648,18 +3027,18 @@ function promoteButton(href: string, task: Task, status: string, opts: TaskRowOp
 }
 
 // Inline "pull from queue" affordance (task 117) — symmetric inverse of the
-// promote button. Self-gating on status (ready / in-progress / needs-feedback
+// promote button. Self-gating on status (ready / in-progress / rework
 // only) so the button can't escape into unsafe contexts even if a caller opts
 // in without per-row filtering. The destination differs by source: ready -> open
 // is a pause/re-shape; in-progress -> open stops a running task (the in-flight
-// section's "off the agent" control); needs-feedback -> needs-review escalates
+// section's "off the agent" control); rework -> review escalates
 // ambiguous agent signal to the human queue.
 function pullButton(href: string, task: Task, status: string, opts: TaskRowOpts): string {
   if (!opts.showPull) return "";
   if (task.archived) return "";
   if (isParent(task)) return "";
-  if (status !== "ready" && status !== "in-progress" && status !== "needs-feedback") return "";
-  const dest = status === "needs-feedback" ? "needs-review" : "open";
+  if (status !== "ready" && status !== "in-progress" && status !== "rework") return "";
+  const dest = status === "rework" ? "review" : "open";
   const label = `Pull from queue (→ ${dest})`;
   const redirectInput = opts.pullRedirect
     ? `<input type="hidden" name="redirect" value="${escAttr(opts.pullRedirect)}">`
@@ -2772,24 +3151,24 @@ function dropButton(href: string, task: Task, status: string, opts: TaskRowOpts)
 }
 
 // Inline "Reopen for agent" affordance (task 146) — the per-row analogue of the
-// detail-page `statusForm(href, "needs-feedback", "Reopen for agent …")`.
+// detail-page `statusForm(href, "rework", "Reopen for agent …")`.
 // Bouncing a review back to the agent was one click on the task page but
 // required clicking through from the inbox first; this puts it next to the
 // row's Close button. Posts to the `status` mutation with
-// `status=needs-feedback`. Self-gating: only ever shown on needs-review rows
+// `status=rework`. Self-gating: only ever shown on review rows
 // (a review awaiting the human) and hidden on parents/archived, so opting in
 // can't escape the one status where a review bounce-back makes sense.
 function reopenForAgentButton(href: string, task: Task, status: string, opts: TaskRowOpts): string {
   if (!opts.showReopenForAgent) return "";
   if (task.archived) return "";
   if (isParent(task)) return "";
-  if (status !== "needs-review") return "";
-  const label = "Reopen for agent (→ needs-feedback)";
+  if (status !== "review") return "";
+  const label = "Reopen for agent (→ rework)";
   const redirectInput = opts.reopenRedirect
     ? `<input type="hidden" name="redirect" value="${escAttr(opts.reopenRedirect)}">`
     : "";
   return `<form method="POST" action="${href}/status" class="reopen-form">
-    <input type="hidden" name="status" value="needs-feedback">
+    <input type="hidden" name="status" value="rework">
     ${redirectInput}<button type="submit" title="${esc(label)}" aria-label="${esc(label)}">↩</button>
   </form>`;
 }
@@ -2942,7 +3321,7 @@ function reviewClass(review: string): string {
   switch (review.toUpperCase()) {
     case "APPROVED": return "s-done";
     case "CHANGES_REQUESTED": return "s-blocked";
-    case "COMMENTED": return "s-needs-feedback";
+    case "COMMENTED": return "s-rework";
     default: return "s-dropped";
   }
 }
@@ -2964,8 +3343,8 @@ function mergeClass(m: string): string {
     case "HAS_HOOKS": return "s-done";
     case "BEHIND": return "s-in-progress";
     case "DIRTY": return "s-blocked";
-    case "BLOCKED": return "s-needs-feedback";
-    case "UNSTABLE": return "s-needs-feedback";
+    case "BLOCKED": return "s-rework";
+    case "UNSTABLE": return "s-rework";
     default: return "s-dropped";
   }
 }
@@ -3045,8 +3424,13 @@ function renderFlashBanner(message: string | undefined, dismissHref: string): st
 // churn). The matching `<noscript>` meta-refresh in `layout` keeps no-JS
 // browsers working. Plain ES5 / built-in `fetch` + `DOMParser` — zero deps,
 // same style as FLASH_AUTO_DISMISS_SCRIPT.
+// The interval poll stays on as the fallback; when the browser supports
+// EventSource, the same tick also fires (debounced 300ms) the moment the
+// server pushes a status-journal line or harness pulse over `/events` — a
+// flip made by any process (agent, poller, another tab) lands on screen in
+// ~1s instead of waiting out the interval.
 function pollScript(seconds: number): string {
-  return `(function(){var ms=${seconds * 1000};var root=document.getElementById('poll-root');if(!root)return;var busy=false;function editing(){var a=document.activeElement;return!!a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.tagName==='SELECT');}function tick(){if(busy||document.hidden||editing())return;busy=true;fetch(location.href,{headers:{'X-Tpm-Poll':'1'}}).then(function(r){return r.ok?r.text():null;}).then(function(html){if(html){var next=new DOMParser().parseFromString(html,'text/html').getElementById('poll-root');if(next&&next.innerHTML!==root.innerHTML)root.innerHTML=next.innerHTML;}}).catch(function(){}).then(function(){busy=false;});}setInterval(tick,ms);})();`;
+  return `(function(){var ms=${seconds * 1000};var root=document.getElementById('poll-root');if(!root)return;var busy=false;function editing(){var a=document.activeElement;return!!a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.tagName==='SELECT');}function tick(){if(busy||document.hidden||editing())return;busy=true;fetch(location.href,{headers:{'X-Tpm-Poll':'1'}}).then(function(r){return r.ok?r.text():null;}).then(function(html){if(html){var next=new DOMParser().parseFromString(html,'text/html').getElementById('poll-root');if(next&&next.innerHTML!==root.innerHTML)root.innerHTML=next.innerHTML;}}).catch(function(){}).then(function(){busy=false;});}setInterval(tick,ms);if(window.EventSource){try{var es=new EventSource('/events');var deb=null;var bump=function(){clearTimeout(deb);deb=setTimeout(tick,300);};es.addEventListener('status',bump);es.addEventListener('harness',bump);}catch(e){}}})();`;
 }
 
 function layout(title: string, body: string, opts: { autoRefresh?: number; afterRoot?: string } = {}): string {
@@ -3071,7 +3455,7 @@ ${fallback}
 <style>${BASE_CSS}${SERVE_CSS}</style>
 </head>
 <body>
-<header class="site-header"><a class="home" href="/">tpm</a></header>
+<header class="site-header"><a class="home" href="/">tpm</a><form method="get" action="/search" class="site-search"><input type="search" name="q" placeholder="search tasks…" aria-label="Search tasks"></form></header>
 <div id="poll-root">${body}</div>${afterRoot}${poller}
 </body>
 </html>`;
