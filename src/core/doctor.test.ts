@@ -35,7 +35,7 @@ test("doctor: journal warns past the size threshold", () => {
   const root = tree(false);
   try {
     assert.match(checkJournal(root).detail, /no journal yet/);
-    writeFileSync(join(root, ".tpm", "events.ndjson"), "x".repeat(6 * 1024 * 1024));
+    writeFileSync(join(root, ".tpm", "events.ndjson"), "x".repeat(11 * 1024 * 1024));
     assert.equal(checkJournal(root).level, "warn");
   } finally {
     rmTempDir(root);

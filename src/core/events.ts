@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readSync, renameSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { StatusChange } from "./mutate.ts";
 
@@ -35,7 +35,26 @@ export function setActorOverride(actor: string | null): void {
   actorOverride = actor;
 }
 
-export function appendStatusEvent(root: string, change: StatusChange): void {
+// One archived generation is kept (events.ndjson.1) — enough to reconstruct
+// a recent incident; the feed and SSE tail only ever read the live file's
+// tail. Rotation is a rename, so the SSE pump's shrink handling
+// (readJournalLinesFrom: size < offset resets to EOF) covers open tabs.
+export const JOURNAL_MAX_BYTES = 5 * 1024 * 1024;
+
+function rotateIfOversized(path: string, maxBytes: number): void {
+  try {
+    if (statSync(path).size < maxBytes) return;
+  } catch {
+    return; // no journal yet
+  }
+  try {
+    renameSync(path, `${path}.1`);
+  } catch {
+    // Racing rotator or filesystem refusal — the append below still lands.
+  }
+}
+
+export function appendStatusEvent(root: string, change: StatusChange, maxBytes: number = JOURNAL_MAX_BYTES): void {
   const project = typeof change.task.data.project === "string" && change.task.data.project
     ? change.task.data.project
     : "?";
@@ -52,6 +71,7 @@ export function appendStatusEvent(root: string, change: StatusChange): void {
   };
   try {
     mkdirSync(join(root, ".tpm"), { recursive: true });
+    rotateIfOversized(eventsPath(root), maxBytes);
     appendFileSync(eventsPath(root), `${JSON.stringify(record)}\n`);
   } catch {
     // best-effort: never let journaling break the mutation that already landed
