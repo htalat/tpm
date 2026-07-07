@@ -266,9 +266,9 @@ function SettingsPanel({ task, onDone }: { task: TaskDetail; onDone: () => void 
 }
 
 const BADGE_TONES: Record<string, string> = {
-  good: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
-  bad: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
-  warn: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  good: "bg-ok-soft text-ok",
+  bad: "bg-danger-soft text-danger",
+  warn: "bg-warn-soft text-warn",
   meh: "bg-hairline text-muted",
 };
 

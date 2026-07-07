@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useState } from "react";
+import type { SVGProps } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { TaskSummary } from "./types";
@@ -46,8 +47,8 @@ export function FlashProvider({ children }: { children: ReactNode }) {
             key={f.id}
             className={`rounded-lg border px-3 py-2 text-sm shadow-lg backdrop-blur ${
               f.kind === "error"
-                ? "border-red-300 bg-red-50/95 text-red-900 dark:border-red-800 dark:bg-red-950/95 dark:text-red-200"
-                : "border-emerald-300 bg-emerald-50/95 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/95 dark:text-emerald-200"
+                ? "border-danger/40 bg-danger-soft/95 text-danger"
+                : "border-ok/40 bg-ok-soft/95 text-ok"
             }`}
           >
             <pre className="whitespace-pre-wrap break-words font-sans">{f.text}</pre>
@@ -70,7 +71,7 @@ export function TaskRow({ task, actions }: { task: TaskSummary; actions?: ReactN
       <span className="min-w-0 flex-1 truncate text-ink/90">{task.title}</span>
       {task.lock && (
         <span title={`held by ${task.lock.agentId} (pid ${task.lock.pid}) since ${task.lock.acquired}`}
-              className="rounded bg-amber-100 px-1.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+              className="rounded bg-warn-soft px-1.5 text-xs text-warn">
           {task.lock.agentId}
         </span>
       )}
@@ -104,6 +105,73 @@ export function SectionCard({ title, meta, children }: { title: string; meta?: R
 
 export function Empty({ text }: { text: string }) {
   return <p className="px-3 py-3 text-sm text-muted">{text}</p>;
+}
+
+// ---- theme toggle -----------------------------------------------------------
+
+// Tri-state: light / system / dark. The choice is stamped as data-theme on
+// <html> (index.html re-applies it pre-bundle so there's no flash) and every
+// token flips via CSS light-dark() — no per-component theme knowledge.
+type Theme = "light" | "system" | "dark";
+
+function currentTheme(): Theme {
+  const t = document.documentElement.dataset.theme;
+  return t === "light" || t === "dark" ? t : "system";
+}
+
+function applyTheme(theme: Theme) {
+  if (theme === "system") {
+    delete document.documentElement.dataset.theme;
+    try { localStorage.removeItem("tpm-theme"); } catch { /* private mode */ }
+  } else {
+    document.documentElement.dataset.theme = theme;
+    try { localStorage.setItem("tpm-theme", theme); } catch { /* private mode */ }
+  }
+}
+
+const icon = (d: string) => (props: SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor"
+       strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <path d={d} />
+  </svg>
+);
+// Sun: core + rays. Monitor: screen + stand. Moon: crescent.
+const SunIcon = icon("M8 5.2A2.8 2.8 0 1 1 8 10.8 2.8 2.8 0 0 1 8 5.2Zm0-3.7v1.6M8 12.9v1.6M2.3 8h1.6M12.1 8h1.6M3.9 3.9l1.2 1.2M10.9 10.9l1.2 1.2M12.1 3.9l-1.2 1.2M5.1 10.9l-1.2 1.2");
+const MonitorIcon = icon("M2 3.5h12v8H2zM6 14h4M8 11.5V14");
+const MoonIcon = icon("M13.5 9.5A5.5 5.5 0 1 1 6.5 2.5a4.5 4.5 0 0 0 7 7Z");
+
+const THEME_OPTIONS: { value: Theme; label: string; Icon: ReturnType<typeof icon> }[] = [
+  { value: "light", label: "light", Icon: SunIcon },
+  { value: "system", label: "system", Icon: MonitorIcon },
+  { value: "dark", label: "dark", Icon: MoonIcon },
+];
+
+export function ThemeToggle() {
+  const [theme, setTheme] = useState<Theme>(() => currentTheme());
+  const choose = (t: Theme) => {
+    applyTheme(t);
+    setTheme(t);
+  };
+  return (
+    <div className="flex items-center rounded-full border border-edge p-0.5" role="radiogroup" aria-label="color theme">
+      {THEME_OPTIONS.map(({ value, label, Icon }) => (
+        <button
+          key={value}
+          role="radio"
+          aria-checked={theme === value}
+          title={`${label} theme`}
+          onClick={() => choose(value)}
+          className={`flex h-6 w-6 items-center justify-center rounded-full transition-colors ${
+            theme === value
+              ? "bg-surface-hover text-ink shadow-sm ring-1 ring-edge"
+              : "text-faint hover:text-muted"
+          }`}
+        >
+          <Icon />
+        </button>
+      ))}
+    </div>
+  );
 }
 
 // ---- masthead ---------------------------------------------------------------
@@ -140,6 +208,7 @@ export function Masthead() {
         <Link to="/logs" className="hover:underline">logs</Link>
         <Link to="/config" className="hover:underline">config</Link>
       </nav>
+      <ThemeToggle />
     </header>
   );
 }

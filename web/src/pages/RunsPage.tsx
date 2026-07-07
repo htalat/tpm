@@ -76,7 +76,7 @@ function LiveRunPanel({ latest }: { latest: NonNullable<Awaited<ReturnType<typeo
   return (
     <SectionCard
       title={running ? "Current run (live)" : "Last run"}
-      meta={<span className="font-mono">{latest.name}{running && <span className="ml-2 inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-500 align-middle" />}</span>}
+      meta={<span className="font-mono">{latest.name}{running && <span className="ml-2 inline-block h-2 w-2 animate-pulse rounded-full bg-ok align-middle" />}</span>}
     >
       {latest.skipped > 0 && (
         <p className="px-3 pt-2 text-xs text-warn">{latest.parsed} events parsed, {latest.skipped} skipped — file may be truncated.</p>
