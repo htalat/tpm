@@ -600,15 +600,36 @@ export function complete(task: Task, opts: CompleteOptions = {}): MutateResult {
   syncInMemory(task, data, newBody);
   emitStatusChange(task, current, "done", "closed");
 
+  // Close-out sanity (run-log audit theme 8): an umbrella can flip to done
+  // while its "Done =" definition is unmet — 093's required clause had no
+  // covering child and all six children merged anyway. Warn-only: the close
+  // already happened (a human decided), but the message names what to check.
+  const warnings: string[] = [];
+  if (isParent(task)) {
+    const kids = task.children ?? [];
+    const open = kids.filter(c => !["done", "dropped"].includes(String(c.data.status ?? "")));
+    if (open.length > 0) {
+      warnings.push(`${open.length} child task(s) not terminal: ${open.map(c => c.slug).join(", ")}`);
+    }
+    if (/^\s*(#+\s*)?Done\s*=/m.test(newBody)) {
+      warnings.push("this umbrella defines 'Done =' — verify every clause was covered by a completed child");
+    }
+  }
+  const unchecked = (newBody.match(/^\s*[-*] \[ \]/gm) ?? []).length;
+  if (unchecked > 0) {
+    warnings.push(`${unchecked} unchecked checklist item(s) remain in the body`);
+  }
+  const warningSuffix = warnings.length ? `\n${warnings.map(w => `warning: ${w}`).join("\n")}` : "";
+
   const type = String(data.type ?? "");
   const shouldArchive = opts.archive !== undefined
     ? opts.archive
     : (type === "pr");
   if (!shouldArchive) {
-    return { message: `${task.slug} -> done (kept at ${task.path})` };
+    return { message: `${task.slug} -> done (kept at ${task.path})${warningSuffix}` };
   }
   const archivedAt = archiveTask(task);
-  return { message: `${task.slug} -> done`, archivedAt };
+  return { message: `${task.slug} -> done${warningSuffix}`, archivedAt };
 }
 
 // Drop a task: the terminal "abandoned, not finished" counterpart to

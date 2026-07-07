@@ -2503,3 +2503,37 @@ test("refundOrchestratorAttempt: decrements, floors at zero, removes the field a
     rmTempDir(root);
   }
 });
+
+test("complete: umbrella close-out warns on open children, Done=, and unchecked boxes", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    // Folder-form parent with one open child (child frontmatter must name
+    // its parent for readChildTasks to attach it).
+    mkdirSync(join(dir, "tasks", "010-umbrella"), { recursive: true });
+    writeFileSync(
+      join(dir, "tasks", "010-umbrella", "task.md"),
+      "---\ntitle: Umbrella\nslug: umbrella\nproject: alpha\nstatus: review\ntype: investigation\n---\n\n# Umbrella\n\n## Plan\nDone = notify-send works on linux\n- [ ] linux adapter\n\n## Log\n- x\n\n## Outcome\n",
+    );
+    writeFileSync(
+      join(dir, "tasks", "010-umbrella", "001-child.md"),
+      "---\ntitle: Child\nslug: child\nproject: alpha\nstatus: ready\ntype: pr\nparent: 010-umbrella\n---\n\n# Child\n",
+    );
+    const projects = loadProjects(root);
+    const parent = projects[0].tasks.find(t => t.slug === "010-umbrella")!;
+    assert.equal(parent.children?.length, 1);
+    const r = complete(parent, { archive: false });
+    assert.match(r.message, /-> done/);
+    assert.match(r.message, /warning: 1 child task\(s\) not terminal: 001-child/);
+    assert.match(r.message, /warning: this umbrella defines 'Done ='/);
+    assert.match(r.message, /warning: 1 unchecked checklist item/);
+
+    // Clean leaf close: no warnings.
+    writeTask(dir, "011-leaf.md", "review");
+    const leaf = loadProjects(root)[0].tasks.find(t => t.slug === "011-leaf")!;
+    const clean = complete(leaf, { archive: false });
+    assert.doesNotMatch(clean.message, /warning:/);
+  } finally {
+    rmTempDir(root);
+  }
+});
