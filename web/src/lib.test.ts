@@ -62,7 +62,8 @@ describe("backendIsStale", () => {
     expect(backendIsStale({ apiVersion: 1 })).toBe(true);
   });
   it("accepts current and newer backends, and stays quiet while loading", () => {
-    expect(backendIsStale({ apiVersion: 2 })).toBe(false);
+    expect(backendIsStale({ apiVersion: 2 })).toBe(true);
+    expect(backendIsStale({ apiVersion: 3 })).toBe(false);
     expect(backendIsStale({ apiVersion: 99 })).toBe(false);
     expect(backendIsStale(null)).toBe(false);
   });

@@ -303,7 +303,7 @@ test("api: /api/vocab ships bulk caps keyed by status", () => {
 test("api: /api/vocab carries the wire-surface version for skew detection", () => {
   const r = get("/api/vocab")!;
   assert.equal(typeof r.json.apiVersion, "number");
-  assert.ok(r.json.apiVersion >= 2);
+  assert.ok(r.json.apiVersion >= 3);
 });
 
 test("api mutation: /api/cli executes the forwarded argv through the runner verbatim", () => {

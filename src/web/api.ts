@@ -40,7 +40,7 @@ export type CliRunner = (args: string[]) => { ok: boolean; stdout: string; stder
 // process keeps its backend in memory while /app ships the rebuilt bundle
 // from disk, so skew is otherwise silent (disabled checkboxes, missing
 // panels) until the process restarts.
-export const API_VERSION = 2;
+export const API_VERSION = 3;
 
 export interface ApiResult {
   status: number;

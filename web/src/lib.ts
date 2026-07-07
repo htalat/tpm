@@ -37,7 +37,7 @@ export function intersectCaps(statuses: string[], caps: Record<string, string[]>
 // server-side). A long-running tpm serve keeps its backend in memory while
 // /app ships the rebuilt bundle from disk — on mismatch the UI shows a
 // restart banner instead of degrading silently.
-export const EXPECTED_API_VERSION = 2;
+export const EXPECTED_API_VERSION = 3;
 
 export function backendIsStale(vocab: { apiVersion?: number } | null): boolean {
   if (!vocab) return false; // still loading / unreachable — not a skew signal
