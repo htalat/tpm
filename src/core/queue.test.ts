@@ -13,12 +13,13 @@ function task(slug: string, status: string, created: string, extra: Record<strin
   };
 }
 
-function project(slug: string, tasks: Task[]): Project {
+function project(slug: string, tasks: Task[], extra: Record<string, unknown> = {}): Project {
   return {
     slug,
     path: `/tmp/${slug}/project.md`,
     dir: `/tmp/${slug}`,
-    data: { slug, status: "active" },
+    // Remote by default — the autonomous gate's no-remote case is opt-in.
+    data: { slug, status: "active", repo: { remote: "https://github.com/x/y" }, ...extra },
     body: "",
     tasks,
   };
@@ -267,4 +268,15 @@ test("inboxItems: cross-project, no filter", () => {
   const b = project("b", [task("002", "blocked", "2026-01-02 10:00 PDT")]);
   const items = inboxItems([a, b]);
   assert.equal(items.length, 2);
+});
+
+test("selectCandidates: autonomous excludes pr-type tasks on remote-less repos", () => {
+  const remoteless = project("norepo", [task("001-a", "ready", "2026-01-01", { allow_orchestrator: true, type: "pr" })], { repo: {} });
+  const withRemote = project("hasrepo", [task("001-b", "ready", "2026-01-01", { allow_orchestrator: true, type: "pr" })]);
+  const invNoRemote = project("inv", [task("001-c", "ready", "2026-01-01", { allow_orchestrator: true, type: "investigation" })], { repo: {} });
+  const picks = selectCandidates([remoteless, withRemote, invNoRemote], { autonomous: true }).map(i => i.task.slug);
+  assert.deepEqual(picks.sort(), ["001-b", "001-c"]);
+  // Non-autonomous (human `tpm next`-style listing) still sees it.
+  const human = selectCandidates([remoteless], {}).map(i => i.task.slug);
+  assert.deepEqual(human, ["001-a"]);
 });

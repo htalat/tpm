@@ -1,5 +1,6 @@
 import { flatTasks, isParent } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
+import { resolveRepo } from "./context.ts";
 
 export interface SelectNextOpts {
   projectFilter?: string;
@@ -66,6 +67,10 @@ export function selectCandidates(projects: Project[], opts: SelectNextOpts = {})
       if (t.archived) continue;
       if (isParent(t)) continue;
       if (opts.autonomous && t.data.allow_orchestrator !== true) continue;
+      // A pr-type task on a repo with no remote can never produce a PR — an
+      // autonomous run would burn a full agent session discovering that
+      // (run-log audit theme 5). Humans can still start it by hand.
+      if (opts.autonomous && String(t.data.type ?? "pr") === "pr" && !resolveRepo(p, t).remote) continue;
       const slug = qualifyTaskSlug(p.slug, t);
       const rank = rankFor(t, slug, opts);
       if (rank === RANK_INELIGIBLE) continue;

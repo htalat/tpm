@@ -88,12 +88,26 @@ try {
       if (what === "project") {
         const slug = args[2];
         if (!slug) usage("tpm new project <slug> [--name 'Name'] [--repo <url>] [--path <dir>]");
+        const repoLocal = parseFlag(args, "--path");
         const path = newProject(root, slug, {
           name: parseFlag(args, "--name"),
           repoRemote: parseFlag(args, "--repo"),
-          repoLocal: parseFlag(args, "--path"),
+          repoLocal,
         });
         console.log(`Created ${path}`);
+        // Doubled trailing segment (…/awaz/awaz) usually means the path was
+        // built by joining the slug twice; agents then pin the sandbox to the
+        // wrong root (run-log audit theme 5). Warn, don't block — nested
+        // same-name dirs are legal, just rare.
+        if (repoLocal) {
+          const segs = repoLocal.replace(/\/+$/, "").split("/");
+          if (segs.length >= 2 && segs[segs.length - 1] === segs[segs.length - 2]) {
+            console.error(`warning: --path ends in a doubled segment (${segs.slice(-2).join("/")}) — double-check it exists`);
+          }
+        }
+        if (!parseFlag(args, "--repo")) {
+          console.error("note: no --repo remote; pr-type tasks in this project won't be autonomously dispatched until one is set");
+        }
       } else if (what === "task") {
         const project = args[2];
         const slug = args[3];
