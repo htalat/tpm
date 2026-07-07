@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { allRunLogs, latestRunLog } from "./orchestrate/run_log.ts";
@@ -299,6 +299,9 @@ function childEnv(env: GoldenEnv, opts: GoldenRunOpts): NodeJS.ProcessEnv {
     // The claim (next --claim) and the dispatch (orchestrate --task) must
     // share one agent identity — the per-task lock is keyed on it.
     TPM_AGENT_ID: "evals-runner",
+    // HOME is faked for tpm-tree isolation, but the real agent CLI keeps its
+    // auth/settings under the REAL ~/.claude — point it there explicitly.
+    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
     ...(opts.agentBin ? { CLAUDE_BIN: opts.agentBin } : {}),
     ...(opts.model ? { TPM_AGENT_MODEL: opts.model } : {}),
   };
