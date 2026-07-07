@@ -31,6 +31,7 @@ import { getScheduler } from "./scheduler/types.ts";
 import { refreshSkills } from "./refresh_skills.ts";
 import { appendStatusEvent } from "./events.ts";
 import { migrateTree } from "./migrate.ts";
+import { runDoctor, formatDoctor } from "./doctor.ts";
 import { execCommand, COMMAND_VERBS } from "./commands.ts";
 import { tryDaemon } from "./daemon_client.ts";
 
@@ -142,6 +143,15 @@ try {
           }
         }
       }
+      break;
+    }
+    case "doctor": {
+      // Read-only health pass: config, tree, legacy statuses, journal size,
+      // stale locks, SPA build freshness, daemon version/tree. Exits non-zero
+      // only on hard failures (warns are advice).
+      const checks = await runDoctor();
+      print(formatDoctor(checks));
+      if (checks.some(c => c.level === "fail")) process.exit(1);
       break;
     }
     case "migrate": {
@@ -991,6 +1001,7 @@ Usage:
   tpm disallow <task>                        set allow_orchestrator: false
   tpm archive <task | project/task>          move a done/dropped task to tasks/archive/
   tpm fold <task | project/task>             promote a file-form task to folder-form (idempotent)
+  tpm doctor                                 health checks: config, tree, statuses, journal, locks, SPA build, daemon
   tpm migrate [--dry-run]                    rewrite pre-rename statuses in the tree (needs-feedback->rework,
                                              needs-review->review, needs-close->closing); idempotent
   tpm reparent <task> <new-parent | --top>   move a task under a new parent (or to top-level); folds the new parent if needed
