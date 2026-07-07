@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { useData, useRevalidateOnFocus, useSse } from "../hooks";
-import { Empty, SectionCard, StatusBadge, useFlash } from "../components";
+import { Empty, SectionCard, StatusBadge, useFlash, LoadError } from "../components";
 import type { PrDigest, Section, TaskDetail } from "../types";
 
 // Task detail: rendered sections with inline editors, meta rail, status-gated
@@ -51,7 +51,7 @@ export default function TaskPage() {
   });
   useRevalidateOnFocus(detail.refresh);
 
-  if (detail.error) return <p className="text-sm text-danger">Failed to load: {detail.error}</p>;
+  if (detail.error) return <LoadError error={detail.error} onRetry={detail.refresh} />;
   if (!detail.data) return <p className="text-sm text-muted">Loading…</p>;
   const t = detail.data;
 

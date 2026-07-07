@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { useData, useDebounced, useRevalidateOnFocus, useSse } from "../hooks";
-import { Empty, SectionCard, StatusBadge, TaskRow, useFlash } from "../components";
+import { Empty, SectionCard, StatusBadge, TaskRow, useFlash, LoadError } from "../components";
 import { flatTasks } from "../lib";
 import { SelectAll, useBulk, useKeyNav } from "../bulk";
 import type { ProjectDetail, Section } from "../types";
@@ -29,7 +29,7 @@ export default function ProjectPage() {
   const bulk = useBulk(allTasks, detail.refresh);
   const cursor = useKeyNav(allTasks, bulk.selection, bulk.selectable);
 
-  if (detail.error) return <p className="text-sm text-danger">Failed to load: {detail.error}</p>;
+  if (detail.error) return <LoadError error={detail.error} onRetry={detail.refresh} />;
   if (!detail.data) return <p className="text-sm text-muted">Loading…</p>;
   const p = detail.data;
 

@@ -1,6 +1,6 @@
 import { api } from "../api";
 import { useData, useRevalidateOnFocus } from "../hooks";
-import { Empty, SectionCard } from "../components";
+import { Empty, SectionCard, LoadError } from "../components";
 
 // Read-only view of ~/.tpm/config.json (the snapshot reader is non-throwing:
 // it distinguishes missing file / parse error / valid config). Edits go
@@ -9,7 +9,7 @@ export default function ConfigPage() {
   const snap = useData(() => api.config(), []);
   useRevalidateOnFocus(snap.refresh);
 
-  if (snap.error) return <p className="text-sm text-danger">Failed to load: {snap.error}</p>;
+  if (snap.error) return <LoadError error={snap.error} onRetry={snap.refresh} />;
   if (!snap.data) return <p className="text-sm text-muted">Loading…</p>;
   const cfg = snap.data.config;
 

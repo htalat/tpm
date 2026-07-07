@@ -1,4 +1,5 @@
-import { createContext, useCallback, useContext, useState } from "react";
+import { Component, createContext, useCallback, useContext, useState } from "react";
+import type { ErrorInfo } from "react";
 import type { SVGProps } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -196,6 +197,48 @@ export function ThemeToggle() {
   );
 }
 
+// ---- error handling -----------------------------------------------------------
+
+// Render-crash containment: a bug in one page shouldn't take the whole app to
+// a white screen. Class component because error boundaries still require one.
+export class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("render crash:", error, info.componentStack);
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="rounded-lg border border-danger/40 bg-danger-soft px-4 py-3 text-sm">
+        <p className="font-medium text-danger">This page crashed.</p>
+        <pre className="mt-1 whitespace-pre-wrap break-words text-xs text-danger/80">{this.state.error.message}</pre>
+        <button
+          onClick={() => this.setState({ error: null })}
+          className="mt-2 rounded border border-danger/40 px-2 py-1 text-xs text-danger hover:bg-danger/10"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
+}
+
+// Uniform fetch-failure surface with a retry — every page's useData error
+// path renders through this instead of a bare paragraph.
+export function LoadError({ error, onRetry }: { error: string; onRetry: () => void }) {
+  return (
+    <div className="rounded-lg border border-danger/40 bg-danger-soft px-4 py-3 text-sm">
+      <p className="text-danger">Failed to load: {error}</p>
+      <button onClick={onRetry} className="mt-2 rounded border border-danger/40 px-2 py-1 text-xs text-danger hover:bg-danger/10">
+        Retry
+      </button>
+    </div>
+  );
+}
+
 // ---- backend skew banner ------------------------------------------------------
 
 // Rendered app-wide (App mounts it above the routes). Fires when the running
@@ -237,7 +280,7 @@ function MastheadSearch() {
 
 export function Masthead() {
   return (
-    <header className="mb-6 flex items-center gap-4 border-b border-edge pb-3">
+    <header className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-edge pb-3">
       <Link to="/" className="text-lg font-bold tracking-tight text-ink">
         tpm
       </Link>
