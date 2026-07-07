@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -16,4 +17,7 @@ export default defineConfig({
     },
   },
   build: { outDir: "dist" },
+  // Vitest owns src/ unit tests only — e2e/*.spec.ts belongs to playwright,
+  // whose test() throws if vitest imports it.
+  test: { include: ["src/**/*.test.{ts,tsx}"] },
 });
