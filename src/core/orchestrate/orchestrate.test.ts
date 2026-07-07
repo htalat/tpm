@@ -45,7 +45,10 @@ function project(extra: Record<string, unknown> = {}): Project {
     slug: "p",
     path: "/tmp/p/project.md",
     dir: "/tmp/p",
-    data: { slug: "p", status: "active", ...extra },
+    // repo.remote present by default: the autonomous queue gate excludes
+    // pr-type tasks on remote-less repos (audit theme 5); these tests are
+    // about pool mechanics, not that gate.
+    data: { slug: "p", status: "active", repo: { remote: "https://github.com/x/y" }, ...extra },
     body: "",
     tasks: [],
   };
@@ -1491,7 +1494,7 @@ test("worker pool: two concurrent workers pick distinct tasks via lock contentio
       slug: "alpha",
       path: resolve(root, "alpha", "project.md"),
       dir: resolve(root, "alpha"),
-      data: { slug: "alpha", status: "active" },
+      data: { slug: "alpha", status: "active", repo: { remote: "https://github.com/x/y" } },
       body: "",
       tasks: [
         {
@@ -1556,7 +1559,7 @@ test("worker pool: a third worker finds nothing claimable once two locks are hel
       slug: "alpha",
       path: resolve(root, "alpha", "project.md"),
       dir: resolve(root, "alpha"),
-      data: { slug: "alpha", status: "active" },
+      data: { slug: "alpha", status: "active", repo: { remote: "https://github.com/x/y" } },
       body: "",
       tasks: [
         {
