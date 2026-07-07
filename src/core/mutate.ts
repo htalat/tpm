@@ -531,6 +531,21 @@ export function bumpOrchestratorAttempts(task: Task): number {
   return next;
 }
 
+// Refund one attempt: a rate-limited death is the ACCOUNT's failure, not the
+// task's — without the refund, three rate-limit deaths auto-block an innocent
+// task (the cap is about consecutive burns of real work). Floor at zero;
+// removing the field entirely at zero keeps frontmatter clean.
+export function refundOrchestratorAttempt(task: Task): void {
+  guardArchived(task);
+  const { data, body } = readParsed(task);
+  const current = readOrchestratorAttempts(data);
+  if (current <= 0) return;
+  if (current === 1) delete data.orchestrator_attempts;
+  else data.orchestrator_attempts = current - 1;
+  atomicWriteFileSync(task.path, stringify(data, body));
+  syncInMemory(task, data, body);
+}
+
 export function clearOrchestratorAttempts(task: Task): void {
   guardArchived(task);
   const { data, body } = readParsed(task);

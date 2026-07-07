@@ -1385,6 +1385,11 @@ async function runWorkerIteration(opts: WorkerIterationOpts): Promise<Orchestrat
         : "agent exited with no progress (auto-revert)";
       const r = mutate.revert(matchAfter.task, reason);
       log("INFO", `revert ${slug}: ${r.message}`);
+      // A rate-limited death is the account's failure, not the task's —
+      // refund the attempt so the retry cap only counts real burns.
+      if (rateLimit.limited) {
+        mutate.refundOrchestratorAttempt(matchAfter.task);
+      }
     } catch (e) {
       log("ERROR", `auto-revert ${slug} failed: ${(e as Error).message}`);
     }
