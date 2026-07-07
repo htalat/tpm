@@ -9,6 +9,12 @@ import type { Project, Task } from "../core/tree.ts";
 import { findRoot } from "../core/root.ts";
 import { execCommand } from "../core/commands.ts";
 import { onStatusChange } from "../core/mutate.ts";
+import {
+  routeApi, routeApiMutation,
+  MUTATION_ACTIONS, BULK_ACTIONS, buildCliArgs, slugifyTitle, searchTasks, splitBodyAtH2,
+} from "./api.ts";
+export { MUTATION_ACTIONS, BULK_ACTIONS, buildCliArgs } from "./api.ts";
+export type { CliRunner } from "./api.ts";
 import { findTask, findTasksByNumericId } from "../core/resolve.ts";
 import { resolveRepo } from "../core/context.ts";
 import { now } from "../util/time.ts";
@@ -141,27 +147,7 @@ export interface ServeOpts {
 
 // Whitelisted POST action segments. The CLI verbs they map to are built in
 // `buildCliArgs`. Kept narrow so a stray POST can't shell out to any tpm verb.
-const MUTATION_ACTIONS = new Set([
-  "ready", "block", "reopen", "complete", "drop", "log", "pr", "status", "allow-orchestrator",
-  "lgtm", "request-changes", "archive", "pull", "edit", "set-type",
-]);
 
-// Bulk-action whitelist for the multi-select bar (task 126). Each key is a
-// `/bulk/<action>` segment; the bar fans the selected slugs out to the named
-// CLI verb, one invocation per slug (independent semantics — one row's refusal
-// never aborts the batch, mirroring a shell `for` loop). The verbs here are the
-// no-free-text-per-row transitions; `block` is the lone exception and shares a
-// single reason across the whole selection. Kept narrow for the same reason as
-// MUTATION_ACTIONS: a stray POST can't reach an arbitrary tpm verb.
-const BULK_ACTIONS: Record<string, { verb: string; label: string; needsReason?: boolean }> = {
-  promote: { verb: "ready", label: "Promote" },
-  pull: { verb: "pull", label: "Pull from queue" },
-  close: { verb: "complete", label: "Close" },
-  reopen: { verb: "reopen", label: "Reopen" },
-  drop: { verb: "drop", label: "Drop" },
-  block: { verb: "block", label: "Block", needsReason: true },
-  archive: { verb: "archive", label: "Archive" },
-};
 
 // Which bulk actions each status can plausibly accept. Drives UI affordance
 // only — the per-row CLI call is the real enforcer, so a stale-form mismatch
@@ -305,8 +291,31 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Ser
       return;
     }
     const raw = await readBody(req);
-    const body = new URLSearchParams(raw);
     const url = new URL(req.url ?? "/", "http://localhost");
+    // JSON API mutations: same guards (loopback + same-origin) as the form
+    // path above, same argv mapping + in-process runner underneath.
+    if (url.pathname.startsWith("/api/")) {
+      let fields: unknown = {};
+      if (raw.trim()) {
+        try {
+          fields = JSON.parse(raw);
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "invalid JSON body" }));
+          return;
+        }
+      }
+      const apiResult = routeApiMutation(url.pathname, fields, runCli);
+      if (apiResult) {
+        res.writeHead(apiResult.status, { "content-type": "application/json" });
+        res.end(apiResult.body);
+        return;
+      }
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: `no such endpoint: ${url.pathname}` }));
+      return;
+    }
+    const body = new URLSearchParams(raw);
     const result = routeMutation(url.pathname, body, runCli);
     if (result.status === 303 && result.location) {
       res.writeHead(303, { location: result.location });
@@ -332,6 +341,26 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Ser
   // Always load archived so `/t/<project>/<slug>` resolves an archived task and
   // `/p/<slug>?archived=1` has them available. Filtering happens per-route.
   const projects = loadProjects(root, { archived: true });
+  // JSON API reads run first; null means the path isn't API-owned and falls
+  // through to the HTML route() (which still owns /api/harness + /api/refresh).
+  if (url.pathname.startsWith("/api/")) {
+    const apiResult = routeApi(url.pathname, url.searchParams, projects, {
+      taskLocks: () => snapshotTaskLocks(root),
+      recentEvents: () => readRecentEvents(root, 50),
+      harnessLog: defaultHarnessLogReader,
+      sessionId: (task) => {
+        const snapshot = defaultRunLogReader(task);
+        const fromRun = snapshot ? parseRunLog(snapshot.text).sessionId ?? null : null;
+        return fromRun ?? (typeof task.data.session_id === "string" && task.data.session_id ? task.data.session_id : null);
+      },
+      mutationsEnabled: ctx.mutationsEnabled,
+    });
+    if (apiResult) {
+      res.writeHead(apiResult.status, { "content-type": "application/json" });
+      res.end(apiResult.body);
+      return;
+    }
+  }
   const flash = url.searchParams.get("flash") ?? undefined;
   const result = route(url.pathname, url.searchParams, projects, {
     flash,
@@ -829,7 +858,6 @@ export interface MutationResult {
   body?: string;
 }
 
-export type CliRunner = (args: string[]) => { ok: boolean; stdout: string; stderr: string };
 
 // Pure dispatch for POST mutations. Tests pass a stub runner; production passes
 // the in-process `runCli` built on the command layer (commands.ts).
@@ -893,13 +921,6 @@ export function routeMutation(pathname: string, body: URLSearchParams, runner: C
   return flashRedirect(slugPath, flash, override);
 }
 
-// Server-side mirror of NEW_TASK_SLUG_SCRIPT: lowercase, collapse non-[a-z0-9]
-// runs to a single hyphen, trim leading/trailing hyphens. Used as the fallback
-// when the form's title-derived slug never reached the client (JS disabled). May
-// return "" (title was all punctuation) — caller treats that as "no slug".
-function slugifyTitle(title: string): string {
-  return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-}
 
 // Project-scoped `new task` dispatch. On success: redirect to the new task's
 // page so the operator can edit Context/Plan immediately. On failure: redirect
@@ -1075,82 +1096,6 @@ function redirectOverride(raw: string | null): string | null {
   return cleaned || null;
 }
 
-function buildCliArgs(slug: string, action: string, body: URLSearchParams): string[] | null {
-  switch (action) {
-    case "ready":  return ["ready", slug];
-    case "reopen": {
-      const reason = body.get("reason")?.trim();
-      if (!reason) return ["reopen", slug];
-      return ["reopen", slug, reason];
-    }
-    case "block": {
-      const reason = body.get("reason")?.trim();
-      if (!reason) return null;
-      return ["block", slug, reason];
-    }
-    case "complete": {
-      const outcome = body.get("outcome")?.trim();
-      const args = ["complete", slug];
-      if (outcome) args.push("--outcome", outcome);
-      return args;
-    }
-    case "drop": {
-      // Optional reason — detail-page form supplies one (fills ## Outcome);
-      // the per-row glyph and bulk path drop reasonless. Mirrors reopen.
-      const reason = body.get("reason")?.trim();
-      if (!reason) return ["drop", slug];
-      return ["drop", slug, reason];
-    }
-    case "log": {
-      const message = body.get("message")?.trim();
-      if (!message) return null;
-      return ["log", slug, message];
-    }
-    case "pr": {
-      const url = body.get("url")?.trim();
-      if (!url) return null;
-      return ["pr", slug, url];
-    }
-    case "status": {
-      const newStatus = body.get("status")?.trim();
-      if (!newStatus) return null;
-      return ["status", slug, newStatus];
-    }
-    case "set-type": {
-      const type = body.get("type")?.trim();
-      if (!type) return null;
-      return ["set-type", slug, type];
-    }
-    case "allow-orchestrator": {
-      const allow = body.get("allow");
-      if (allow === "true") return ["allow", slug];
-      if (allow === "false") return ["disallow", slug];
-      return null;
-    }
-    case "lgtm": return ["lgtm", slug];
-    case "archive": return ["archive", slug];
-    case "pull": return ["pull", slug];
-    case "request-changes": {
-      const comment = body.get("comment")?.trim();
-      if (!comment) return null;
-      return ["request-changes", slug, comment];
-    }
-    case "edit": {
-      const section = body.get("section")?.trim();
-      // `value` may be intentionally empty (clearing a section is a valid edit
-      // — Outcome starts empty); we only require the field be present.
-      const value = body.get("value");
-      if (!section || value === null) return null;
-      const args = ["edit", slug, section, value];
-      const mtime = body.get("mtime")?.trim();
-      if (mtime) {
-        args.push("--expect-mtime", mtime);
-      }
-      return args;
-    }
-    default: return null;
-  }
-}
 
 function runCli(args: string[]): { ok: boolean; stdout: string; stderr: string } {
   // In-process command layer (commands.ts) — same argv vocabulary the CLI
@@ -1249,41 +1194,6 @@ ${rows}
 // Archived tasks excluded unless ?archived=1 — same toggle the project page
 // uses. Server-rendered on each query: the tree is already loaded per
 // request, and a few hundred tasks is microseconds of substring scans.
-interface SearchHit {
-  project: Project;
-  task: Task;
-  rank: number;
-  snippet: string | null; // first matching body line, for body hits
-}
-
-function searchTasks(projects: Project[], q: string, includeArchived: boolean): SearchHit[] {
-  const needle = q.toLowerCase();
-  const hits: SearchHit[] = [];
-  for (const p of projects) {
-    for (const t of flatTasks(p.tasks)) {
-      if (isParent(t)) continue;
-      if (!includeArchived && t.archived) continue;
-      const title = String(t.data.title ?? "");
-      const tags = Array.isArray(t.data.tags) ? (t.data.tags as unknown[]).map(String) : [];
-      const prs = Array.isArray(t.data.prs) ? (t.data.prs as unknown[]).map(String) : [];
-      if (t.slug.toLowerCase().includes(needle) || title.toLowerCase().includes(needle)) {
-        hits.push({ project: p, task: t, rank: 0, snippet: null });
-        continue;
-      }
-      const meta = [String(t.data.status ?? ""), ...tags, ...prs];
-      if (meta.some(v => v.toLowerCase().includes(needle))) {
-        hits.push({ project: p, task: t, rank: 1, snippet: null });
-        continue;
-      }
-      const bodyLine = t.body.split("\n").find(l => l.toLowerCase().includes(needle));
-      if (bodyLine !== undefined) {
-        hits.push({ project: p, task: t, rank: 2, snippet: bodyLine.trim().slice(0, 160) });
-      }
-    }
-  }
-  hits.sort((a, b) => a.rank - b.rank);
-  return hits;
-}
 
 // Highlight the query inside an already-escaped snippet. Escapes first, then
 // marks — so the regex runs over entity-encoded text using the entity-encoded
@@ -1855,32 +1765,6 @@ ${headerBlock}
   return layout(`tpm · ${title}`, body);
 }
 
-// Splits a task body at `## X` headings. The first item may be a preamble
-// chunk (heading === null) containing the body's leading content — for tpm
-// tasks this is the `# Task title` h1 line that the body fixture writes
-// before the first `##` section. Used by `renderTaskBodyWithEditors` so the
-// section-by-section render can splice in edit forms for the editable
-// sections without touching the preamble or non-editable sections.
-function splitBodyAtH2(body: string): Array<{ heading: string | null; content: string }> {
-  const lines = body.split("\n");
-  const sections: Array<{ heading: string | null; content: string }> = [];
-  let cur: { heading: string | null; lines: string[] } = { heading: null, lines: [] };
-  for (const line of lines) {
-    const m = line.match(/^##\s+(.+?)\s*$/);
-    if (m) {
-      if (cur.heading !== null || cur.lines.some(l => l.length > 0)) {
-        sections.push({ heading: cur.heading, content: cur.lines.join("\n") });
-      }
-      cur = { heading: m[1].trim(), lines: [] };
-    } else {
-      cur.lines.push(line);
-    }
-  }
-  if (cur.heading !== null || cur.lines.some(l => l.length > 0)) {
-    sections.push({ heading: cur.heading, content: cur.lines.join("\n") });
-  }
-  return sections;
-}
 
 // Renders the task body for the detail page. When `canEdit` is true, walks
 // section-by-section and injects an inline edit affordance (`edit` link or
