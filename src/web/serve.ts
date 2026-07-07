@@ -201,7 +201,7 @@ function handleSse(req: IncomingMessage, res: ServerResponse, root: string): voi
 // ships it statically when the build exists; without a build, /app explains
 // how to produce one. Hashed assets get immutable caching; index.html is
 // no-cache so a rebuild lands on refresh.
-const SPA_DIST = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "web", "dist");
+export const SPA_DIST = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "web", "dist");
 
 const SPA_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
