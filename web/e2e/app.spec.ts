@@ -118,3 +118,37 @@ test("status journal drives the activity feed", async ({ page }) => {
   await expect(page.locator("text=Activity")).toBeVisible();
   await expect(page.getByText(/promoted to ready|pulled from queue|blocked/).first()).toBeVisible();
 });
+
+test("selection ergonomics: select-all, shift-range, keyboard j/x/Escape", async ({ page }) => {
+  await page.goto("/app");
+  const inboxCard = page.locator("section", { has: page.getByRole("heading", { name: "Your inbox" }) });
+  const boxes = inboxCard.locator('input[aria-label^="select demo/"]:not([disabled])');
+  // Rows render after the overview fetch; checkboxes enable after vocab lands.
+  await expect(boxes.first()).toBeEnabled();
+  const n = await boxes.count();
+  expect(n).toBeGreaterThanOrEqual(3);
+
+  // Section select-all picks every selectable row, unpick clears.
+  await inboxCard.getByLabel("select all in this section").check();
+  await expect(page.getByText(`${n} selected`)).toBeVisible();
+  await inboxCard.getByLabel("select all in this section").uncheck();
+  await expect(page.getByText("selected")).toHaveCount(0);
+
+  // Shift-click ranges within the section.
+  await boxes.nth(0).click();
+  await boxes.nth(2).click({ modifiers: ["Shift"] });
+  await expect(page.getByText("3 selected")).toBeVisible();
+
+  // Escape clears; j/j/x selects the second row via keyboard.
+  await page.keyboard.press("Escape");
+  await expect(page.getByText("selected")).toHaveCount(0);
+  await page.keyboard.press("j");
+  await page.keyboard.press("j");
+  await page.keyboard.press("x");
+  await expect(page.getByText("1 selected")).toBeVisible();
+
+  // "/" focuses the masthead search.
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("/");
+  await expect(page.locator('input[type="search"]').first()).toBeFocused();
+});

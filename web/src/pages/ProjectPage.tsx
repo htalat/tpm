@@ -4,7 +4,7 @@ import { api } from "../api";
 import { useData, useDebounced, useRevalidateOnFocus, useSse } from "../hooks";
 import { Empty, SectionCard, StatusBadge, TaskRow, useFlash } from "../components";
 import { flatTasks } from "../lib";
-import { useBulk } from "../bulk";
+import { SelectAll, useBulk, useKeyNav } from "../bulk";
 import type { ProjectDetail, Section } from "../types";
 
 // Project view: frontmatter meta, editable Goal/Context/Notes, tasks grouped
@@ -27,6 +27,7 @@ export default function ProjectPage() {
 
   const allTasks = detail.data ? flatTasks(detail.data.tasks).filter(t => !t.isParent) : [];
   const bulk = useBulk(allTasks, detail.refresh);
+  const cursor = useKeyNav(allTasks, bulk.selection, bulk.selectable);
 
   if (detail.error) return <p className="text-sm text-danger">Failed to load: {detail.error}</p>;
   if (!detail.data) return <p className="text-sm text-muted">Loading…</p>;
@@ -66,8 +67,8 @@ export default function ProjectPage() {
         <div className="flex flex-col gap-4">
           <NewTaskForm project={p} onCreated={detail.refresh} />
           {ordered.map(status => (
-            <SectionCard key={status} title={status} meta={`${groups.get(status)!.length}`}>
-              {groups.get(status)!.map(t => <TaskRow key={t.qualifiedSlug} task={t} selection={bulk.rowSelection} />)}
+            <SectionCard key={status} title={status} meta={<><SelectAll tasks={groups.get(status)!} selection={bulk.selection} selectable={bulk.selectable} />{`${groups.get(status)!.length}`}</>}>
+              {groups.get(status)!.map(t => <TaskRow key={t.qualifiedSlug} task={t} cursor={cursor === t.qualifiedSlug} selection={bulk.rowsFor(groups.get(status)!)} />)}
             </SectionCard>
           ))}
           {ordered.length === 0 && <Empty text="No tasks yet." />}
