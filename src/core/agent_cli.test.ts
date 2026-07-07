@@ -187,3 +187,16 @@ test("resolveAgentCli: env var override leaves bin alone when env var is unset",
     if (prev !== undefined) process.env.COPILOT_BIN = prev;
   }
 });
+
+test("buildArgs: TPM_AGENT_MODEL pins --model; unset leaves args untouched", () => {
+  const before = AGENT_CLIS.claude.buildArgs("hi", "/repo");
+  assert.ok(!before.includes("--model"));
+  process.env.TPM_AGENT_MODEL = "claude-sonnet-5";
+  try {
+    const pinned = AGENT_CLIS.claude.buildArgs("hi", "/repo");
+    assert.deepEqual(pinned.slice(-2), ["--model", "claude-sonnet-5"]);
+    assert.deepEqual(AGENT_CLIS.copilot.buildArgs("hi", "/repo").slice(-2), ["--model", "claude-sonnet-5"]);
+  } finally {
+    delete process.env.TPM_AGENT_MODEL;
+  }
+});

@@ -47,6 +47,10 @@ export const AGENT_CLIS: Record<string, AgentCli> = {
       "--output-format", "stream-json",
       "--verbose",
       "--disallowed-tools", "AskUserQuestion",
+      // Model pin (evals plumbing): benchmark scores are only comparable
+      // across harness changes when the model is fixed. Unset = the CLI's
+      // own default, exactly as before.
+      ...(process.env.TPM_AGENT_MODEL ? ["--model", process.env.TPM_AGENT_MODEL] : []),
     ],
   },
   copilot: {
@@ -66,6 +70,7 @@ export const AGENT_CLIS: Record<string, AgentCli> = {
       "--allow-all-tools",
       "--no-ask-user",
       "--autopilot",
+      ...(process.env.TPM_AGENT_MODEL ? ["--model", process.env.TPM_AGENT_MODEL] : []),
     ],
   },
 };
