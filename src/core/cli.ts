@@ -381,7 +381,15 @@ try {
       const force = args.includes("--force");
       const positional = args.slice(1).filter(a => a !== "--force");
       const newStatus = positional[1];
-      if (!positional[0] || !newStatus) usage("tpm status <task> <new-status> [--force]");
+      // No new-status arg → self-document the vocabulary instead of erroring,
+      // so agents discover valid statuses + the verbs that reach them from the
+      // CLI itself (no grepping the source). Covers both `tpm status` and the
+      // half-typed `tpm status <task>`.
+      if (!newStatus) {
+        printStatusVocab();
+        break;
+      }
+      if (!positional[0]) usage("tpm status <task> <new-status> [--force]");
       const r = mutate.setStatus(
         resolveLiveTask(positional[0], "tpm status <task> <new-status> [--force]"),
         newStatus,
@@ -408,6 +416,7 @@ try {
       print(r.message);
       break;
     }
+    case "done": // alias: matches the `/tpm done` slash command + AGENTS "close out"
     case "complete": {
       if (!args[1]) usage('tpm complete <task> [--outcome "..."] [--no-archive] [--archive]');
       const outcome = parseFlag(args, "--outcome");
@@ -1113,6 +1122,20 @@ function print(msg: string): void {
   console.log(brandCli(msg));
 }
 
+// Self-documenting status vocabulary for `tpm status` with no new-status arg.
+// Renders mutate.STATUS_VOCAB so the valid statuses + the verbs that reach them
+// live in exactly one place (mutate.ts) — agents read this instead of source.
+function printStatusVocab(): void {
+  const lines = ["Valid task statuses (transition via the verb shown, or `tpm status <task> <new-status>` directly):", ""];
+  const width = Math.max(...mutate.STATUS_VOCAB.map((e) => e.status.length));
+  for (const { status, verbs, note } of mutate.STATUS_VOCAB) {
+    const reach = verbs.length ? verbs.join(", ") : "(no agent verb)";
+    const suffix = note ? `  — ${note}` : "";
+    lines.push(`  ${status.padEnd(width)}  ${reach}${suffix}`);
+  }
+  print(lines.join("\n"));
+}
+
 function readVersion(): string {
   const pkgPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
   const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
@@ -1151,13 +1174,14 @@ Usage:
   tpm start <task>                           set status: in-progress, log started
   tpm ready <task>                           set status: ready (+ allow_orchestrator: true), log promoted; tpm disallow after for supervised-only
   tpm complete <task> [--outcome "..."] [--no-archive] [--archive]
-                                             set status: done, stamp closed, log; archives by type
+                                             set status: done, stamp closed, log; archives by type (alias: tpm done)
   tpm drop <task> ["<reason>"]               set status: dropped, stamp closed; optional reason fills ## Outcome + Log
   tpm block <task> "<reason>"                set status: blocked, log the reason
   tpm reopen <task> ["<reason>"]             set status: open, log it (optional reason on the Log)
   tpm pull <task>                            pull a queued or running task back into the human pile: ready/in-progress -> open, rework -> review
   tpm revert <task> ["<reason>"]             flip in-progress -> ready, log a timeout/revert (no-op otherwise)
   tpm status <task> <new-status> [--force]   generic status setter (validated against the transition table; --force bypasses)
+  tpm status                                 list the valid statuses + the verbs that reach each (no arg)
   tpm set-type <task> <pr|investigation>   reclassify a task's type: (validated); back-end for tpm serve's type dropdown
   tpm log <task> "<message>"                 append a single timestamped Log line
   tpm edit <task> <title|context|plan|outcome> "<value>" [--expect-mtime <ms>]

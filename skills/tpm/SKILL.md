@@ -23,7 +23,7 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
   - **Folder form** (default for top-level tasks): `tasks/NNN-slug/task.md`, plus optional `NNN-<sub>.md` child siblings (each with `parent: NNN-slug` in frontmatter) and any other files (`runs/`, `report.md`, scratch notes, screenshots, design docs). The directory name is the task's slug.
   - **File form** (legacy): `tasks/NNN-slug.md`. A single file, no folder. Pre-folder-form top-level tasks still load this way and auto-fold when they gain a child, run, or report. Child tasks are always flat `.md` files inside their parent's folder.
 - A task with any children is a **container**: not actionable, never returned by `tpm next`, can't be discussed/started directly.
-- **Statuses**: `open | ready | in-progress | rework | closing | review | blocked | done | dropped`
+- **Statuses**: `open | ready | in-progress | rework | closing | review | blocked | done | dropped` (run `tpm status` with no args for the live list + the verb that reaches each).
   - `open` = user's queue (not yet shaped for an agent).
   - `ready` = agent's queue. Promoted via `/tpm discuss`.
   - `in-progress` = work in flight (for `type: pr` tasks, this includes the PR-open / awaiting-merge phase).
@@ -161,6 +161,7 @@ For the in-flight phase of a `type: pr` task — the PR is open, the task is `in
 Don't auto-merge, don't reply conversationally without a fix, don't long-poll for CI, don't `--force` push. Always `--force-with-lease` for rewritten history.
 
 ### Close out (`/tpm done <slug>`)
+> The CLI verb is `tpm complete <slug>`, with `tpm done <slug>` as an alias — the bare `tpm done` no longer errors with "Unknown command".
 1. Run `tpm context <slug>` for the briefing (PRs, type, current status). Don't `cat` the task file — it's outside the repo sandbox.
 2. **Verify PR merge status** if `prs:` is non-empty. For each PR URL, run `gh pr view <url> --json state --jq '.state'`.
    - At least one `MERGED` → proceed.
