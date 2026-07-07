@@ -636,3 +636,32 @@ test("findTask: matches by short slug (after numeric prefix)", () => {
     rmTempDir(root);
   }
 });
+
+test("context: resume banner fires for in-progress tasks with prior runs", () => {
+  const root = mkTempDir();
+  try {
+    mkdirSync(join(root, "p", "tasks", "001-t", "runs"), { recursive: true });
+    writeFileSync(join(root, "p", "project.md"), `---\nname: P\nslug: p\nstatus: active\n---\n\n# P\n`);
+    writeFileSync(
+      join(root, "p", "tasks", "001-t", "task.md"),
+      `---\ntitle: T\nslug: t\nproject: p\nstatus: in-progress\ntype: pr\n---\n\n# T\n\n## Log\n- x\n`,
+    );
+    writeFileSync(
+      join(root, "p", "tasks", "001-t", "runs", "20260701T000000Z.log"),
+      '{"type":"system","subtype":"init","session_id":"sess-resume-1"}\n',
+    );
+    const out = context(root, "t");
+    assert.match(out, /RESUMING — 1 prior run/);
+    assert.match(out, /claude --resume sess-resume-1/);
+    assert.match(out, /do not redo shipped steps/);
+
+    // Fresh in-progress with no runs, and non-in-progress with runs: no banner.
+    writeFileSync(
+      join(root, "p", "tasks", "002-fresh.md"),
+      `---\ntitle: F\nslug: fresh\nproject: p\nstatus: in-progress\ntype: pr\n---\n\n# F\n`,
+    );
+    assert.doesNotMatch(context(root, "fresh"), /RESUMING/);
+  } finally {
+    rmTempDir(root);
+  }
+});

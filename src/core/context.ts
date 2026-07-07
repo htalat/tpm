@@ -2,6 +2,7 @@ import { loadProjects, isParent } from "./tree.ts";
 import type { Project, Task } from "./tree.ts";
 import { findTask, findRepoTarget } from "./resolve.ts";
 import { resolveSameRepoStrategy, DEFAULT_SAME_REPO_STRATEGY } from "./orchestrate/strategy.ts";
+import { allRunLogs, latestSessionId } from "./orchestrate/run_log.ts";
 import { branchState } from "./drift.ts";
 
 export interface Repo {
@@ -34,6 +35,24 @@ export function context(root: string, query: string): string {
   const lines: string[] = [];
   lines.push(`# Task briefing: ${str(task.data.title) ?? task.slug}`);
   lines.push("");
+  // Resume banner (run-log audit theme 6): an in-progress task with prior
+  // run logs means THIS session is picking up mid-flight, not starting
+  // fresh — 093/004's resume cold-started onto another task's branch with
+  // its uncommitted work and never noticed. Make the state impossible to miss.
+  const priorRuns = String(task.data.status ?? "") === "in-progress" ? allRunLogs(task).length : 0;
+  if (priorRuns > 0) {
+    const sessionId = latestSessionId(task);
+    const state = repo.local ? branchState(repo.local) : null;
+    lines.push(`> **RESUMING — ${priorRuns} prior run${priorRuns === 1 ? "" : "s"} on this task.**`);
+    if (state) {
+      lines.push(`> Working tree: branch \`${state.branch}\`${state.dirty ? ", **uncommitted changes present**" : ", clean"}.`);
+      lines.push("> Before writing anything: confirm this branch belongs to THIS task and reconcile any");
+      lines.push("> leftover changes (they may be another task's work).");
+    }
+    lines.push("> Read the Log section below for what already happened — do not redo shipped steps.");
+    if (sessionId) lines.push(`> Prior agent session: \`claude --resume ${sessionId}\``);
+    lines.push("");
+  }
   lines.push(`- Project: ${str(project.data.name) ?? project.slug} (${project.slug})`);
   if (repo.remote) lines.push(`- Repo: ${repo.remote}`);
   if (repo.local) lines.push(`- Local: ${repo.local}`);
