@@ -2,7 +2,8 @@ import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadProjects, flatTasks, isParent, rollupStatus, taskHasReport, taskReportPath } from "../core/tree.ts";
 import { KNOWN_TASK_TYPES } from "../core/new.ts";
 import type { Project, Task } from "../core/tree.ts";
@@ -278,6 +279,49 @@ function handleSse(req: IncomingMessage, res: ServerResponse, root: string): voi
   }
 }
 
+// ---- SPA static serving -----------------------------------------------------
+
+// The React app (web/) builds into web/dist and mounts at /app. `tpm serve`
+// ships it statically when the build exists; without a build, /app explains
+// how to produce one. Hashed assets get immutable caching; index.html is
+// no-cache so a rebuild lands on refresh.
+const SPA_DIST = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "web", "dist");
+
+const SPA_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".map": "application/json",
+  ".json": "application/json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".woff2": "font/woff2",
+};
+
+function serveSpa(pathname: string, res: ServerResponse): boolean {
+  const index = join(SPA_DIST, "index.html");
+  if (!existsSync(index)) {
+    res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+    res.end("SPA build not found. Run: npm --prefix web install && npm --prefix web run build");
+    return true;
+  }
+  const rel = pathname.replace(/^\/app\/?/, "");
+  // Resolve inside dist only — a crafted ../ path falls through to the SPA
+  // fallback rather than escaping the directory.
+  const candidate = resolve(SPA_DIST, rel);
+  const isAsset = rel !== "" && candidate.startsWith(SPA_DIST + "/") && existsSync(candidate) && statSync(candidate).isFile();
+  const filePath = isAsset ? candidate : index;
+  const type = SPA_TYPES[extname(filePath)] ?? "application/octet-stream";
+  res.writeHead(200, {
+    "content-type": type,
+    // Vite emits content-hashed asset names; index.html must revalidate.
+    "cache-control": filePath === index ? "no-cache" : "public, max-age=31536000, immutable",
+  });
+  res.end(readFileSync(filePath));
+  return true;
+}
+
 async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: ServeContext): Promise<void> {
   if (req.method === "POST") {
     if (!ctx.mutationsEnabled) {
@@ -332,6 +376,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Ser
     return;
   }
   const url = new URL(req.url ?? "/", "http://localhost");
+  if (url.pathname === "/app" || url.pathname.startsWith("/app/")) {
+    serveSpa(url.pathname, res);
+    return;
+  }
   const root = findRoot();
   if (url.pathname === "/events") {
     // SSE stream: held open, never goes through route()'s request/response shape.
