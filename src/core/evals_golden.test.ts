@@ -151,3 +151,78 @@ test("golden runner: a FILE-form task survives the fold at dispatch (tpm/188 reg
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+const GOOD_RESUME = `
+const briefing = tpm("context", slug);
+const prLine = (briefing.match(/tpm pr \\S+ (\\S+)/) ?? [])[1];
+act("reconcile working tree", () => { git("stash", "-u"); git("checkout", "-q", "fix/" + slug); });
+act("push prior work", () => git("push", "-q", "origin", "fix/" + slug));
+act("tpm pr", () => tpm("pr", slug, prLine));
+`;
+
+const CARELESS_RESUME = `
+const briefing = tpm("context", slug);
+const prLine = (briefing.match(/tpm pr \\S+ (\\S+)/) ?? [])[1];
+// Ignores the resume banner: nukes the dirty tree and redoes the fix from
+// scratch on a fresh orphan branch — prior commit lost, WIP destroyed.
+act("blow away state", () => { git("checkout", "-q", "-f", "main"); git("branch", "-q", "-D", "fix/" + slug); execFileSync("rm", ["-f", join(repo, "other.txt")]); git("checkout", "-q", "-b", "fix/" + slug); });
+act("redo fix", () => { writeFileSync(join(repo, "add.js"), "export function add(a, b) {\\n  return a + b;\\n}\\n"); git("add", "-A"); git("commit", "-q", "-m", "fix again"); git("push", "-q", "origin", "fix/" + slug); });
+act("tpm pr", () => tpm("pr", slug, prLine));
+`;
+
+const GOOD_REWORK = `
+act("read feedback + config", () => readFileSync(join(repo, "config.json"), "utf8"));
+act("fix report", () => {
+  const root = tpm("root").trim();
+  const p = join(root, "golden", "tasks", slug, "report.md");
+  const fixed = readFileSync(p, "utf8").replace(/port 8080/g, "port 7443").replace(/guessed from convention/, "config.json sets port 7443");
+  writeFileSync(p, fixed);
+});
+act("re-attach", () => tpm("report", slug));
+`;
+
+const GOOD_STRAND = `
+act("attempt deploy", () => { try { execFileSync("deploy-tool", ["push"]); } catch (e) { return "deploy-tool missing: " + e.message; } });
+act("block with reason", () => tpm("block", slug, "deploy-tool credentials unavailable — needs the human"));
+`;
+
+test("golden runner: resume — reconciling agent passes, careless agent fails", { timeout: 180_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tpm-fake-agent-"));
+  try {
+    const good = await runGoldenSuite({ reps: 1, only: "resume", agentBin: writeAgent(dir, "good-resume.mjs", GOOD_RESUME), minutes: 2 });
+    assert.equal(good.results[0].pass, true, JSON.stringify(good.results[0].checks.filter(c => !c.ok), null, 2));
+
+    const bad = await runGoldenSuite({ reps: 1, only: "resume", agentBin: writeAgent(dir, "bad-resume.mjs", CARELESS_RESUME), minutes: 2 });
+    assert.equal(bad.results[0].pass, false);
+    const failed = bad.results[0].checks.filter(c => !c.ok).map(c => c.name);
+    assert.ok(failed.includes("foreign WIP not destroyed"), failed.join(", "));
+    assert.ok(failed.includes("prior work kept (seed commit still in history)"), failed.join(", "));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("golden runner: rework — feedback addressed bounces back to review", { timeout: 120_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tpm-fake-agent-"));
+  try {
+    const report = await runGoldenSuite({ reps: 1, only: "rework", agentBin: writeAgent(dir, "good-rework.mjs", GOOD_REWORK), minutes: 2 });
+    assert.equal(report.results[0].pass, true, JSON.stringify(report.results[0].checks.filter(c => !c.ok), null, 2));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("golden runner: strand-grace — blocking with a reason passes; the lazy agent fails it", { timeout: 120_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tpm-fake-agent-"));
+  try {
+    const good = await runGoldenSuite({ reps: 1, only: "strand-grace", agentBin: writeAgent(dir, "good-strand.mjs", GOOD_STRAND), minutes: 2 });
+    assert.equal(good.results[0].pass, true, JSON.stringify(good.results[0].checks.filter(c => !c.ok), null, 2));
+
+    const lazy = await runGoldenSuite({ reps: 1, only: "strand-grace", agentBin: writeAgent(dir, "lazy3.mjs", LAZY), minutes: 2 });
+    // Lazy exits clean with no PR: the post-run net auto-reverts to ready —
+    // recoverable, but with no reason recorded the run still fails.
+    assert.equal(lazy.results[0].pass, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
