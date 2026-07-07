@@ -26,6 +26,15 @@ export function eventsPath(root: string): string {
   return join(root, ".tpm", "events.ndjson");
 }
 
+// Forwarded CLI mutations (POST /api/cli) execute inside the daemon but must
+// journal as the CALLING process's actor (worker-1, an agent id, …), not the
+// daemon's env. The mutation path is fully synchronous, so a module-level
+// override set around the execCommand call is race-free.
+let actorOverride: string | null = null;
+export function setActorOverride(actor: string | null): void {
+  actorOverride = actor;
+}
+
 export function appendStatusEvent(root: string, change: StatusChange): void {
   const project = typeof change.task.data.project === "string" && change.task.data.project
     ? change.task.data.project
@@ -39,7 +48,7 @@ export function appendStatusEvent(root: string, change: StatusChange): void {
     from: change.from,
     to: change.to,
     verb: change.verb,
-    actor: process.env.TPM_AGENT_ID || "cli",
+    actor: actorOverride ?? (process.env.TPM_AGENT_ID || "cli"),
   };
   try {
     mkdirSync(join(root, ".tpm"), { recursive: true });

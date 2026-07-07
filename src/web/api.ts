@@ -517,6 +517,18 @@ function fieldsToParams(fields: unknown): URLSearchParams {
 // same-origin + loopback guards run in handleRequest before this is reached,
 // exactly as they do for the form path.
 export function routeApiMutation(pathname: string, fields: unknown, runner: CliRunner): ApiResult | null {
+  // Forwarded CLI invocation (single-writer): the daemon executes the argv
+  // through the same in-process command layer and returns the CommandResult
+  // verbatim. execCommand's own grammar is the allowlist — unknown verbs come
+  // back as ok:false, they never reach arbitrary code. handleRequest already
+  // verified the caller's root matches ours and set the journal actor.
+  if (pathname === "/api/cli") {
+    const body = (fields ?? {}) as Record<string, unknown>;
+    const argv = Array.isArray(body.argv) ? body.argv.map(String) : null;
+    if (!argv || argv.length === 0) return apiError(400, "argv[] is required");
+    return json(200, runner(argv));
+  }
+
   const taskAction = pathname.match(/^\/api\/tasks\/(.+)\/([a-z][a-z0-9-]*)$/);
   if (taskAction) {
     const slugPath = decodeURIComponent(taskAction[1]);

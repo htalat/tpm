@@ -32,6 +32,7 @@ import { refreshSkills } from "./refresh_skills.ts";
 import { appendStatusEvent } from "./events.ts";
 import { migrateTree } from "./migrate.ts";
 import { execCommand, COMMAND_VERBS } from "./commands.ts";
+import { tryDaemon } from "./daemon_client.ts";
 
 const VERSION = readVersion();
 
@@ -72,7 +73,11 @@ try {
   // `findRoot` is passed as a thunk: arity errors and the `tpm status` vocab
   // listing must work outside a configured tree.
   if (cmd !== undefined && COMMAND_VERBS.has(cmd)) {
-    const r = execCommand(findRoot, args);
+    // Single-writer: when a serve/up daemon is running for THIS tree, the
+    // mutation executes inside it (POST /api/cli) instead of racing it from a
+    // second process. No daemon (or a root mismatch / older daemon) falls
+    // back to local execution. TPM_NO_DAEMON=1 forces local.
+    const r = (await tryDaemon(args)) ?? execCommand(findRoot, args);
     if (!r.ok) throw new Error(r.stderr);
     print(r.stdout);
   } else switch (cmd) {

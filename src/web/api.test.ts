@@ -305,3 +305,15 @@ test("api: /api/vocab carries the wire-surface version for skew detection", () =
   assert.equal(typeof r.json.apiVersion, "number");
   assert.ok(r.json.apiVersion >= 2);
 });
+
+test("api mutation: /api/cli executes the forwarded argv through the runner verbatim", () => {
+  const calls: string[][] = [];
+  const runner: CliRunner = (args) => { calls.push(args); return { ok: true, stdout: "did it", stderr: "" }; };
+  const r = routeApiMutation("/api/cli", { argv: ["pr", "alpha/001", "https://x/1"], root: "/x", actor: "worker-1" }, runner)!;
+  assert.equal(r.status, 200);
+  assert.deepEqual(JSON.parse(r.body), { ok: true, stdout: "did it", stderr: "" });
+  assert.deepEqual(calls, [["pr", "alpha/001", "https://x/1"]]);
+
+  const missing = routeApiMutation("/api/cli", {}, runner)!;
+  assert.equal(missing.status, 400);
+});

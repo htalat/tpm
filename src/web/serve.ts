@@ -24,7 +24,7 @@ import type { RunEvent } from "../core/orchestrate/run_log.ts";
 import type { AgentOutputFormat } from "../core/agent_cli.ts";
 import { CONFIG_PATH, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT } from "../core/config.ts";
 import type { HarnessSnapshot } from "../core/orchestrate/supervisor.ts";
-import { appendStatusEvent, eventsPath, readJournalLinesFrom, readRecentEvents } from "../core/events.ts";
+import { appendStatusEvent, eventsPath, readJournalLinesFrom, readRecentEvents, setActorOverride } from "../core/events.ts";
 import { listTaskLocks } from "../core/orchestrate/lock.ts";
 import { defaultHarnessLogReader } from "../core/harness_log.ts";
 import { taskPath } from "./serve_url.ts";
@@ -249,7 +249,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Ser
       res.end("Mutations disabled: server is not bound to loopback. Restart with --host 127.0.0.1.");
       return;
     }
-    if (!isSameOrigin(req.headers)) {
+    // /api/cli is the forwarded-CLI channel: those requests carry no Origin
+    // (browsers ALWAYS attach one to cross-origin POSTs, so origin-less means
+    // a non-browser local client). Everything else keeps the same-origin gate.
+    const isCliForward = url.pathname === "/api/cli";
+    const originless = !req.headers.origin && !req.headers.referer;
+    if (!(isCliForward && originless) && !isSameOrigin(req.headers)) {
       res.writeHead(403, { "content-type": "text/plain" });
       res.end("Refused: same-origin check failed (missing or mismatched Origin/Referer).");
       return;
@@ -265,7 +270,29 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Ser
         return;
       }
     }
-    const apiResult = routeApiMutation(url.pathname, fields, runCli);
+    if (isCliForward) {
+      // Two trees can share the default port (throwaway trees, tests). The
+      // daemon only writes ITS tree — a root mismatch tells the caller to
+      // execute locally instead.
+      const callerRoot = (fields as Record<string, unknown> | null)?.root;
+      if (typeof callerRoot !== "string" || callerRoot !== findRoot()) {
+        res.writeHead(409, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "daemon serves a different tree" }));
+        return;
+      }
+      // Journal the CALLER's identity, not the daemon's env. The mutation
+      // path is synchronous, so the override can't leak across requests.
+      const actor = (fields as Record<string, unknown>).actor;
+      const argv = (fields as Record<string, unknown>).argv;
+      console.error(`tpm serve: cli-forward ${Array.isArray(argv) ? argv.join(" ") : "?"} (actor: ${typeof actor === "string" ? actor : "cli"})`);
+      setActorOverride(typeof actor === "string" && actor ? actor : null);
+    }
+    let apiResult;
+    try {
+      apiResult = routeApiMutation(url.pathname, fields, runCli);
+    } finally {
+      if (isCliForward) setActorOverride(null);
+    }
     if (apiResult) {
       res.writeHead(apiResult.status, { "content-type": "application/json" });
       res.end(apiResult.body);
