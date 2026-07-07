@@ -80,12 +80,6 @@ function git(cwd: string, ...args: string[]): string {
 // ---- fixture plumbing ---------------------------------------------------------
 
 function writeTree(env: GoldenEnv, opts: { type: string; title: string; context: string; notes: string }): void {
-  mkdirSync(join(env.home, ".tpm"), { recursive: true });
-  // Notifications off: eval runs must not ping the desktop.
-  writeFileSync(join(env.home, ".tpm", "config.json"), JSON.stringify({
-    root: env.root,
-    notifications: { start: false, finish: false, fail: false },
-  }));
   mkdirSync(join(env.root, ".tpm"), { recursive: true });
   const proj = join(env.root, "golden");
   mkdirSync(join(proj, "tasks", env.slug), { recursive: true });
@@ -93,6 +87,10 @@ function writeTree(env: GoldenEnv, opts: { type: string; title: string; context:
 name: Golden
 slug: golden
 status: active
+notifications:
+  start: false
+  finish: false
+  fail: false
 repo:
   remote: ${env.bareDir}
   local: ${env.repoDir}
@@ -133,6 +131,20 @@ ${opts.context}
 
 function initRepo(env: GoldenEnv, files: Record<string, string>): void {
   mkdirSync(env.repoDir, { recursive: true });
+  // Production repos ship a repo-scoped permission allowlist (task 091 /
+  // PR #147); without one, a non-interactive agent in a fresh scratch repo
+  // can't run anything and exits with zero tool calls.
+  files = {
+    ...files,
+    ".claude/settings.json": JSON.stringify({
+      permissions: {
+        allow: [
+          "Bash(git:*)", "Bash(node:*)", "Bash(npm:*)", "Bash(tpm:*)",
+          "Bash(cat:*)", "Bash(ls:*)", "Bash(sed:*)", "Bash(grep:*)", "Bash(rg:*)",
+        ],
+      },
+    }, null, 2) + "\n",
+  };
   git(env.repoDir, "init", "-q", "-b", "main");
   git(env.repoDir, "config", "user.email", "evals@tpm");
   git(env.repoDir, "config", "user.name", "tpm evals");
@@ -293,15 +305,12 @@ export interface GoldenRunOpts {
 function childEnv(env: GoldenEnv, opts: GoldenRunOpts): NodeJS.ProcessEnv {
   return {
     ...process.env,
-    HOME: env.home,
-    USERPROFILE: env.home,
+    TPM_ROOT: env.root,
     TPM_NO_DAEMON: "1",
     // The claim (next --claim) and the dispatch (orchestrate --task) must
     // share one agent identity — the per-task lock is keyed on it.
     TPM_AGENT_ID: "evals-runner",
-    // HOME is faked for tpm-tree isolation, but the real agent CLI keeps its
-    // auth/settings under the REAL ~/.claude — point it there explicitly.
-    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
+
     ...(opts.agentBin ? { CLAUDE_BIN: opts.agentBin } : {}),
     ...(opts.model ? { TPM_AGENT_MODEL: opts.model } : {}),
   };
