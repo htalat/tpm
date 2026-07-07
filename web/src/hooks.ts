@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { StatusEvent } from "./types";
 
 // Load-once-then-revalidate data hook. `deps` re-triggers; `refresh` is the
 // imperative knob mutations + SSE use. Keeps the last good value during
@@ -32,21 +33,48 @@ export function useData<T>(loader: () => Promise<T>, deps: unknown[] = []) {
     refresh();
   }, [refresh]);
 
-  return { data, error, loading, refresh };
+  // In-place patch for push updates (SSE): callers apply what the event
+  // says immediately and reconcile with a debounced refetch.
+  const mutate = useCallback((updater: (current: T) => T) => {
+    setData(current => (current === null ? current : updater(current)));
+  }, []);
+
+  return { data, error, loading, refresh, mutate };
 }
 
-// Subscribe to the status-journal SSE stream and invoke `onEvent` per journal
-// message. The server heartbeats every 25s; EventSource auto-reconnects.
-// Named-event contract mirrors the SSR live script: journal entries arrive as
-// `event: status`, harness edges as `event: harness`.
-export function useSse(onEvent: () => void) {
-  const cb = useRef(onEvent);
-  cb.current = onEvent;
+// Trailing-edge debounce that survives re-renders. Bulk operations emit one
+// journal line per task — the reconcile refetch should fire once per burst.
+export function useDebounced(fn: () => void, ms: number): () => void {
+  const cb = useRef(fn);
+  cb.current = fn;
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  return useCallback(() => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => cb.current(), ms);
+  }, [ms]);
+}
+
+// Subscribe to the status-journal SSE stream. Journal entries arrive as
+// `event: status` with the StatusEventRecord line as data; harness edges as
+// `event: harness`. The server heartbeats every 25s; EventSource reconnects.
+export type SseMessage =
+  | { kind: "status"; event: StatusEvent }
+  | { kind: "harness" };
+
+export function useSse(onMessage: (msg: SseMessage) => void) {
+  const cb = useRef(onMessage);
+  cb.current = onMessage;
   useEffect(() => {
     const source = new EventSource("/events");
-    const handler = () => cb.current();
-    source.addEventListener("status", handler);
-    source.addEventListener("harness", handler);
+    source.addEventListener("status", (ev: MessageEvent) => {
+      try {
+        cb.current({ kind: "status", event: JSON.parse(ev.data) as StatusEvent });
+      } catch {
+        // torn line — the debounced reconcile still runs via the next event
+      }
+    });
+    source.addEventListener("harness", () => cb.current({ kind: "harness" }));
     return () => source.close();
   }, []);
 }

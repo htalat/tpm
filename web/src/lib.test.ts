@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { backendIsStale, flatTasks, intersectCaps, shortStamp, taskHref } from "./lib";
+import { backendIsStale, flatTasks, intersectCaps, patchTaskStatus, shortStamp, taskHref } from "./lib";
 import type { TaskSummary } from "./types";
 
 function task(slug: string, segments: string[], children: TaskSummary[] = []): TaskSummary {
@@ -65,5 +65,17 @@ describe("backendIsStale", () => {
     expect(backendIsStale({ apiVersion: 2 })).toBe(false);
     expect(backendIsStale({ apiVersion: 99 })).toBe(false);
     expect(backendIsStale(null)).toBe(false);
+  });
+});
+
+describe("patchTaskStatus", () => {
+  it("updates the matching task (nested too) and leaves identity alone otherwise", () => {
+    const tree = [task("a", ["p", "a"], [task("b", ["p", "a", "b"])]), task("c", ["p", "c"])];
+    const next = patchTaskStatus(tree, "p/a/b", "review");
+    expect(next[0].children[0].status).toBe("review");
+    expect(next[0].children[0].ownStatus).toBe("review");
+    expect(next[1]).toBe(tree[1]); // untouched subtree keeps identity
+    const noHit = patchTaskStatus(tree, "p/zzz", "done");
+    expect(noHit).toBe(tree); // no match -> same reference, no re-render
   });
 });

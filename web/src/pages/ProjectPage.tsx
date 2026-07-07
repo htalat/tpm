@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import { useData, useRevalidateOnFocus, useSse } from "../hooks";
+import { useData, useDebounced, useRevalidateOnFocus, useSse } from "../hooks";
 import { Empty, SectionCard, StatusBadge, TaskRow, useFlash } from "../components";
 import { flatTasks } from "../lib";
 import { useBulk } from "../bulk";
@@ -18,7 +18,11 @@ export default function ProjectPage() {
   const [params, setParams] = useSearchParams();
   const showArchived = params.get("archived") === "1";
   const detail = useData(() => api.project(slug, showArchived), [slug, showArchived]);
-  useSse(detail.refresh);
+  const reconcile = useDebounced(detail.refresh, 1_200);
+  useSse(msg => {
+    if (msg.kind === "harness") return;
+    if (msg.event.task.startsWith(`${slug}/`)) reconcile();
+  });
   useRevalidateOnFocus(detail.refresh);
 
   const allTasks = detail.data ? flatTasks(detail.data.tasks).filter(t => !t.isParent) : [];

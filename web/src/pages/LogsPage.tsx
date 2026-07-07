@@ -16,7 +16,7 @@ export default function LogsPage() {
   const [category, setCategory] = useState<"" | "orchestrate" | "poller">("");
   const [lines, setLines] = useState(200);
   const feed = useData(() => api.logs(category || undefined, lines), [category, lines]);
-  useSse(feed.refresh);
+  useSse(() => feed.refresh());
   useRevalidateOnFocus(feed.refresh);
 
   return (
