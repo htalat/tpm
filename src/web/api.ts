@@ -1,6 +1,6 @@
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import type { Project, Task } from "../core/tree.ts";
-import { flatTasks, isParent, rollupStatus, taskHasReport } from "../core/tree.ts";
+import { flatTasks, isParent, rollupStatus, taskHasReport, taskReportPath } from "../core/tree.ts";
 import { inboxItems, selectCandidates, qualifyTaskSlug } from "../core/queue.ts";
 import { findTask } from "../core/resolve.ts";
 import { resolveRepo } from "../core/context.ts";
@@ -318,6 +318,18 @@ function projectSummary(
   };
 }
 
+// The report artifact (investigation deliverable) rides the detail payload —
+// raw + server-rendered html, like body sections. Null when absent/unreadable.
+function readReport(task: Task): { raw: string; html: string } | null {
+  if (!taskHasReport(task)) return null;
+  try {
+    const raw = readFileSync(taskReportPath(task), "utf8");
+    return { raw, html: renderMarkdown(raw) };
+  } catch {
+    return null;
+  }
+}
+
 function sectionsOf(body: string): Array<{ heading: string | null; raw: string; html: string }> {
   return splitBodyAtH2(body).map(s => ({
     heading: s.heading,
@@ -382,6 +394,7 @@ export function routeApi(
       project: { slug: project.slug, name: str(project.data.name) ?? project.slug },
       sections: sectionsOf(task.body),
       sessionId: opts.sessionId ? opts.sessionId(task) : (str(task.data.session_id) ?? null),
+      report: readReport(task),
       prDetails: (Array.isArray(task.data.prs) ? (task.data.prs as unknown[]).map(String) : [])
         .map(url => prDigest(url, opts.prCache ? opts.prCache(url) : null, Date.now())),
       mtimeMs,

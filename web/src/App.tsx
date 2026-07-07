@@ -15,7 +15,7 @@ export default function App() {
   return (
     <BrowserRouter basename="/app">
       <FlashProvider>
-        <div className="mx-auto max-w-5xl px-4 py-6 text-neutral-900 dark:text-neutral-100">
+        <div className="mx-auto max-w-5xl px-4 py-6 text-ink">
           <Masthead />
           <Routes>
             <Route path="/" element={<IndexPage />} />
@@ -26,7 +26,7 @@ export default function App() {
             {/* Task paths nest arbitrarily (project/parent/child) — match the
                 wildcard and let the pages split the slug path themselves. */}
             <Route path="/t/*" element={<TaskOrRuns />} />
-            <Route path="*" element={<p className="text-sm text-neutral-500">Not found.</p>} />
+            <Route path="*" element={<p className="text-sm text-muted">Not found.</p>} />
           </Routes>
         </div>
       </FlashProvider>

@@ -13,8 +13,8 @@ export default function RunsPage() {
   const segments = useLocation().pathname.replace(/^\/t\//, "").replace(/\/runs$/, "").split("/").map(decodeURIComponent);
   const feed = useData(() => api.runs(segments), [segments.join("/")]);
 
-  if (feed.error) return <p className="text-sm text-red-600">Failed to load: {feed.error}</p>;
-  if (!feed.data) return <p className="text-sm text-neutral-500">Loading…</p>;
+  if (feed.error) return <p className="text-sm text-danger">Failed to load: {feed.error}</p>;
+  if (!feed.data) return <p className="text-sm text-muted">Loading…</p>;
   const { runs, latest } = feed.data;
   const taskPath = `/t/${segments.map(encodeURIComponent).join("/")}`;
 
@@ -22,9 +22,9 @@ export default function RunsPage() {
     <div className="flex flex-col gap-4">
       <header className="flex items-center gap-3">
         <h1 className="text-xl font-semibold">Runs</h1>
-        <span className="font-mono text-sm text-neutral-400">{segments.join("/")}</span>
+        <span className="font-mono text-sm text-faint">{segments.join("/")}</span>
         <span className="flex-1" />
-        <Link to={taskPath} className="text-sm text-blue-600 hover:underline dark:text-blue-400">Back to task →</Link>
+        <Link to={taskPath} className="text-sm text-accent hover:underline">Back to task →</Link>
       </header>
 
       {latest ? (
@@ -35,12 +35,12 @@ export default function RunsPage() {
 
       <SectionCard title="All runs" meta={`${runs.length}`}>
         {runs.length === 0 ? <Empty text="None." /> : (
-          <ul className="divide-y divide-neutral-100 text-sm dark:divide-neutral-900">
+          <ul className="divide-y divide-hairline text-sm">
             {runs.map(r => (
               <li key={r.name} className="flex items-center gap-3 px-3 py-1.5">
                 <a href={`${taskPath.replace("/app", "")}/runs/${encodeURIComponent(r.name)}`}
-                   className="font-mono text-xs text-blue-600 hover:underline dark:text-blue-400">{r.name}</a>
-                <span className="text-xs text-neutral-400">{r.timestamp}</span>
+                   className="font-mono text-xs text-accent hover:underline">{r.name}</a>
+                <span className="text-xs text-faint">{r.timestamp}</span>
               </li>
             ))}
           </ul>
@@ -79,7 +79,7 @@ function LiveRunPanel({ latest }: { latest: NonNullable<Awaited<ReturnType<typeo
       meta={<span className="font-mono">{latest.name}{running && <span className="ml-2 inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-500 align-middle" />}</span>}
     >
       {latest.skipped > 0 && (
-        <p className="px-3 pt-2 text-xs text-amber-600">{latest.parsed} events parsed, {latest.skipped} skipped — file may be truncated.</p>
+        <p className="px-3 pt-2 text-xs text-warn">{latest.parsed} events parsed, {latest.skipped} skipped — file may be truncated.</p>
       )}
       <div className="max-h-[32rem] overflow-y-auto px-3 py-2">
         {latest.html === "" && !running ? (
@@ -88,10 +88,10 @@ function LiveRunPanel({ latest }: { latest: NonNullable<Awaited<ReturnType<typeo
           <ol ref={listRef} className="run-events flex flex-col gap-1 text-sm" dangerouslySetInnerHTML={{ __html: latest.html }} />
         )}
       </div>
-      <p className="border-t border-neutral-200 px-3 py-1.5 text-xs dark:border-neutral-800">
-        {latest.totalEvents > latest.shownEvents && <span className="text-neutral-400">showing last {latest.shownEvents} of {latest.totalEvents} events · </span>}
-        {latest.sessionId && <span className="text-neutral-400">session <code className="select-all">{latest.sessionId}</code> · </span>}
-        <a href={latest.rawPath} className="text-blue-600 hover:underline dark:text-blue-400">View raw log →</a>
+      <p className="border-t border-edge px-3 py-1.5 text-xs">
+        {latest.totalEvents > latest.shownEvents && <span className="text-faint">showing last {latest.shownEvents} of {latest.totalEvents} events · </span>}
+        {latest.sessionId && <span className="text-faint">session <code className="select-all">{latest.sessionId}</code> · </span>}
+        <a href={latest.rawPath} className="text-accent hover:underline">View raw log →</a>
       </p>
     </SectionCard>
   );

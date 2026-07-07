@@ -61,6 +61,7 @@ export interface TaskDetail extends TaskSummary {
   project: { slug: string; name: string };
   sections: Section[];
   sessionId: string | null;
+  report: { raw: string; html: string } | null;
   prDetails: PrDigest[];
   mtimeMs: number;
 }

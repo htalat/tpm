@@ -62,12 +62,12 @@ export function FlashProvider({ children }: { children: ReactNode }) {
 
 export function TaskRow({ task, actions }: { task: TaskSummary; actions?: ReactNode }) {
   return (
-    <div className="flex items-center gap-3 border-b border-neutral-200 px-2 py-1.5 text-sm last:border-0 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-900">
+    <div className="flex items-center gap-3 border-b border-edge px-2 py-1.5 text-sm last:border-0 hover:bg-surface-hover">
       <StatusBadge status={task.status} />
-      <Link to={taskHref(task)} className="shrink-0 font-mono text-[13px] text-blue-700 hover:underline dark:text-blue-400">
+      <Link to={taskHref(task)} className="shrink-0 font-mono text-[13px] text-accent hover:underline">
         {task.qualifiedSlug}
       </Link>
-      <span className="min-w-0 flex-1 truncate text-neutral-700 dark:text-neutral-300">{task.title}</span>
+      <span className="min-w-0 flex-1 truncate text-ink/90">{task.title}</span>
       {task.lock && (
         <span title={`held by ${task.lock.agentId} (pid ${task.lock.pid}) since ${task.lock.acquired}`}
               className="rounded bg-amber-100 px-1.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
@@ -76,12 +76,12 @@ export function TaskRow({ task, actions }: { task: TaskSummary; actions?: ReactN
       )}
       {task.prs.length > 0 && (
         <a href={task.prs[task.prs.length - 1]} target="_blank" rel="noreferrer"
-           className="rounded bg-neutral-100 px-1.5 text-xs text-neutral-600 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700">
+           className="rounded bg-hairline px-1.5 text-xs text-muted hover:bg-edge">
           PR{task.prs.length > 1 ? ` ×${task.prs.length}` : ""}
         </a>
       )}
       {task.type === "investigation" && (
-        <span className="rounded bg-neutral-100 px-1.5 text-xs text-neutral-500 dark:bg-neutral-800 dark:text-neutral-500">inv</span>
+        <span className="rounded bg-hairline px-1.5 text-xs text-muted">inv</span>
       )}
       {actions}
     </div>
@@ -92,10 +92,10 @@ export function TaskRow({ task, actions }: { task: TaskSummary; actions?: ReactN
 
 export function SectionCard({ title, meta, children }: { title: string; meta?: ReactNode; children: ReactNode }) {
   return (
-    <section className="rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950">
-      <header className="flex items-baseline justify-between border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
-        <h2 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">{title}</h2>
-        {meta && <span className="text-xs text-neutral-500">{meta}</span>}
+    <section className="rounded-xl border border-edge bg-surface">
+      <header className="flex items-baseline justify-between border-b border-edge px-3 py-2">
+        <h2 className="text-sm font-semibold text-ink">{title}</h2>
+        {meta && <span className="text-xs text-muted">{meta}</span>}
       </header>
       <div>{children}</div>
     </section>
@@ -103,7 +103,7 @@ export function SectionCard({ title, meta, children }: { title: string; meta?: R
 }
 
 export function Empty({ text }: { text: string }) {
-  return <p className="px-3 py-3 text-sm text-neutral-500">{text}</p>;
+  return <p className="px-3 py-3 text-sm text-muted">{text}</p>;
 }
 
 // ---- masthead ---------------------------------------------------------------
@@ -123,7 +123,7 @@ function MastheadSearch() {
         type="search"
         name="q"
         placeholder="slug, title, status, tag, PR URL, body…"
-        className="w-full max-w-md rounded-lg border border-neutral-300 bg-white px-3 py-1 text-sm outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+        className="w-full max-w-md rounded-lg border border-edge bg-surface px-3 py-1 text-sm outline-none focus:border-accent"
       />
     </form>
   );
@@ -131,15 +131,14 @@ function MastheadSearch() {
 
 export function Masthead() {
   return (
-    <header className="mb-6 flex items-center gap-4 border-b border-neutral-200 pb-3 dark:border-neutral-800">
-      <Link to="/" className="text-lg font-bold tracking-tight text-neutral-900 dark:text-neutral-100">
+    <header className="mb-6 flex items-center gap-4 border-b border-edge pb-3">
+      <Link to="/" className="text-lg font-bold tracking-tight text-ink">
         tpm
       </Link>
       <MastheadSearch />
-      <nav className="flex items-center gap-3 text-xs text-neutral-500">
+      <nav className="flex items-center gap-3 text-xs text-muted">
         <Link to="/logs" className="hover:underline">logs</Link>
         <Link to="/config" className="hover:underline">config</Link>
-        <a href="/?classic=1" className="hover:underline" title="server-rendered pages">classic</a>
       </nav>
     </header>
   );

@@ -9,23 +9,22 @@ export default function ConfigPage() {
   const snap = useData(() => api.config(), []);
   useRevalidateOnFocus(snap.refresh);
 
-  if (snap.error) return <p className="text-sm text-red-600">Failed to load: {snap.error}</p>;
-  if (!snap.data) return <p className="text-sm text-neutral-500">Loading…</p>;
+  if (snap.error) return <p className="text-sm text-danger">Failed to load: {snap.error}</p>;
+  if (!snap.data) return <p className="text-sm text-muted">Loading…</p>;
   const cfg = snap.data.config;
 
   return (
     <div className="flex flex-col gap-4">
       <header className="flex items-center gap-3">
         <h1 className="text-xl font-semibold">Config</h1>
-        <code className="text-xs text-neutral-400">{cfg.path}</code>
+        <code className="text-xs text-faint">{cfg.path}</code>
         <span className="flex-1" />
-        <a href="/config" className="text-xs text-neutral-500 hover:underline">classic</a>
       </header>
 
       {cfg.missing && <Empty text="No config file yet — run `tpm init` to create one." />}
       {cfg.error && (
         <SectionCard title="Parse error">
-          <p className="px-3 py-2 text-sm text-red-600">{cfg.error}</p>
+          <p className="px-3 py-2 text-sm text-danger">{cfg.error}</p>
         </SectionCard>
       )}
       {cfg.parsed && (
@@ -33,7 +32,7 @@ export default function ConfigPage() {
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 px-3 py-2 text-sm">
             {Object.entries(cfg.parsed).map(([k, v]) => (
               <div key={k} className="contents">
-                <dt className="font-mono text-neutral-500">{k}</dt>
+                <dt className="font-mono text-muted">{k}</dt>
                 <dd className="min-w-0 break-all font-mono">{typeof v === "object" ? JSON.stringify(v) : String(v)}</dd>
               </div>
             ))}
