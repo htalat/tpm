@@ -70,7 +70,7 @@ export default function TaskPage() {
 
       <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
         <div className="flex flex-col gap-4">
-          {t.prDetails.length > 0 && <PrPanel prs={t.prDetails} />}
+          {t.prDetails.length > 0 && <PrPanel prs={t.prDetails} task={t} onPolled={detail.refresh} />}
           {t.report && (
             <SectionCard title="Report" meta="report.md">
               <div className="markdown px-3 py-2 text-sm" dangerouslySetInnerHTML={{ __html: t.report.html }} />
@@ -301,9 +301,30 @@ function tone(kind: string, v: string | undefined): string {
   return BADGE_TONES.meh;
 }
 
-function PrPanel({ prs }: { prs: PrDigest[] }) {
+function PrPanel({ prs, task, onPolled }: { prs: PrDigest[]; task: TaskDetail; onPolled: () => void }) {
+  const flash = useFlash();
+  const [polling, setPolling] = useState(false);
+  const pollNow = async () => {
+    setPolling(true);
+    try {
+      await api.pollPr(task.qualifiedSlug);
+      flash("ok", "polled — cache refreshed");
+    } catch (e) {
+      flash("error", e instanceof Error ? e.message : String(e));
+    }
+    setPolling(false);
+    onPolled();
+  };
   return (
-    <SectionCard title={`Pull request${prs.length === 1 ? "" : "s"}`}>
+    <SectionCard
+      title={`Pull request${prs.length === 1 ? "" : "s"}`}
+      meta={
+        <button onClick={pollNow} disabled={polling}
+                className="text-accent hover:underline disabled:opacity-50">
+          {polling ? "polling…" : "poll now"}
+        </button>
+      }
+    >
       {prs.map(pr => (
         <div key={pr.url} className="flex flex-wrap items-center gap-2 border-b border-hairline px-3 py-2 text-sm last:border-0">
           <a href={pr.url} target="_blank" rel="noreferrer" className="font-medium text-accent hover:underline">
@@ -313,9 +334,16 @@ function PrPanel({ prs }: { prs: PrDigest[] }) {
           {pr.fresh ? (
             <span className="flex gap-1.5">
               {(["state", "ci", "review", "mergeable"] as const).map(k => pr[k] && (
-                <span key={k} className={`rounded px-1.5 py-0.5 text-xs ${tone(k, pr[k])}`} title={k}>
-                  {String(pr[k]).toLowerCase()}
-                </span>
+                k === "ci" ? (
+                  <a key={k} href={`${pr.url}/checks`} target="_blank" rel="noreferrer"
+                     className={`rounded px-1.5 py-0.5 text-xs hover:underline ${tone(k, pr[k])}`} title="open checks">
+                    ci: {String(pr[k]).toLowerCase()}
+                  </a>
+                ) : (
+                  <span key={k} className={`rounded px-1.5 py-0.5 text-xs ${tone(k, pr[k])}`} title={k}>
+                    {String(pr[k]).toLowerCase()}
+                  </span>
+                )
               ))}
             </span>
           ) : (

@@ -270,6 +270,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Ser
         return;
       }
     }
+    // Per-task "poll now": one forced poller tick scoped to this task. Lives
+    // here rather than routeApiMutation because runPoll is async.
+    const pollNow = url.pathname.match(/^\/api\/tasks\/(.+)\/poll-pr$/);
+    if (pollNow) {
+      const slugPath = decodeURIComponent(pollNow[1]);
+      try {
+        const summary = await runPoll({ only: slugPath, force: true });
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, summary }));
+      } catch (e) {
+        res.writeHead(422, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+      }
+      return;
+    }
     if (isCliForward) {
       // Two trees can share the default port (throwaway trees, tests). The
       // daemon only writes ITS tree — a root mismatch tells the caller to
