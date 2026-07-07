@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+/* Status badge palette lifted verbatim from src/web/css.ts so the SPA and the
+   SSR pages read as the same product while both exist. Everything else is
+   Tailwind utilities. */
+
+.badge {
+  display: inline-block;
+  padding: 1px 9px;
+  border-radius: 12px;
+  font-size: 0.78em;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.s-open { background: #ddf4ff; color: #0969da; }
+.s-ready { background: #ddf0ff; color: #6639ba; }
+.s-in-progress { background: #fff8c5; color: #9a6700; }
+.s-rework { background: #ffe7d6; color: #b75500; }
+.s-closing { background: #d9f7be; color: #2f6f1a; }
+.s-review { background: #ffe6f0; color: #b03060; }
+.s-blocked { background: #ffebe9; color: #cf222e; }
+.s-done, .s-active { background: #dafbe1; color: #1a7f37; }
+.s-dropped, .s-archived, .s-paused, .s-unknown { background: #eaeef2; color: #57606a; }
+
+@media (prefers-color-scheme: dark) {
+  .s-open { background: #033158; color: #79c0ff; }
+  .s-ready { background: #2e1a5e; color: #b392f0; }
+  .s-in-progress { background: #4d3a00; color: #e3b341; }
+  .s-rework { background: #4d2a00; color: #ffa657; }
+  .s-closing { background: #1d3a14; color: #7ee787; }
+  .s-review { background: #4d1535; color: #ff7eb6; }
+  .s-blocked { background: #5d1a1a; color: #ff7b72; }
+  .s-done, .s-active { background: #0f3d1f; color: #56d364; }
+  .s-dropped, .s-archived, .s-paused, .s-unknown { background: #21262d; color: #8d96a0; }
+}
+
+/* Server-rendered markdown (task/project sections arrive as html). */
+.markdown h1 { @apply text-xl font-semibold mt-4 mb-2; }
+.markdown h2 { @apply text-lg font-semibold mt-4 mb-2; }
+.markdown h3 { @apply text-base font-semibold mt-3 mb-1; }
+.markdown p { @apply my-2 leading-relaxed; }
+.markdown ul { @apply list-disc pl-6 my-2; }
+.markdown ol { @apply list-decimal pl-6 my-2; }
+.markdown li { @apply my-0.5; }
+.markdown code { @apply rounded bg-neutral-100 px-1 py-0.5 text-[0.9em] dark:bg-neutral-800; }
+.markdown pre { @apply my-2 overflow-x-auto rounded bg-neutral-100 p-3 text-sm dark:bg-neutral-900; }
+.markdown pre code { @apply bg-transparent p-0; }
+.markdown a { @apply text-blue-600 hover:underline dark:text-blue-400; }
+.markdown blockquote { @apply my-2 border-l-2 border-neutral-300 pl-3 text-neutral-600 dark:border-neutral-700 dark:text-neutral-400; }

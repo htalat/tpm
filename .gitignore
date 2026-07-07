@@ -5,3 +5,4 @@ reports/
 .claude/scheduled_tasks.lock
 tmp/*
 !tmp/.gitkeep
+web/dist/
