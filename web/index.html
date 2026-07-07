@@ -4,6 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>tpm</title>
+    <script>
+      // Apply the stored theme before the bundle loads so there's no flash.
+      // "system" (or anything unrecognized) leaves the attribute off and
+      // color-scheme follows the OS.
+      try {
+        var t = localStorage.getItem("tpm-theme");
+        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

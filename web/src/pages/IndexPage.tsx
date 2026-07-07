@@ -126,10 +126,10 @@ function HarnessPanel({ harness, onChanged }: { harness: { desiredWorkers?: numb
   const workers = harness.desiredWorkers ?? 0;
   const state = harness.poolDied ? "pool died" : harness.stopping ? "draining" : workers === 0 ? "paused" : "running";
   const stateCls = harness.poolDied
-    ? "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300"
+    ? "bg-danger-soft text-danger"
     : workers === 0
       ? "bg-hairline text-muted"
-      : "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300";
+      : "bg-ok-soft text-ok";
 
   const setWorkers = async (n: number) => {
     if (n < 0 || n > 16) return;

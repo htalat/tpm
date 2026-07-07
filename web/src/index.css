@@ -5,39 +5,33 @@
    utilities reference them via @theme inline, so components never spell
    light/dark pairs by hand. */
 :root {
-  --canvas: #f6f8fa;
-  --surface: #ffffff;
-  --surface-hover: #f3f6f9;
-  --edge: #d0d7de;
-  --hairline: #eaeef2;
-  --ink: #1f2328;
-  --muted: #57606a;
-  --faint: #8d96a0;
-  --accent: #0969da;
-  --accent-solid: #0969da;
+  /* The toggle stamps data-theme on <html>; "system" leaves it unset so
+     `light dark` follows the OS. Every token resolves via light-dark(), so
+     one attribute flips the whole app (form controls included). */
+  color-scheme: light dark;
+
+  --canvas: light-dark(#f6f8fa, #0d1117);
+  --surface: light-dark(#ffffff, #161b22);
+  --surface-hover: light-dark(#f3f6f9, #1c2128);
+  --edge: light-dark(#d0d7de, #30363d);
+  --hairline: light-dark(#eaeef2, #21262d);
+  --ink: light-dark(#1f2328, #e6edf3);
+  --muted: light-dark(#57606a, #8d96a0);
+  --faint: light-dark(#8d96a0, #6e7681);
+  --accent: light-dark(#0969da, #79c0ff);
+  --accent-solid: light-dark(#0969da, #1f6feb);
   --on-accent: #ffffff;
-  --danger: #cf222e;
-  --ok: #1a7f37;
-  --warn: #9a6700;
+  --danger: light-dark(#cf222e, #ff7b72);
+  --ok: light-dark(#1a7f37, #56d364);
+  --warn: light-dark(#9a6700, #e3b341);
+  /* Soft chip backgrounds (pair with --danger/--ok/--warn text). */
+  --danger-soft: light-dark(#ffebe9, #5d1a1a);
+  --ok-soft: light-dark(#dafbe1, #0f3d1f);
+  --warn-soft: light-dark(#fff8c5, #4d3a00);
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --canvas: #0d1117;
-    --surface: #161b22;
-    --surface-hover: #1c2128;
-    --edge: #30363d;
-    --hairline: #21262d;
-    --ink: #e6edf3;
-    --muted: #8d96a0;
-    --faint: #6e7681;
-    --accent: #79c0ff;
-    --accent-solid: #1f6feb;
-    --on-accent: #ffffff;
-    --danger: #ff7b72;
-    --ok: #56d364;
-    --warn: #e3b341;
-  }
-}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+
 @theme inline {
   --color-canvas: var(--canvas);
   --color-surface: var(--surface);
@@ -53,6 +47,9 @@
   --color-danger: var(--danger);
   --color-ok: var(--ok);
   --color-warn: var(--warn);
+  --color-danger-soft: var(--danger-soft);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn-soft: var(--warn-soft);
 }
 
 body {
@@ -72,27 +69,15 @@ body {
   font-weight: 500;
   white-space: nowrap;
 }
-.s-open { background: #ddf4ff; color: #0969da; }
-.s-ready { background: #ddf0ff; color: #6639ba; }
-.s-in-progress { background: #fff8c5; color: #9a6700; }
-.s-rework { background: #ffe7d6; color: #b75500; }
-.s-closing { background: #d9f7be; color: #2f6f1a; }
-.s-review { background: #ffe6f0; color: #b03060; }
-.s-blocked { background: #ffebe9; color: #cf222e; }
-.s-done, .s-active { background: #dafbe1; color: #1a7f37; }
-.s-dropped, .s-archived, .s-paused, .s-unknown { background: #eaeef2; color: #57606a; }
-
-@media (prefers-color-scheme: dark) {
-  .s-open { background: #033158; color: #79c0ff; }
-  .s-ready { background: #2e1a5e; color: #b392f0; }
-  .s-in-progress { background: #4d3a00; color: #e3b341; }
-  .s-rework { background: #4d2a00; color: #ffa657; }
-  .s-closing { background: #1d3a14; color: #7ee787; }
-  .s-review { background: #4d1535; color: #ff7eb6; }
-  .s-blocked { background: #5d1a1a; color: #ff7b72; }
-  .s-done, .s-active { background: #0f3d1f; color: #56d364; }
-  .s-dropped, .s-archived, .s-paused, .s-unknown { background: #21262d; color: #8d96a0; }
-}
+.s-open { background: light-dark(#ddf4ff, #033158); color: light-dark(#0969da, #79c0ff); }
+.s-ready { background: light-dark(#ddf0ff, #2e1a5e); color: light-dark(#6639ba, #b392f0); }
+.s-in-progress { background: light-dark(#fff8c5, #4d3a00); color: light-dark(#9a6700, #e3b341); }
+.s-rework { background: light-dark(#ffe7d6, #4d2a00); color: light-dark(#b75500, #ffa657); }
+.s-closing { background: light-dark(#d9f7be, #1d3a14); color: light-dark(#2f6f1a, #7ee787); }
+.s-review { background: light-dark(#ffe6f0, #4d1535); color: light-dark(#b03060, #ff7eb6); }
+.s-blocked { background: light-dark(#ffebe9, #5d1a1a); color: light-dark(#cf222e, #ff7b72); }
+.s-done, .s-active { background: light-dark(#dafbe1, #0f3d1f); color: light-dark(#1a7f37, #56d364); }
+.s-dropped, .s-archived, .s-paused, .s-unknown { background: light-dark(#eaeef2, #21262d); color: light-dark(#57606a, #8d96a0); }
 
 /* Server-rendered markdown (task/project sections arrive as html). */
 .markdown h1 { font-size: 1.25rem; font-weight: 600; margin: 1rem 0 0.5rem; }
