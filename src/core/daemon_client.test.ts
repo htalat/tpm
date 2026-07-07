@@ -33,10 +33,10 @@ test("tryDaemon: forwards argv + actor + root and returns the CommandResult", as
     return { status: 200, body: JSON.stringify({ ok: true, stdout: "from daemon", stderr: "" }) };
   });
   try {
-    const r = await tryDaemon(["ready", "demo/001"], base);
+    const r = await tryDaemon(["ready", "demo/001"], { base, root: "/e2e/tree" });
     assert.deepEqual(r, { ok: true, stdout: "from daemon", stderr: "" });
     assert.deepEqual(seen!.argv, ["ready", "demo/001"]);
-    assert.equal(typeof seen!.root, "string");
+    assert.equal(seen!.root, "/e2e/tree");
     assert.equal(typeof seen!.actor, "string");
   } finally {
     server.close();
@@ -47,7 +47,7 @@ test("tryDaemon: 404 (older daemon) and 409 (different tree) fall back to null",
   for (const status of [404, 409]) {
     const { server, base } = await serverOn(() => ({ status, body: "{}" }));
     try {
-      assert.equal(await tryDaemon(["ready", "x"], base), null);
+      assert.equal(await tryDaemon(["ready", "x"], { base, root: "/e2e/tree" }), null);
     } finally {
       server.close();
     }
@@ -55,10 +55,10 @@ test("tryDaemon: 404 (older daemon) and 409 (different tree) fall back to null",
 });
 
 test("tryDaemon: no listener and malformed payloads fall back to null", async () => {
-  assert.equal(await tryDaemon(["ready", "x"], "http://127.0.0.1:1"), null);
+  assert.equal(await tryDaemon(["ready", "x"], { base: "http://127.0.0.1:1", root: "/e2e/tree" }), null);
   const { server, base } = await serverOn(() => ({ status: 200, body: '{"weird": true}' }));
   try {
-    assert.equal(await tryDaemon(["ready", "x"], base), null);
+    assert.equal(await tryDaemon(["ready", "x"], { base, root: "/e2e/tree" }), null);
   } finally {
     server.close();
   }
@@ -67,7 +67,7 @@ test("tryDaemon: no listener and malformed payloads fall back to null", async ()
 test("tryDaemon: TPM_NO_DAEMON forces local execution", async () => {
   process.env.TPM_NO_DAEMON = "1";
   try {
-    assert.equal(await tryDaemon(["ready", "x"], "http://127.0.0.1:1"), null);
+    assert.equal(await tryDaemon(["ready", "x"], { base: "http://127.0.0.1:1", root: "/e2e/tree" }), null);
   } finally {
     delete process.env.TPM_NO_DAEMON;
   }

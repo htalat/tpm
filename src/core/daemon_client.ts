@@ -11,16 +11,21 @@ import type { CommandResult } from "./commands.ts";
 // TPM_NO_DAEMON=1 forces local execution — used by tests and as the escape
 // hatch if the daemon misbehaves.
 
-export async function tryDaemon(argv: string[], baseOverride?: string): Promise<CommandResult | null> {
+// `overrides` is a test seam: config/tree resolution binds to HOME at import
+// time, so specs inject base+root instead of repointing the environment.
+export async function tryDaemon(
+  argv: string[],
+  overrides: { base?: string; root?: string } = {},
+): Promise<CommandResult | null> {
   if (process.env.TPM_NO_DAEMON) return null;
   let base: string;
   let root: string;
   try {
-    base = baseOverride ?? serveBaseUrl(readConfig());
+    base = overrides.base ?? serveBaseUrl(readConfig());
     // The daemon executes against ITS root. Sending ours lets it refuse when
     // two trees share the default port (throwaway trees, tests) — a 409 means
     // "not your tree", and local execution is the correct writer.
-    root = findRoot();
+    root = overrides.root ?? findRoot();
   } catch {
     return null; // unreadable config / no tree — local execution surfaces it
   }
