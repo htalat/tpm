@@ -148,6 +148,7 @@ export interface VocabEntry {
 }
 
 export interface Vocab {
+  apiVersion?: number; // absent on pre-versioning backends
   statuses: VocabEntry[];
   types: string[];
   mutationActions: string[];
