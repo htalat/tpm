@@ -189,16 +189,30 @@ export function addPr(task: Task, url: string): MutateResult {
   const trimmed = url.trim();
   const { data, body } = readParsed(task);
   const existing = Array.isArray(data.prs) ? (data.prs as unknown[]).map(String) : [];
-  if (existing.includes(trimmed)) {
-    return { message: `${task.slug}: PR already linked (${trimmed})` };
+  const alreadyLinked = existing.includes(trimmed);
+
+  // Append the URL only if it's new. A *different* URL on top of an existing
+  // one is a supported action, not a dedupe target: a stacked-base merge can
+  // auto-close a PR, so the agent opens a fresh one and re-runs `tpm pr`
+  // (agrotech 002 / PR #11 -> #12). The log line names the supersede so the
+  // audit trail shows which PR is current.
+  let newBody = body;
+  let appended = false;
+  if (!alreadyLinked) {
+    data.prs = [...existing, trimmed];
+    const verb = existing.length ? "linked additional PR" : "opened PR";
+    newBody = appendLog(newBody, `${now()}: ${verb} ${trimmed}`);
+    appended = true;
   }
-  data.prs = [...existing, trimmed];
-  let newBody = appendLog(body, `${now()}: opened PR ${trimmed}`);
-  // Attaching a PR is the agent's handoff: next move is on the human
-  // (review + merge). Flip in-progress -> review so the task lands in
-  // `tpm inbox`. Other statuses are left alone — rework means a
-  // round is still in flight, review/blocked are already on the
-  // human side, terminal states shouldn't transition.
+
+  // The status flip is INDEPENDENT of whether the URL was new. Re-running
+  // `tpm pr` with an already-linked URL must still advance in-progress ->
+  // review: agents routinely write `prs:` themselves before calling the
+  // CLI, and the old short-circuit on a duplicate URL skipped the flip — so
+  // they fell back to raw `tpm status` (run-log theme 3). Flip is idempotent:
+  // it only fires from in-progress; rework means a round is still in
+  // flight, review/blocked are already on the human side, and terminal
+  // states shouldn't transition.
   const current = String(data.status ?? "");
   let flipped = false;
   if (current === "in-progress") {
@@ -207,14 +221,62 @@ export function addPr(task: Task, url: string): MutateResult {
     newBody = appendLog(newBody, `${now()}: status -> review (PR opened, awaiting review)`);
     flipped = true;
   }
+
+  // Skip the write when nothing changed so a true no-op stays byte-identical
+  // idempotent (matches `tpm report`'s contract).
+  if (appended || flipped) {
+    atomicWriteFileSync(task.path, stringify(data, newBody));
+    syncInMemory(task, data, newBody);
+  }
+  if (flipped) emitStatusChange(task, current, "review", "PR opened, awaiting review");
+
+  if (flipped) {
+    const terminus = "\n✓ PR opened. Your turn is complete — exit. The poller closes the task when the PR merges; do not poll CI from this run.";
+    return { message: `${task.slug}: linked ${trimmed} — status -> review${terminus}` };
+  }
+  if (appended) {
+    // URL added but status was already past in-progress — no flip to make.
+    return { message: `${task.slug}: linked ${trimmed} (status: ${current || "?"} — unchanged)` };
+  }
+  // Genuine no-op: URL already linked and status not in-progress. Name the
+  // exact follow-up instead of leaving the agent to guess (it used to hunt
+  // through `tpm --help` for "the right status command").
+  if (current === "review") {
+    return { message: `${task.slug}: PR already linked (${trimmed}); status already review — handed off, nothing to do.` };
+  }
+  return {
+    message: `${task.slug}: PR already linked (${trimmed}); status is ${current || "?"}, not in-progress — no flip. ` +
+      `To re-flag for review run \`tpm review ${task.slug}\`.`,
+  };
+}
+
+// `tpm review <task>` — the discoverable verb for the in-progress ->
+// review hand-off, decoupled from attaching a PR. Mirrors the flip
+// inside `addPr` so an agent that already linked its PR (or had one reopened
+// out from under it) has a named command instead of grepping `cli.ts` for
+// `VALID_STATUSES` and falling back to raw `tpm status` (run-log theme 3,
+// task 147). Idempotent on the target state; rejects other source states with
+// a message that names why.
+export function review(task: Task): MutateResult {
+  guardArchived(task);
+  const { data, body } = readParsed(task);
+  const current = String(data.status ?? "");
+  if (current === "review") {
+    return { message: `${task.slug}: already review — nothing to do` };
+  }
+  if (current !== "in-progress") {
+    throw new Error(
+      `${task.slug}: tpm review flips in-progress -> review (current: ${current || "?"}). ` +
+      `Use \`tpm start ${task.slug}\` to claim it first, or \`tpm status ${task.slug} <status>\` for an explicit set.`,
+    );
+  }
+  assertTransition(task.slug, current, "review");
+  data.status = "review";
+  const newBody = appendLog(body, `${now()}: status -> review (flagged for review)`);
   atomicWriteFileSync(task.path, stringify(data, newBody));
   syncInMemory(task, data, newBody);
-  if (flipped) emitStatusChange(task, current, "review", "PR opened, awaiting review");
-  const suffix = flipped ? " — status -> review" : "";
-  const terminus = flipped
-    ? "\n✓ PR opened. Your turn is complete — exit. The poller closes the task when the PR merges; do not poll CI from this run."
-    : "";
-  return { message: `${task.slug}: linked ${trimmed}${suffix}${terminus}` };
+  emitStatusChange(task, current, "review", "flagged for review");
+  return { message: `${task.slug}: status -> review` };
 }
 
 // Attach a report artifact to a task: the investigation-flow analogue of

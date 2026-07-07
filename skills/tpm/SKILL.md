@@ -13,6 +13,8 @@ This skill is the Claude Code dispatch wrapper. The action procedures (situation
 
 Run `tpm --help` to discover every subcommand and flag. The action procedures below name the specific commands they need.
 
+**On Windows the CLI is `tpmgr`, not `tpm`** (bare `tpm` resolves to the built-in `tpm.msc` TPM console). When you shell out on Windows, substitute `tpmgr` for `tpm` in every command below. The `/tpm` slash command itself is unaffected — it's invoked by skill name, not the OS command.
+
 ## Schema
 
 - **Project frontmatter**: `name, slug, status, created, repo: {remote, local}, host, tags`. `host` is `github` (default) or `ado` — see the dispatch bullet under Conventions.
@@ -31,8 +33,9 @@ Run `tpm --help` to discover every subcommand and flag. The action procedures be
   - `blocked` = human's queue, external dep. Surfaced via `tpm inbox`.
   - Parent containers display a roll-up status (all children done → done; any in-progress → in-progress; else parent's declared status). The roll-up is display only — not written to frontmatter.
 - **Types**: `pr | investigation`
-- **Project body**: `## Goal`, `## Context`, `## Notes`, `## Log` (project-level timeline for cross-task events — pivots, milestones, decisions spanning tasks; keep per-task events in the task's own Log).
+- **Project body**: `## Goal`, `## Context`, `## Notes`, `## Log` (project-level timeline for cross-task events — pivots, milestones, decisions spanning tasks; keep per-task events in the task's own Log). `## Notes` is the de-facto project-level workflow doc — `tpm context` inlines it into every briefing.
 - **Task body**: `## Context`, `## Plan`, `## Log`, `## Outcome`
+- **`tpm context` is the sole, self-sufficient briefing.** It inlines the task body, the project's `## Notes` (conventions), a container's children (qualified refs + status), the repo's current branch + clean/dirty state, and a working agreement naming the `tpm` verbs for every state change. **Never `cat` the task file or `ls`/`find` the task tree** — it lives under the tpm tree root, outside the repo sandbox; your file tools can't reach it. Read state from the briefing; change state through `tpm` verbs.
 
 ## Slug resolution
 
@@ -68,7 +71,7 @@ Read `$ARGUMENTS` and pick the matching action. If empty, default to "situationa
 ### Start a task (`/tpm <slug>` or `/tpm <project>/<slug>`)
 This is the primary mode.
 1. Run `tpm context <arg>`. Read the briefing in full.
-2. If `tpm context` reports the task is a parent container (has children), don't try to work it directly. Print the children (`tpm ls --project <p>`) and ask the user which child to pick up.
+2. If `tpm context` reports the task is a parent container (has children), don't try to work it directly. The briefing's `### Children` section lists each child (qualified ref + status) — surface them and ask the user which child to pick up.
 3. **Dispatch by current status** (so an autonomous `/tpm <slug>` invocation does the right thing whatever state the poller has left the task in):
    - `rework` → switch to **Handle PR feedback** mode below. Stop the start flow.
    - `closing` → switch to **Close out** mode below. Stop the start flow.
@@ -82,7 +85,7 @@ This is the primary mode.
 6. **If `prs:` is non-empty and any linked PR is OPEN, fetch its comments and reviews via the host CLI (dispatch on `Host:` in the briefing) before any other discovery.** Unaddressed comments are almost certainly why you're seeing this task — address them first. Then read the task body and execute the Plan. If the type is `investigation`, your deliverable is a **report file** (not a PR, not findings written into the task body) — see step 8's investigation branch.
 7. As you make meaningful progress, run `tpm log <slug> "<what changed>"` to append a timestamped Log entry. Don't load the task file just to write a Log line.
 8. **To ship**, the verb depends on the task type:
-   - **`type: pr`**: follow the workflow doc verbatim — validate (run any checks/tests it names), commit, push, open PR. Then `tpm pr <slug> <url>` — that adds the URL to `prs:`, logs the open, and auto-flips `in-progress → review` (the handoff to the human). If the workflow says "close after merge" (the default for `type: pr`), stop after `tpm pr` — the poller closes the task inline when the PR merges; manual `/tpm done <task>` is the escape hatch.
+   - **`type: pr`**: follow the workflow doc verbatim — validate (run any checks/tests it names), commit, push, open PR. Then `tpm pr <slug> <url>` — that adds the URL to `prs:`, logs the open, and auto-flips `in-progress → review` (the handoff to the human). `tpm pr` is idempotent on that flip: re-run it (even with a URL you already wrote into `prs:` yourself) and it still advances `in-progress → review`; pass a **new** URL to supersede a reopened/auto-closed PR (it appends + re-flips). Never fall back to raw `tpm status` for the hand-off — if you have no PR to (re-)link but need to re-flag, `tpm review <slug>` is the discoverable verb for the same `in-progress → review` flip. If the workflow says "close after merge" (the default for `type: pr`), stop after `tpm pr` — the poller closes the task inline when the PR merges; manual `/tpm done <task>` is the escape hatch.
    - **`type: investigation`**: your deliverable is a report file at `<project>/tasks/<slug>/report.md`. Run `tpm report <slug>` — it auto-folds the file-form task into a folder and scaffolds `report.md` from the template. Write the findings into that file (sections: `## Summary`, `## Findings`, `## Recommendation`). When the report is complete, re-run `tpm report <slug>` — the CLI auto-flips `in-progress → review`. Do **not** open a PR; do **not** run `tpm pr`. A reviewer runs `tpm lgtm <slug>` to approve (derives the Outcome and completes the task) or `tpm request-changes <slug> "<comment>"` to push back (appends the comment to `## Reviewer feedback` in the report file and flips back to `rework`). For the feedback round, address the comment, then re-run `tpm report <slug>` to bounce status back to `review`.
 9. If you hit a blocker you can't resolve: run `tpm block <slug> "<reason>"` to set `status: blocked` and log the reason. Then surface to the user instead of guessing.
 10. **Never exit while the task is still `in-progress`.** A task at `in-progress` with no active agent is stranded — `tpm next` excludes it (presumed claimed), no one picks it up, it sits forever until a human notices. On every exit path, leave the task in a recoverable state:
@@ -158,7 +161,7 @@ For the in-flight phase of a `type: pr` task — the PR is open, the task is `in
 Don't auto-merge, don't reply conversationally without a fix, don't long-poll for CI, don't `--force` push. Always `--force-with-lease` for rewritten history.
 
 ### Close out (`/tpm done <slug>`)
-1. Read the task file.
+1. Run `tpm context <slug>` for the briefing (PRs, type, current status). Don't `cat` the task file — it's outside the repo sandbox.
 2. **Verify PR merge status** if `prs:` is non-empty. For each PR URL, run `gh pr view <url> --json state --jq '.state'`.
    - At least one `MERGED` → proceed.
    - All `OPEN` or `CLOSED` (none merged) → ask once: "PR not merged; close anyway?" Respect the answer. This is the only legitimate ask in close-out.

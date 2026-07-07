@@ -9,7 +9,7 @@ import { loadProjects, flatTasks, isParent, rollupStatus, taskHasReport, taskRep
 import { KNOWN_TASK_TYPES } from "../core/new.ts";
 import type { Project, Task } from "../core/tree.ts";
 import { findRoot } from "../core/root.ts";
-import { findTask } from "../core/resolve.ts";
+import { findTask, findTasksByNumericId } from "../core/resolve.ts";
 import { resolveRepo } from "../core/context.ts";
 import { now } from "../util/time.ts";
 import { inboxItems } from "../core/queue.ts";
@@ -532,6 +532,27 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const filter: ArtifactFilter = typeParam === "pr" || typeParam === "report" ? typeParam : "all";
     return ok("text/html; charset=utf-8", renderArtifacts(project, projects, filter, prCache));
   }
+  // Permalink by numeric id: `/p/<project>/<id>` -> the task whose slug prefix
+  // is that id (e.g. /p/tpm/12 -> /t/tpm/012-foo). Lets you jump straight to a
+  // task from its id without knowing the slug. No match -> bounce to the project
+  // home (or the global home if the project is unknown) with a toast saying why.
+  const projectTaskIdMatch = pathname.match(/^\/p\/([^/]+)\/(\d+)\/?$/);
+  if (projectTaskIdMatch) {
+    const slug = decodeURIComponent(projectTaskIdMatch[1]);
+    const id = Number(projectTaskIdMatch[2]);
+    const project = projects.find(p => p.slug === slug);
+    if (!project) {
+      return redirect(303, `/?flash=${encodeURIComponent(`No project "${slug}"`)}`);
+    }
+    const matches = findTasksByNumericId(project, id);
+    if (matches.length === 1) {
+      return redirect(302, taskPath(project, matches[0].task));
+    }
+    const reason = matches.length > 1
+      ? `Multiple tasks match #${id} in ${project.slug} — open one from the list`
+      : `No task #${id} in ${project.slug}`;
+    return redirect(303, `/p/${encodeURIComponent(project.slug)}?flash=${encodeURIComponent(reason)}`);
+  }
   const projectMatch = pathname.match(/^\/p\/([^/]+)\/?$/);
   if (projectMatch) {
     const slug = decodeURIComponent(projectMatch[1]);
@@ -638,6 +659,32 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const runs = runLogList(match.task);
     return ok("text/html; charset=utf-8", renderTaskRuns(projects, match.project, match.task, runs, runLog, slugPath));
   }
+  // Numeric-id shortcut on the canonical task path: `/t/<project>/<id>` ->
+  // `/t/<project>/<full-slug>` (e.g. /t/tpm/12 -> /t/tpm/012-foo). Mirrors the
+  // `/p/<project>/<id>` permalink above so the path users actually see in the
+  // address bar also accepts a bare task number, with or without leading zeros
+  // (`3`, `03`, `003` all resolve via the shared `findTasksByNumericId`). Placed
+  // before the greedy `/t/<slug>` matcher so a numeric final segment is read as
+  // an id, not a (never-valid) all-digits slug.
+  const taskByIdMatch = pathname.match(/^\/t\/([^/]+)\/(\d+)\/?$/);
+  if (taskByIdMatch) {
+    const slug = decodeURIComponent(taskByIdMatch[1]);
+    const project = projects.find(p => p.slug === slug);
+    // Unknown project: fall through to the greedy matcher below, which produces
+    // the uniform "No task" 404 (rather than special-casing it here).
+    if (project) {
+      const id = Number(taskByIdMatch[2]);
+      const matches = findTasksByNumericId(project, id);
+      if (matches.length === 1) {
+        return redirect(302, taskPath(project, matches[0].task));
+      }
+      if (matches.length > 1) {
+        const reason = `Multiple tasks match #${id} in ${project.slug} — open one from the list`;
+        return redirect(303, `/p/${encodeURIComponent(project.slug)}?flash=${encodeURIComponent(reason)}`);
+      }
+      return notFound(`No task #${id} in ${project.slug}`);
+    }
+  }
   const taskMatch = pathname.match(/^\/t\/(.+?)\/?$/);
   if (taskMatch) {
     const query = decodeURIComponent(taskMatch[1]);
@@ -651,7 +698,7 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const editingSection = editRaw && ["title", "context", "plan", "outcome"].includes(editRaw)
       ? editRaw
       : null;
-    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, projects, opts, prCache, taskLocks, editingSection));
+    return ok("text/html; charset=utf-8", renderTask(match.project, match.task, projects, opts, prCache, taskLocks, editingSection, runLog));
   }
   return notFound(pathname);
 }
@@ -895,6 +942,16 @@ function routeNewTask(projectSlug: string, body: URLSearchParams, runner: CliRun
     flash = editResult.ok
       ? `${flash} (with Context)`
       : `${flash} — but Context failed: ${editResult.stderr || editResult.stdout || "edit failed"}`;
+  }
+  // "Create & ready" submit button: promote the brand-new task to ready in the
+  // same round-trip (same as `tpm ready <slug>` — sets allow_orchestrator too).
+  // A failed promotion is harmless (the task still exists at `open`), so on
+  // failure we keep the created task and surface the reason in the flash.
+  if (body.get("ready")) {
+    const readyResult = runner(["ready", slug]);
+    flash = readyResult.ok
+      ? `${flash} (readied)`
+      : `${flash} — but ready failed: ${readyResult.stderr || readyResult.stdout || "ready failed"}`;
   }
   return flashTo(taskHref, flash);
 }
@@ -1489,7 +1546,10 @@ function renderNewTaskForm(project: Project, opts: RouteOpts): string {
     <label>Context <span class="meta">(optional; lands in ## Context)</span>
       <textarea name="context" rows="6" placeholder="Facts I have right now…"></textarea>
     </label>
-    <button type="submit">Create task</button>
+    <div class="new-task-buttons">
+      <button type="submit">Create task</button>
+      <button type="submit" name="ready" value="1">Create &amp; ready</button>
+    </div>
   </form>
   <script>${NEW_TASK_SLUG_SCRIPT}</script>
 </details>`;
@@ -1678,6 +1738,7 @@ function renderTask(
   prCache: PrCacheReader = (url) => readPrCache(url),
   taskLocks: Map<string, TaskLockSnapshotEntry> = new Map(),
   editingSection: string | null = null,
+  runLog: RunLogReader = defaultRunLogReader,
 ): string {
   const repo = resolveRepo(project, task);
   const status = rollupStatus(task);
@@ -1712,6 +1773,21 @@ function renderTask(
   const allowBlock = isParent(task)
     ? ""
     : `<dt>Autonomous</dt><dd>${esc(allowField)}</dd>`;
+
+  // Surface the agent's session id on the detail page so an operator can
+  // resume the exact session the orchestrator spawned. Two sources can carry
+  // it: the latest run log (live source, read off the task's on-disk path so
+  // it works for archived tasks too) and the `session_id:` frontmatter field
+  // (backfilled across the tree). Prefer the run-log id when present — it's
+  // the freshest — and fall back to frontmatter for tasks whose run logs
+  // aren't on disk. Rendered as a copy-friendly `claude --resume <id>` snippet
+  // (matching the run panel's <code> affordance), not a bespoke copy control.
+  const runLogSnapshot = runLog(task);
+  const runLogSessionId = runLogSnapshot ? parseRunLog(runLogSnapshot.text).sessionId : null;
+  const sessionId = runLogSessionId ?? (strOr(task.data.session_id, "") || null);
+  const sessionBlock = sessionId
+    ? `<dt>Session</dt><dd><code>claude --resume ${esc(sessionId)}</code></dd>`
+    : "";
 
   const flashBanner = renderFlashBanner(opts.flash, taskHref(project, task));
 
@@ -1765,6 +1841,7 @@ ${headerBlock}
     <dl>
       <dt>Status</dt><dd><span class="badge s-${cls(status)}">${esc(status)}</span> ${headerLockChip}</dd>
       <dt>Type</dt><dd>${esc(strOr(task.data.type, "?"))}</dd>
+      ${sessionBlock}
       ${repoBlock}
       ${localBlock}
       <dt>Created</dt><dd>${esc(strOr(task.data.created, "?"))}</dd>
@@ -2462,7 +2539,7 @@ function renderRunPanel(task: Task, slugSegs: string, status: string, runLog: Ru
   <p class="run-empty">${esc(note)}</p>
 </section>`;
   }
-  const { events, parsed, skipped, format } = parseRunLog(snapshot.text);
+  const { events, parsed, skipped, format, sessionId } = parseRunLog(snapshot.text);
   const tail = events.slice(-RUN_PANEL_EVENTS);
   const live = status === "in-progress";
   // While in-progress, always render the <ol> (even empty) so the live-tail
@@ -2483,11 +2560,18 @@ function renderRunPanel(task: Task, slugSegs: string, status: string, runLog: Ru
   const tailAttrs = live
     ? ` data-tail="/t/${slugSegs}/runs/${encodeURIComponent(snapshot.name)}/tail" data-offset="${Buffer.byteLength(snapshot.text)}" data-format="${escAttr(format)}"`
     : "";
+  // Surface the agent's session id so an operator can resume the exact session
+  // the orchestrator spawned (`claude --resume <id>`). The CLI mirror is
+  // `tpm session <slug>`. Rendered in a copy-friendly <code> span.
+  const session = sessionId
+    ? `<p class="run-meta">session <code>${esc(sessionId)}</code></p>`
+    : "";
   return `<section class="run-panel"${tailAttrs}>
   <h2>${esc(label)} <span class="meta">${esc(snapshot.name)}</span></h2>
   ${warning}
   ${rendered}
   ${truncated}
+  ${session}
   ${rawLink}
 </section>`;
 }

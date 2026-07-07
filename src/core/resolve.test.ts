@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
 import { loadProjects } from "./tree.ts";
-import { findTask } from "./resolve.ts";
+import { findTask, findTasksByNumericId } from "./resolve.ts";
 
 function projectMd(slug: string): string {
   return `---
@@ -136,6 +136,50 @@ test("findTask: <project>/<task> still resolves a top-level task", () => {
     const m = findTask(projects, "alpha/foo");
     assert.ok(m);
     assert.equal(m!.task.slug, "001-foo");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("findTasksByNumericId: matches a top-level task by its numeric prefix", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeFileSync(join(dir, "tasks", "012-foo.md"), taskMd("012-foo"));
+    const projects = loadProjects(root);
+    const matches = findTasksByNumericId(projects[0], 12);
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0].task.slug, "012-foo");
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("findTasksByNumericId: returns empty when no task carries the id", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeFileSync(join(dir, "tasks", "012-foo.md"), taskMd("012-foo"));
+    const projects = loadProjects(root);
+    assert.deepEqual(findTasksByNumericId(projects[0], 99), []);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("findTasksByNumericId: reports both matches when a top-level and a child share an id", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeFileSync(join(dir, "tasks", "001-foo.md"), taskMd("001-foo"));
+    const pdir = join(dir, "tasks", "002-parent");
+    mkdirSync(pdir, { recursive: true });
+    writeFileSync(join(pdir, "task.md"), taskMd("002-parent"));
+    writeFileSync(join(pdir, "001-child.md"), taskMd("001-child", "002-parent"));
+    const projects = loadProjects(root);
+    const matches = findTasksByNumericId(projects[0], 1);
+    assert.equal(matches.length, 2);
+    assert.deepEqual(matches.map(m => m.task.slug).sort(), ["001-child", "001-foo"]);
   } finally {
     rmTempDir(root);
   }

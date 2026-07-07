@@ -140,6 +140,76 @@ test("route: /p/<unknown> returns 404", () => {
   assert.equal(r.status, 404);
 });
 
+test("route: /p/<project>/<id> redirects to the matching task page", () => {
+  const p = project("alpha", [task("012-foo", "ready"), task("013-bar", "open")]);
+  const r = route("/p/alpha/12", new URLSearchParams(), [p]);
+  assert.equal(r.status, 302);
+  assert.equal(r.location, "/t/alpha/012-foo");
+});
+
+test("route: /p/<project>/<id> matches a child task by its numeric prefix", () => {
+  const child = task("003-child", "ready", { parent: "001-parent" });
+  child.parent = "001-parent";
+  const parent = task("001-parent", "ready");
+  parent.children = [child];
+  const r = route("/p/alpha/3", new URLSearchParams(), [project("alpha", [parent])]);
+  assert.equal(r.status, 302);
+  assert.equal(r.location, "/t/alpha/001-parent/003-child");
+});
+
+test("route: /p/<project>/<unknown-id> bounces to project home with a toast", () => {
+  const p = project("alpha", [task("012-foo", "ready")]);
+  const r = route("/p/alpha/99", new URLSearchParams(), [p]);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/p\/alpha\?flash=/);
+  assert.match(decodeURIComponent(r.location ?? ""), /No task #99/);
+});
+
+test("route: /p/<unknown-project>/<id> bounces to home with a toast", () => {
+  const r = route("/p/nope/12", new URLSearchParams(), []);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/\?flash=/);
+  assert.match(decodeURIComponent(r.location ?? ""), /No project "nope"/);
+});
+
+test("route: /t/<project>/<id> redirects to the matching task page", () => {
+  const p = project("alpha", [task("012-foo", "ready"), task("013-bar", "open")]);
+  const r = route("/t/alpha/12", new URLSearchParams(), [p]);
+  assert.equal(r.status, 302);
+  assert.equal(r.location, "/t/alpha/012-foo");
+});
+
+test("route: /t/<project>/<zero-padded-id> resolves like the bare id", () => {
+  const p = project("alpha", [task("003-foo", "ready")]);
+  for (const id of ["3", "03", "003"]) {
+    const r = route(`/t/alpha/${id}`, new URLSearchParams(), [p]);
+    assert.equal(r.status, 302, `id ${id}`);
+    assert.equal(r.location, "/t/alpha/003-foo", `id ${id}`);
+  }
+});
+
+test("route: /t/<project>/<id> matches a child task by its numeric prefix", () => {
+  const child = task("003-child", "ready", { parent: "001-parent" });
+  child.parent = "001-parent";
+  const parent = task("001-parent", "ready");
+  parent.children = [child];
+  const r = route("/t/alpha/3", new URLSearchParams(), [project("alpha", [parent])]);
+  assert.equal(r.status, 302);
+  assert.equal(r.location, "/t/alpha/001-parent/003-child");
+});
+
+test("route: /t/<project>/<unknown-id> returns 404 for the right reason", () => {
+  const p = project("alpha", [task("012-foo", "ready")]);
+  const r = route("/t/alpha/99", new URLSearchParams(), [p]);
+  assert.equal(r.status, 404);
+  assert.match(r.body, /No task #99 in alpha/);
+});
+
+test("route: /t/<unknown-project>/<id> returns 404", () => {
+  const r = route("/t/nope/12", new URLSearchParams(), []);
+  assert.equal(r.status, 404);
+});
+
 test("route: /t/<project>/<slug> renders task view (sidebar + body)", () => {
   const t = task("001-foo", "in-progress", { prs: ["https://github.com/x/y/pull/1"] });
   const p = project("alpha", [t]);
@@ -1094,8 +1164,8 @@ test("renderIndex: review row in inbox does NOT render a play button", () => {
 });
 
 test("renderIndex: agent queue and in-flight rows do NOT render the play button", () => {
-  // Only the inbox section opts in. Ready rows already are ready; needs-
-  // feedback / in-progress rows have nothing useful to promote into.
+  // Only the inbox section opts in. Ready rows already are ready; rework /
+  // in-progress rows have nothing useful to promote into.
   const p = project("alpha", [
     task("001-r", "ready"),
     task("002-nf", "rework"),
@@ -1707,6 +1777,9 @@ test("renderProject: renders a New task <details> form with slug/title/parent/ty
   assert.match(r.body, /<option[^>]*value="pr"[^>]*selected/);
   // Optional multi-line Context textarea, written into ## Context on submit.
   assert.match(r.body, /<textarea[^>]*name="context"[^>]*rows="6"/);
+  // Two submit buttons: plain create, and create-then-promote (ready=1).
+  assert.match(r.body, /<button[^>]*type="submit">Create task<\/button>/);
+  assert.match(r.body, /<button[^>]*type="submit"[^>]*name="ready"[^>]*value="1"[^>]*>Create &amp; ready<\/button>/);
 });
 
 test("renderProject: New task form renders Title before Slug", () => {
@@ -1872,6 +1945,68 @@ test("routeMutation: /p/<project>/new-task with Context fires a follow-up `tpm e
     ["edit", "add-thing", "context", "a fact I have right now"],
   ]);
   assert.match(decodeURIComponent(r.location ?? ""), /with Context/);
+});
+
+test("routeMutation: /p/<project>/new-task with ready=1 promotes the new task", () => {
+  // "Create & ready" submit: create lands first, then `tpm ready <slug>`
+  // promotes it (the same verb the task-page Promote button uses).
+  const { runner, calls } = captureRunner();
+  const params = new URLSearchParams();
+  params.set("slug", "add-thing");
+  params.set("ready", "1");
+  const r = routeMutation("/p/alpha/new-task", params, runner);
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/t\/alpha\/add-thing\?flash=/);
+  assert.deepEqual(calls, [
+    ["new", "task", "alpha", "add-thing"],
+    ["ready", "add-thing"],
+  ]);
+  assert.match(decodeURIComponent(r.location ?? ""), /readied/);
+});
+
+test("routeMutation: /p/<project>/new-task with ready=1 readies after Context lands", () => {
+  // Create → Context edit → ready, in that order, all against the new slug.
+  const { runner, calls } = captureRunner();
+  const params = new URLSearchParams();
+  params.set("slug", "add-thing");
+  params.set("context", "a fact");
+  params.set("ready", "1");
+  routeMutation("/p/alpha/new-task", params, runner);
+  assert.deepEqual(calls, [
+    ["new", "task", "alpha", "add-thing"],
+    ["edit", "add-thing", "context", "a fact"],
+    ["ready", "add-thing"],
+  ]);
+});
+
+test("routeMutation: /p/<project>/new-task without ready skips the promote call", () => {
+  // Plain "Create task" submit: no ready field, no promotion, no "readied" suffix.
+  const { runner, calls } = captureRunner();
+  const r = routeMutation("/p/alpha/new-task", new URLSearchParams("slug=add-thing"), runner);
+  assert.deepEqual(calls, [["new", "task", "alpha", "add-thing"]]);
+  assert.doesNotMatch(decodeURIComponent(r.location ?? ""), /readied/);
+});
+
+test("routeMutation: /p/<project>/new-task keeps the task when ready promotion fails", () => {
+  // Create succeeds, ready refuses: don't roll back, still redirect to the new
+  // task, surface both the creation and the failed promotion in the flash.
+  let n = 0;
+  const runner: CliRunner = () => {
+    n += 1;
+    return n === 1
+      ? { ok: true, stdout: "Created task", stderr: "" }
+      : { ok: false, stdout: "", stderr: "ready: refused" };
+  };
+  const r = routeMutation(
+    "/p/alpha/new-task",
+    new URLSearchParams("slug=add-thing&ready=1"),
+    runner,
+  );
+  assert.equal(r.status, 303);
+  assert.match(r.location ?? "", /^\/t\/alpha\/add-thing\?flash=/);
+  const flash = decodeURIComponent(r.location ?? "");
+  assert.match(flash, /Created task/);
+  assert.match(flash, /ready failed: ready: refused/);
 });
 
 test("routeMutation: /p/<project>/new-task with blank Context skips the edit call", () => {
@@ -2239,6 +2374,75 @@ test("route: /t/<proj>/<slug>/runs labels 'Last run' on a non-in-progress task",
   });
   assert.match(r.body, /Last run/);
   assert.doesNotMatch(r.body, /Current run/);
+});
+
+test("route: run panel surfaces the agent session id when the log carries one", () => {
+  const t = task("001-foo", "review");
+  const p = project("alpha", [t]);
+  const text = [
+    JSON.stringify({ type: "system", subtype: "init", session_id: "sess-abc-123" }),
+    JSON.stringify({ type: "result", subtype: "success", result: "done" }),
+  ].join("\n");
+  const r = route("/t/alpha/001-foo/runs", new URLSearchParams(), [p], {
+    runLog: runLogOf(text),
+    runLogList: runLogListOf("alpha-001--20260515T120000Z.log"),
+  });
+  assert.match(r.body, /session <code>sess-abc-123<\/code>/);
+});
+
+test("route: run panel omits the session line when the log has no session id", () => {
+  const t = task("001-foo", "review");
+  const p = project("alpha", [t]);
+  const text = JSON.stringify({ type: "system", subtype: "init" });
+  const r = route("/t/alpha/001-foo/runs", new URLSearchParams(), [p], {
+    runLog: runLogOf(text),
+    runLogList: runLogListOf("alpha-001--20260515T120000Z.log"),
+  });
+  assert.doesNotMatch(r.body, /class="run-meta">session/);
+});
+
+test("route: task detail surfaces session_id frontmatter as a claude --resume snippet", () => {
+  const t = task("001-foo", "review", { session_id: "fm-sess-789" });
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], {
+    runLog: () => null,
+  });
+  assert.match(r.body, /<dt>Session<\/dt><dd><code>claude --resume fm-sess-789<\/code><\/dd>/);
+});
+
+test("route: task detail prefers the live run-log session id over the frontmatter one", () => {
+  const t = task("001-foo", "review", { session_id: "fm-stale" });
+  const p = project("alpha", [t]);
+  const text = JSON.stringify({ type: "system", subtype: "init", session_id: "run-live" });
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], {
+    runLog: runLogOf(text),
+  });
+  assert.match(r.body, /claude --resume run-live/);
+  // Don't double-render: the stale frontmatter id must not also appear.
+  assert.doesNotMatch(r.body, /fm-stale/);
+});
+
+test("route: task detail omits the Session row when no run log and no frontmatter id", () => {
+  const t = task("001-foo", "review");
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], {
+    runLog: () => null,
+  });
+  assert.doesNotMatch(r.body, /<dt>Session<\/dt>/);
+});
+
+test("route: archived task still surfaces its session_id on the detail page", () => {
+  // Most closed pr-type tasks are archived; the run-log reader works off the
+  // task's on-disk path regardless of archive location, and the frontmatter
+  // fallback covers tasks whose logs aren't present. Either way the operator
+  // gets a resume affordance.
+  const t = task("001-foo", "done", { session_id: "archived-sess" });
+  t.archived = true;
+  const p = project("alpha", [t]);
+  const r = route("/t/alpha/001-foo", new URLSearchParams(), [p], {
+    runLog: () => null,
+  });
+  assert.match(r.body, /claude --resume archived-sess/);
 });
 
 test("route: /t/<proj>/<slug>/runs auto-refreshes only when the task is in-progress", () => {

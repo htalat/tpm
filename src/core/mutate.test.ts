@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { mkTempDir, rmTempDir } from "./_test_helpers.ts";
 import { loadProjects } from "./tree.ts";
 import {
-  start, ready, block, reopen, revert, logEntry, addPr, setStatus, setType, complete, drop,
+  start, ready, block, reopen, revert, logEntry, addPr, review, setStatus, setType, complete, drop,
   setAllowOrchestrator, reparent, addReport, requestReportChanges,
   pullFromQueue, appendLog, setSection, sectionHasContent, editTaskSection,
   editProjectSection, onStatusChange,
@@ -30,7 +30,10 @@ test
 `;
 }
 
-function taskMd(slug: string, status = "open", type = "pr"): string {
+function taskMd(slug: string, status = "open", type = "pr", prs: string[] = []): string {
+  const prsBlock = prs.length
+    ? `prs:\n${prs.map(p => `  - ${p}`).join("\n")}`
+    : "prs: []";
   return `---
 title: Task ${slug}
 slug: ${slug}
@@ -39,7 +42,7 @@ status: ${status}
 type: ${type}
 created: 2026-01-01 00:00 PDT
 closed:
-prs: []
+${prsBlock}
 tags: []
 ---
 
@@ -66,10 +69,11 @@ function setupProject(root: string, slug: string): string {
   return dir;
 }
 
-function writeTask(projectDir: string, file: string, status = "open", type = "pr"): string {
+function writeTask(projectDir: string, file: string, status = "open", typeOrOpts: string | { type?: string; prs?: string[] } = "pr"): string {
   const slug = file.replace(/\.md$/, "");
   const path = join(projectDir, "tasks", file);
-  writeFileSync(path, taskMd(slug, status, type));
+  const opts = typeof typeOrOpts === "string" ? { type: typeOrOpts } : typeOrOpts;
+  writeFileSync(path, taskMd(slug, status, opts.type ?? "pr", opts.prs ?? []));
   return path;
 }
 
@@ -755,6 +759,130 @@ test("pr: duplicate URL on already-flipped task — no extra status flip, no ext
     // Exactly one status-flip log line — re-flipping would append another.
     const flipCount = (afterFirst.match(/status -> review/g) ?? []).length;
     assert.equal(flipCount, 1);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("pr: already-linked URL on an in-progress task still flips to review", () => {
+  // The agent wrote prs: itself, then ran `tpm pr` with the same URL. The old
+  // dedupe short-circuit skipped the flip and the agent fell back to raw
+  // `tpm status` (run-log theme 3). Now the flip fires regardless of the dupe.
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress", { prs: ["https://github.com/x/y/pull/1"] });
+    const t = loadTask(root, "alpha", "001-a");
+    const r = addPr(t, "https://github.com/x/y/pull/1");
+    assert.match(r.message, /-> review/);
+    assert.match(r.message, /Your turn is complete/);
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: review/);
+    assert.match(text, /status -> review \(PR opened, awaiting review\)$/m);
+    // The URL is not re-appended — still exactly one entry.
+    const { data } = parse(text);
+    assert.deepEqual(data.prs, ["https://github.com/x/y/pull/1"]);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("pr: a second, different URL appends + re-flips (reopened/superseded PR)", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    // Task already handed off once: PR #11 linked, status review. Its
+    // stacked base merged and auto-closed it; the agent reopens as #12.
+    writeTask(dir, "001-a.md", "in-progress", { prs: ["https://github.com/x/y/pull/11"] });
+    const t = loadTask(root, "alpha", "001-a");
+    const r = addPr(t, "https://github.com/x/y/pull/12");
+    assert.match(r.message, /-> review/);
+    const text = readFileSync(t.path, "utf8");
+    const { data } = parse(text);
+    assert.deepEqual(data.prs, ["https://github.com/x/y/pull/11", "https://github.com/x/y/pull/12"]);
+    assert.match(text, /linked additional PR https:\/\/github\.com\/x\/y\/pull\/12$/m);
+    assert.match(text, /status: review/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("pr: genuine no-op (URL linked, already review) says handed off, no flip claimed", () => {
+  // After hand-off there's nothing to do — the message says so plainly rather
+  // than implying a flip happened.
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "review", { prs: ["https://github.com/x/y/pull/1"] });
+    const t = loadTask(root, "alpha", "001-a");
+    const before = readFileSync(t.path, "utf8");
+    const r = addPr(t, "https://github.com/x/y/pull/1");
+    assert.match(r.message, /already linked/);
+    assert.match(r.message, /already review/);
+    assert.doesNotMatch(r.message, /-> review \(/);
+    // Byte-identical no-op.
+    assert.equal(readFileSync(t.path, "utf8"), before);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("pr: genuine no-op (URL linked, status not in-progress) names `tpm review`", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "ready", { prs: ["https://github.com/x/y/pull/1"] });
+    const t = loadTask(root, "alpha", "001-a");
+    const r = addPr(t, "https://github.com/x/y/pull/1");
+    assert.match(r.message, /already linked/);
+    assert.match(r.message, /tpm review 001-a/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+// ---- review ---------------------------------------------------------------
+
+test("review: in-progress task flips to review with a log line", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "in-progress");
+    const t = loadTask(root, "alpha", "001-a");
+    const r = review(t);
+    assert.match(r.message, /-> review/);
+    const text = readFileSync(t.path, "utf8");
+    assert.match(text, /status: review/);
+    assert.match(text, /status -> review \(flagged for review\)$/m);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("review: already review is an idempotent no-op", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "review");
+    const t = loadTask(root, "alpha", "001-a");
+    const before = readFileSync(t.path, "utf8");
+    const r = review(t);
+    assert.match(r.message, /nothing to do/);
+    assert.equal(readFileSync(t.path, "utf8"), before);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("review: rejects invalid source states (ready, done) and names the fix", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    for (const s of ["ready", "open", "done", "rework"]) {
+      writeTask(dir, "001-a.md", s);
+      const t = loadTask(root, "alpha", "001-a");
+      assert.throws(() => review(t), /tpm review flips in-progress -> review/);
+    }
   } finally {
     rmTempDir(root);
   }
