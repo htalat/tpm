@@ -33,6 +33,7 @@ import { appendStatusEvent } from "./events.ts";
 import { migrateTree } from "./migrate.ts";
 import { runDoctor, formatDoctor } from "./doctor.ts";
 import { runEvals, formatEvals } from "./evals.ts";
+import { runGoldenSuite, formatGolden } from "./evals_golden.ts";
 import { execCommand, COMMAND_VERBS } from "./commands.ts";
 import { tryDaemon } from "./daemon_client.ts";
 
@@ -161,6 +162,31 @@ try {
       break;
     }
     case "evals": {
+      // `tpm evals run` — layer-2 golden suite: real orchestrate loop against
+      // hermetic fixtures, deterministic checks + layer-1 metrics. SPENDS
+      // TOKENS with the default agent; --budget is a hard stop and
+      // --agent-bin substitutes a fake agent (tests, dry mechanics runs).
+      if (args[1] === "run") {
+        const repsRaw = parseFlag(args, "--reps");
+        const budgetRaw = parseFlag(args, "--budget");
+        const report = await runGoldenSuite({
+          reps: repsRaw !== undefined ? Number(repsRaw) : undefined,
+          budgetUsd: budgetRaw !== undefined ? Number(budgetRaw) : undefined,
+          only: parseFlag(args, "--only"),
+          agentBin: parseFlag(args, "--agent-bin"),
+          model: parseFlag(args, "--model"),
+          minutes: parseFlag(args, "--minutes") !== undefined ? Number(parseFlag(args, "--minutes")) : undefined,
+          keep: args.includes("--keep"),
+          log: line => console.error(`evals: ${line}`),
+        });
+        if (args.includes("--json")) {
+          console.log(JSON.stringify(report, null, 2));
+        } else {
+          print(formatGolden(report));
+        }
+        if (report.results.some(r => !r.pass)) process.exit(1);
+        break;
+      }
       // Layer-1 harness evals: score every run from its transcript + the
       // status journal. Read-only. --since <days> windows; --json for the
       // full machine-readable report (the SPA/dashboards consume this).
@@ -1035,6 +1061,8 @@ Usage:
   tpm archive <task | project/task>          move a done/dropped task to tasks/archive/
   tpm fold <task | project/task>             promote a file-form task to folder-form (idempotent)
   tpm evals [--since <days>] [--json]        harness metrics from run transcripts + the status journal
+  tpm evals run [--reps N] [--budget <usd>] [--only <task>] [--model <id>] [--agent-bin <path>]
+                                             golden-task benchmark through the real orchestrate loop (spends tokens!)
   tpm doctor                                 health checks: config, tree, statuses, journal, locks, SPA build, daemon
   tpm migrate [--dry-run]                    rewrite pre-rename statuses in the tree (needs-feedback->rework,
                                              needs-review->review, needs-close->closing); idempotent
