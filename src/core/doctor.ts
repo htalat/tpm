@@ -21,8 +21,9 @@ export interface DoctorCheck {
   detail: string;
 }
 
-// Journal past this size deserves rotation (task 175 tracks automating it).
-const JOURNAL_WARN_BYTES = 5 * 1024 * 1024;
+// Rotation fires at JOURNAL_MAX_BYTES (events.ts) on every append; a journal
+// past twice that means rotation isn't working (permissions, external writer).
+const JOURNAL_WARN_BYTES = 10 * 1024 * 1024;
 // A lock heartbeat this old with no sweep is hygiene debt.
 const LOCK_STALE_MINUTES = 120;
 
@@ -57,7 +58,7 @@ export function checkJournal(root: string): DoctorCheck {
   const bytes = statSync(path).size;
   const mb = (bytes / (1024 * 1024)).toFixed(1);
   if (bytes > JOURNAL_WARN_BYTES) {
-    return { name: "journal", level: "warn", detail: `${path} is ${mb} MB — consider rotating (only the recent window is read)` };
+    return { name: "journal", level: "warn", detail: `${path} is ${mb} MB — auto-rotation should have fired at 5 MB; check permissions` };
   }
   return { name: "journal", level: "ok", detail: `${mb} MB` };
 }

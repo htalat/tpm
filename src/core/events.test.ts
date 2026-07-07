@@ -146,3 +146,46 @@ test("readJournalLinesFrom: a shrunken journal (rotation) resets to EOF without 
     rmTempDir(root);
   }
 });
+
+test("appendStatusEvent: rotates the journal past the size cap, keeping one generation", () => {
+  const root = mkTempDir();
+  try {
+    const change = { task: fakeTask(), from: "open", to: "ready" as const, verb: "promoted" };
+    appendStatusEvent(root, change, 200); // tiny cap for the test
+    const path = eventsPath(root);
+    // Fill past the cap, then append: the full file rotates to .1 and the
+    // live journal restarts with just the new record.
+    appendFileSync(path, "x".repeat(300) + "\n");
+    appendStatusEvent(root, change, 200);
+    assert.ok(existsSync(`${path}.1`), "rotated generation exists");
+    const live = readFileSync(path, "utf8").trim().split("\n");
+    assert.equal(live.length, 1);
+    assert.match(live[0], /"to":"ready"/);
+    assert.match(readFileSync(`${path}.1`, "utf8"), /x{300}/);
+    // A second rotation clobbers the old generation rather than accumulating.
+    appendFileSync(path, "y".repeat(300) + "\n");
+    appendStatusEvent(root, change, 200);
+    assert.match(readFileSync(`${path}.1`, "utf8"), /y{300}/);
+    assert.doesNotMatch(readFileSync(`${path}.1`, "utf8"), /x{300}/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("SSE tail survives rotation: shrunken file resets the offset to EOF", () => {
+  const root = mkTempDir();
+  try {
+    const change = { task: fakeTask(), from: "open", to: "ready" as const, verb: "promoted" };
+    appendStatusEvent(root, change);
+    const path = eventsPath(root);
+    const first = readJournalLinesFrom(path, 0);
+    assert.equal(first.lines.length, 1);
+    // Rotate by hand (rename semantics) — offset now exceeds the new size.
+    writeFileSync(path, "");
+    const after = readJournalLinesFrom(path, first.offset);
+    assert.deepEqual(after.lines, []);
+    assert.equal(after.offset, 0);
+  } finally {
+    rmTempDir(root);
+  }
+});
