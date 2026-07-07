@@ -9,7 +9,7 @@ import {
   setAllowOrchestrator, reparent, addReport, requestReportChanges,
   pullFromQueue, appendLog, setSection, sectionHasContent, editTaskSection,
   editProjectSection, onStatusChange, VALID_STATUSES, STATUS_VOCAB,
-  bumpOrchestratorAttempts, clearOrchestratorAttempts, readOrchestratorAttempts,
+  bumpOrchestratorAttempts, clearOrchestratorAttempts, readOrchestratorAttempts, refundOrchestratorAttempt,
 } from "./mutate.ts";
 import type { StatusChange } from "./mutate.ts";
 import { parse } from "../util/frontmatter.ts";
@@ -2480,6 +2480,24 @@ test("orchestrator attempts: human promote (ready) and reopen clear; orchestrato
     // Reopen clears too.
     bumpOrchestratorAttempts(t);
     reopen(t, "reshaping");
+    assert.doesNotMatch(readFileSync(t.path, "utf8"), /orchestrator_attempts/);
+  } finally {
+    rmTempDir(root);
+  }
+});
+
+test("refundOrchestratorAttempt: decrements, floors at zero, removes the field at zero", () => {
+  const root = mkTempDir();
+  try {
+    const dir = setupProject(root, "alpha");
+    writeTask(dir, "001-a.md", "ready");
+    const t = loadTask(root, "alpha", "001-a");
+    refundOrchestratorAttempt(t); // nothing to refund — no write, no throw
+    bumpOrchestratorAttempts(t);
+    bumpOrchestratorAttempts(t);
+    refundOrchestratorAttempt(t);
+    assert.match(readFileSync(t.path, "utf8"), /orchestrator_attempts: 1/);
+    refundOrchestratorAttempt(t);
     assert.doesNotMatch(readFileSync(t.path, "utf8"), /orchestrator_attempts/);
   } finally {
     rmTempDir(root);
