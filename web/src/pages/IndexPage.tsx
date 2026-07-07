@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api } from "../api";
 import { useData, useDebounced, useRevalidateOnFocus, useSse } from "../hooks";
-import { Empty, SectionCard, StatusBadge, TaskRow, useFlash } from "../components";
+import { Empty, SectionCard, StatusBadge, TaskRow, useFlash, LoadError } from "../components";
 import type { ProjectSummary, TaskSummary } from "../types";
 import { flatTasks, patchTaskStatus, shortStamp } from "../lib";
 import { SelectAll, useBulk, useKeyNav } from "../bulk";
@@ -61,7 +61,7 @@ export default function IndexPage() {
   const navOrder = overview.data ? dedupe([...overview.data.inbox, ...inFlightNow, ...overview.data.queue]) : [];
   const cursor = useKeyNav(navOrder, bulk.selection, bulk.selectable);
 
-  if (overview.error) return <p className="text-sm text-danger">Failed to load: {overview.error}</p>;
+  if (overview.error) return <LoadError error={overview.error} onRetry={overview.refresh} />;
   if (!overview.data) return <p className="text-sm text-muted">Loading…</p>;
   const { projects, inbox, queue, events, harness } = overview.data;
   const inFlight = projects
@@ -109,7 +109,7 @@ export default function IndexPage() {
           <ul className="divide-y divide-hairline text-sm">
             {events.slice(0, 12).map((e, i) => (
               <li key={`${e.at}-${i}`} className="flex items-center gap-2 px-3 py-1.5">
-                <span className="w-40 shrink-0 font-mono text-xs text-faint">{shortStamp(e.at)}</span>
+                <span className="hidden w-40 shrink-0 font-mono text-xs text-faint sm:block">{shortStamp(e.at)}</span>
                 <span className="font-mono text-xs">{e.task}</span>
                 <StatusBadge status={e.from || "?"} />
                 <span className="text-faint">→</span>

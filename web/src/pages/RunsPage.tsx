@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { api } from "../api";
 import { useData } from "../hooks";
-import { Empty, SectionCard } from "../components";
+import { Empty, SectionCard, LoadError } from "../components";
 
 // Per-task runs: run-log list + the latest run's transcript tail. While the
 // task is in-progress the tail advances every 2s via the byte-offset endpoint
@@ -13,7 +13,7 @@ export default function RunsPage() {
   const segments = useLocation().pathname.replace(/^\/t\//, "").replace(/\/runs$/, "").split("/").map(decodeURIComponent);
   const feed = useData(() => api.runs(segments), [segments.join("/")]);
 
-  if (feed.error) return <p className="text-sm text-danger">Failed to load: {feed.error}</p>;
+  if (feed.error) return <LoadError error={feed.error} onRetry={feed.refresh} />;
   if (!feed.data) return <p className="text-sm text-muted">Loading…</p>;
   const { runs, latest } = feed.data;
   const taskPath = `/t/${segments.map(encodeURIComponent).join("/")}`;

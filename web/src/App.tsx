@@ -1,5 +1,5 @@
 import { BrowserRouter, Route, Routes, useLocation } from "react-router-dom";
-import { FlashProvider, Masthead, SkewBanner } from "./components";
+import { ErrorBoundary, FlashProvider, Masthead, SkewBanner } from "./components";
 import IndexPage from "./pages/IndexPage";
 import TaskPage from "./pages/TaskPage";
 import ProjectPage from "./pages/ProjectPage";
@@ -18,6 +18,7 @@ export default function App() {
         <div className="mx-auto max-w-5xl px-4 py-6 text-ink">
           <Masthead />
           <SkewBanner />
+          <RoutedBoundary>
           <Routes>
             <Route path="/" element={<IndexPage />} />
             <Route path="/search" element={<SearchPage />} />
@@ -29,10 +30,18 @@ export default function App() {
             <Route path="/t/*" element={<TaskOrRuns />} />
             <Route path="*" element={<p className="text-sm text-muted">Not found.</p>} />
           </Routes>
+          </RoutedBoundary>
         </div>
       </FlashProvider>
     </BrowserRouter>
   );
+}
+
+// Reset the boundary on navigation: a crash on one page shouldn't wedge the
+// next one.
+function RoutedBoundary({ children }: { children: React.ReactNode }) {
+  const { pathname } = useLocation();
+  return <ErrorBoundary key={pathname}>{children}</ErrorBoundary>;
 }
 
 function TaskOrRuns() {
