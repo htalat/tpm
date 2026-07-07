@@ -289,3 +289,13 @@ test("api: task detail carries the report artifact when report.md exists on disk
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("api: /api/vocab ships bulk caps keyed by status", () => {
+  const r = get("/api/vocab")!;
+  assert.deepEqual(r.json.bulkCaps.done, ["archive"]);
+  assert.ok(r.json.bulkCaps.ready.includes("pull"));
+  // Every cap references a real bulk action.
+  for (const caps of Object.values(r.json.bulkCaps) as string[][]) {
+    for (const c of caps) assert.ok(r.json.bulkActions[c], `unknown bulk action ${c}`);
+  }
+});

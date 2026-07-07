@@ -260,6 +260,19 @@ function SettingsPanel({ task, onDone }: { task: TaskDetail; onDone: () => void 
             <option value="investigation">investigation</option>
           </select>
         </label>
+        <label className="flex items-center gap-2">
+          status
+          <select
+            value={task.status}
+            onChange={e => set("status", { status: e.target.value })}
+            className="rounded border border-edge bg-surface px-2 py-0.5 text-xs"
+            title="raw status set — the transition table refuses illegal moves"
+          >
+            {["open", "ready", "in-progress", "rework", "closing", "review", "blocked", "done", "dropped"].map(st => (
+              <option key={st} value={st}>{st}</option>
+            ))}
+          </select>
+        </label>
       </div>
     </SectionCard>
   );

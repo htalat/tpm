@@ -4,6 +4,8 @@ import { useData, useRevalidateOnFocus, useSse } from "../hooks";
 import { Empty, SectionCard, StatusBadge, TaskRow, useFlash } from "../components";
 import type { ProjectSummary, TaskSummary } from "../types";
 import { flatTasks, shortStamp } from "../lib";
+import { useBulk } from "../bulk";
+import type { RowSelection } from "../components";
 
 // The control surface: harness panel, inbox, agent queue, in flight, projects,
 // activity feed. Mirrors the SSR index's information architecture; refreshes
@@ -30,6 +32,11 @@ export default function IndexPage() {
     overview.refresh();
   };
 
+  const allTasks = overview.data
+    ? dedupe([...overview.data.projects.flatMap(p => flatTasks(p.tasks)), ...overview.data.inbox, ...overview.data.queue])
+    : [];
+  const bulk = useBulk(allTasks, overview.refresh);
+
   if (overview.error) return <p className="text-sm text-danger">Failed to load: {overview.error}</p>;
   if (!overview.data) return <p className="text-sm text-muted">Loading…</p>;
   const { projects, inbox, queue, events, harness } = overview.data;
@@ -43,7 +50,7 @@ export default function IndexPage() {
 
       <SectionCard title="Your inbox" meta={`${inbox.length} task${inbox.length === 1 ? "" : "s"}`}>
         {inbox.length === 0 ? <Empty text="Inbox zero." /> : inbox.map(t => (
-          <TaskRow key={t.qualifiedSlug} task={t} actions={
+          <TaskRow key={t.qualifiedSlug} task={t} selection={bulk.rowSelection} actions={
             (t.status === "open" || t.status === "blocked") ? (
               <button
                 onClick={() => act(t, t.status === "blocked" ? "reopen" : "ready")}
@@ -59,18 +66,18 @@ export default function IndexPage() {
 
       <SectionCard title="Agent queue" meta={`${queue.length} eligible`}>
         {queue.length === 0 ? <Empty text="Nothing queued for agents." /> : queue.map(t => (
-          <TaskRow key={t.qualifiedSlug} task={t} />
+          <TaskRow key={t.qualifiedSlug} task={t} selection={bulk.rowSelection} />
         ))}
       </SectionCard>
 
       <SectionCard title="In flight" meta={`${inFlight.length} running`}>
         {inFlight.length === 0 ? <Empty text="No task is in progress." /> : inFlight.map(t => (
-          <TaskRow key={t.qualifiedSlug} task={t} />
+          <TaskRow key={t.qualifiedSlug} task={t} selection={bulk.rowSelection} />
         ))}
       </SectionCard>
 
       <SectionCard title="Projects">
-        {projects.map(p => <ProjectBlock key={p.slug} project={p} />)}
+        {projects.map(p => <ProjectBlock key={p.slug} project={p} selection={bulk.rowSelection} />)}
       </SectionCard>
 
       <SectionCard title="Activity">
@@ -89,11 +96,18 @@ export default function IndexPage() {
           </ul>
         )}
       </SectionCard>
+      {bulk.bar}
     </div>
   );
 }
 
-function ProjectBlock({ project }: { project: ProjectSummary }) {
+function dedupe(tasks: TaskSummary[]): TaskSummary[] {
+  const seen = new Map<string, TaskSummary>();
+  for (const t of tasks) if (!seen.has(t.qualifiedSlug)) seen.set(t.qualifiedSlug, t);
+  return [...seen.values()];
+}
+
+function ProjectBlock({ project, selection }: { project: ProjectSummary; selection: RowSelection }) {
   const [open, setOpen] = useState(false);
   const visible = flatTasks(project.tasks).filter(t => !t.isParent && !["done", "dropped"].includes(t.status));
   const badgeCounts = Object.entries(project.counts).sort();
@@ -113,7 +127,7 @@ function ProjectBlock({ project }: { project: ProjectSummary }) {
       {open && (
         <div className="pb-1 pl-6">
           {visible.length === 0 ? <Empty text="No open tasks." /> : visible.map(t => (
-            <TaskRow key={t.qualifiedSlug} task={t} />
+            <TaskRow key={t.qualifiedSlug} task={t} selection={selection} />
           ))}
         </div>
       )}

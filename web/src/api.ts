@@ -1,5 +1,5 @@
 import type {
-  ConfigSnapshot, HarnessSnapshot, LogSource, MutationResponse, ProjectDetail,
+  BulkResponse, ConfigSnapshot, HarnessSnapshot, LogSource, MutationResponse, ProjectDetail,
   ProjectSummary, QueueItem, RunsFeed, SearchHit, StatusEvent, TailChunk,
   TaskDetail, Vocab,
 } from "./types";
@@ -76,6 +76,6 @@ export const api = {
   editProject: (projectSlug: string, fields: Record<string, unknown>) =>
     postJson(`/api/projects/${enc(projectSlug)}/edit`, fields),
   bulk: (action: string, slugs: string[], reason?: string) =>
-    postJson(`/api/bulk/${action}`, reason ? { slugs, reason } : { slugs }),
+    postJson(`/api/bulk/${action}`, reason ? { slugs, reason } : { slugs }) as Promise<MutationResponse & BulkResponse>,
   setWorkers: (value: number) => postJson("/api/harness/workers", { value }),
 };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { flatTasks, shortStamp, taskHref } from "./lib";
+import { flatTasks, intersectCaps, shortStamp, taskHref } from "./lib";
 import type { TaskSummary } from "./types";
 
 function task(slug: string, segments: string[], children: TaskSummary[] = []): TaskSummary {
@@ -34,5 +34,24 @@ describe("flatTasks", () => {
 describe("shortStamp", () => {
   it("trims an ISO stamp to minute precision", () => {
     expect(shortStamp("2026-07-06T21:12:38.123Z")).toBe("2026-07-06 21:12");
+  });
+});
+
+describe("intersectCaps", () => {
+  const caps = {
+    open: ["promote", "close", "drop", "block"],
+    ready: ["pull", "close", "drop", "block"],
+    done: ["archive"],
+  };
+  it("returns a single status's caps in render order", () => {
+    expect(intersectCaps(["open"], caps)).toEqual(["promote", "close", "drop", "block"]);
+  });
+  it("intersects across mixed statuses", () => {
+    expect(intersectCaps(["open", "ready"], caps)).toEqual(["close", "drop", "block"]);
+  });
+  it("returns empty when nothing applies to all (and for unknown statuses)", () => {
+    expect(intersectCaps(["open", "done"], caps)).toEqual([]);
+    expect(intersectCaps(["weird"], caps)).toEqual([]);
+    expect(intersectCaps([], caps)).toEqual([]);
   });
 });
