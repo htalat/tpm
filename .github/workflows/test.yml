@@ -40,7 +40,9 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
         working-directory: web
-      - run: npx playwright install --with-deps chromium
+      # No --with-deps: ubuntu-latest already carries chromium shared libs,
+      # and skipping apt removes a whole class of transient repo failures.
+      - run: npx playwright install chromium
         working-directory: web
       - run: npm run build
         working-directory: web
