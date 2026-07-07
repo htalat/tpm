@@ -380,6 +380,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Ser
     serveSpa(url.pathname, res);
     return;
   }
+  // The SPA is the default UI once a build exists: a bare `/` hop lands on
+  // /app. Any query keeps the SSR index — `?classic=1` is the explicit opt
+  // out, and `?project=` / `?flash=` are SSR-flow parameters that must keep
+  // rendering where they were produced.
+  if (url.pathname === "/" && [...url.searchParams.keys()].length === 0 && existsSync(join(SPA_DIST, "index.html"))) {
+    res.writeHead(302, { location: "/app" });
+    res.end();
+    return;
+  }
   const root = findRoot();
   if (url.pathname === "/events") {
     // SSE stream: held open, never goes through route()'s request/response shape.
@@ -401,6 +410,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Ser
         const fromRun = snapshot ? parseRunLog(snapshot.text).sessionId ?? null : null;
         return fromRun ?? (typeof task.data.session_id === "string" && task.data.session_id ? task.data.session_id : null);
       },
+      prCache: (url) => readPrCache(url),
+      configSnapshot: defaultConfigSnapshot,
       mutationsEnabled: ctx.mutationsEnabled,
     });
     if (apiResult) {
@@ -547,6 +558,44 @@ export function route(pathname: string, params: URLSearchParams, projects: Proje
     const includeArchived = params.get("archived") === "1";
     return ok("text/html; charset=utf-8", renderSearch(projects, q, includeArchived, prCache, taskLocks));
   }
+  // JSON runs feed for the SPA runs page: run-log list + a rendered tail of
+  // the latest run (transcript events arrive as the same HTML fragments the
+  // SSR panel renders; the live tail endpoint below advances it).
+  const apiRunsMatch = pathname.match(/^\/api\/tasks\/(.+)\/runs\/?$/);
+  if (apiRunsMatch) {
+    const slugPath = decodeURIComponent(apiRunsMatch[1]);
+    const match = findTask(projects, slugPath);
+    if (!match) return { status: 404, contentType: "application/json", body: JSON.stringify({ ok: false, error: `No task: ${slugPath}` }) };
+    const names = runLogList(match.task);
+    const snapshot = runLog(match.task);
+    const slugSegs = (match.task.parent
+      ? [match.project.slug, match.task.parent, match.task.slug]
+      : [match.project.slug, match.task.slug]).map(encodeURIComponent).join("/");
+    let latest: Record<string, unknown> | null = null;
+    if (snapshot) {
+      const { events, parsed, skipped, format, sessionId } = parseRunLog(snapshot.text);
+      const tail = events.slice(-RUN_PANEL_EVENTS);
+      latest = {
+        name: snapshot.name,
+        running: String(match.task.data.status ?? "") === "in-progress",
+        html: tail.map(renderRunEvent).join(""),
+        totalEvents: events.length,
+        shownEvents: tail.length,
+        parsed,
+        skipped,
+        offset: Buffer.byteLength(snapshot.text),
+        format,
+        sessionId: sessionId ?? null,
+        tailPath: `/t/${slugSegs}/runs/${encodeURIComponent(snapshot.name)}/tail`,
+        rawPath: `/t/${slugSegs}/runs/${encodeURIComponent(snapshot.name)}`,
+      };
+    }
+    return ok("application/json", JSON.stringify({
+      runs: names.map(n => ({ name: n, timestamp: runLogDisplayTimestamp(n) })),
+      latest,
+    }));
+  }
+
   if (pathname === "/api/harness") {
     const h = opts.harness ?? null;
     return ok("application/json", JSON.stringify(h ? { running: true, ...h } : { running: false }));

@@ -4104,3 +4104,39 @@ test("route: completed runs page renders no tail attrs and no appender", () => {
   assert.doesNotMatch(r.body, /data-tail=/);
   assert.doesNotMatch(r.body, /setInterval\(tick,2000\)/);
 });
+
+// ---- JSON runs feed (/api/tasks/<path>/runs) — SPA runs page ---------------
+
+test("route: /api/tasks/<path>/runs returns run list + rendered latest tail", () => {
+  const t = task("001-a", "in-progress");
+  const p = project("alpha", [t]);
+  const log = '{"type":"system","subtype":"init","session_id":"sess-9"}\n'
+    + '{"type":"assistant","message":{"content":[{"type":"text","text":"hi there"}]}}\n';
+  const r = route("/api/tasks/alpha%2F001-a/runs", new URLSearchParams(), [p], {
+    runLog: () => ({ name: "20260707T000000Z.log", text: log }),
+    runLogList: () => ["20260707T000000Z.log", "20260701T000000Z.log"],
+  });
+  assert.equal(r.status, 200);
+  assert.match(r.contentType, /application\/json/);
+  const body = JSON.parse(r.body);
+  assert.equal(body.runs.length, 2);
+  assert.equal(body.runs[0].name, "20260707T000000Z.log");
+  assert.match(body.runs[0].timestamp, /2026-07-07/);
+  assert.equal(body.latest.running, true);
+  assert.equal(body.latest.sessionId, "sess-9");
+  assert.match(body.latest.html, /hi there/);
+  assert.equal(body.latest.offset, Buffer.byteLength(log));
+  assert.match(body.latest.tailPath, /^\/t\/alpha\/001-a\/runs\/20260707T000000Z\.log\/tail$/);
+});
+
+test("route: /api/tasks/<path>/runs — no logs yet and unknown task", () => {
+  const p = project("alpha", [task("001-a", "ready")]);
+  const none = route("/api/tasks/alpha/001-a/runs", new URLSearchParams(), [p], {
+    runLog: () => null,
+    runLogList: () => [],
+  });
+  assert.equal(JSON.parse(none.body).latest, null);
+
+  const missing = route("/api/tasks/alpha/nope/runs", new URLSearchParams(), [p], {});
+  assert.equal(missing.status, 404);
+});

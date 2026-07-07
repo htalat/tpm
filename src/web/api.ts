@@ -9,6 +9,10 @@ import { STATUS_VOCAB } from "../core/mutate.ts";
 import { KNOWN_TASK_TYPES } from "../core/new.ts";
 import type { HarnessLogReader } from "../core/harness_log.ts";
 import type { StatusEventRecord } from "../core/events.ts";
+import { parsePrUrl } from "../core/orchestrate/pr_cache.ts";
+import type { PrCacheEntry } from "../core/orchestrate/pr_cache.ts";
+import { analyzePr } from "../core/orchestrate/pr_signal.ts";
+import type { RawPrJson } from "../core/orchestrate/pr_signal.ts";
 
 // JSON API v1 — the read/mutation surface the React SPA talks to. Everything
 // here is additive beside the server-rendered pages: handleRequest dispatches
@@ -216,7 +220,41 @@ export interface ApiOpts {
   harnessLog?: HarnessLogReader;
   // Injected run-log readers (serve's defaults touch disk).
   sessionId?: (task: Task) => string | null;
+  prCache?: (url: string) => PrCacheEntry | null;
+  configSnapshot?: () => unknown;
   mutationsEnabled?: boolean;
+}
+
+// Mirrors the SSR PR card's freshness rule (serve.ts PR_CACHE_STALE_MS).
+const PR_CACHE_STALE_MS = 60 * 60 * 1000;
+
+// Digest a cached PR payload into the badge set the SPA renders. Non-github
+// hosts (and stale/absent cache entries) get the minimal shape — same
+// degradation the SSR cards have.
+function prDigest(url: string, entry: PrCacheEntry | null, nowMs: number): Record<string, unknown> {
+  const ref = parsePrUrl(url);
+  const base = {
+    url,
+    displayId: ref?.displayId ?? null,
+    host: entry?.host ?? ref?.host ?? null,
+    fetchedAt: entry?.fetchedAt ?? null,
+    fresh: false,
+  };
+  if (!entry) return base;
+  const age = nowMs - Date.parse(entry.fetchedAt);
+  const fresh = Number.isFinite(age) && age <= PR_CACHE_STALE_MS;
+  if (!fresh || entry.host !== "github") return { ...base, fresh };
+  const pr = entry.pr as RawPrJson;
+  const d = analyzePr(pr);
+  return {
+    ...base,
+    fresh,
+    title: pr.title ?? null,
+    state: d.state,
+    ci: d.ci,
+    review: d.review,
+    mergeable: d.mergeable,
+  };
 }
 
 function str(v: unknown): string | null {
@@ -329,8 +367,10 @@ export function routeApi(
     });
   }
 
+  // `/api/tasks/<path>/runs` is served by route() (the run-log readers and
+  // transcript renderer live there) — return null so it falls through.
   const taskMatch = pathname.match(/^\/api\/tasks\/(.+)$/);
-  if (taskMatch) {
+  if (taskMatch && !pathname.endsWith("/runs")) {
     const slugPath = decodeURIComponent(taskMatch[1]);
     const match = findTask(projects, slugPath);
     if (!match) return apiError(404, `No task: ${slugPath}`);
@@ -342,6 +382,8 @@ export function routeApi(
       project: { slug: project.slug, name: str(project.data.name) ?? project.slug },
       sections: sectionsOf(task.body),
       sessionId: opts.sessionId ? opts.sessionId(task) : (str(task.data.session_id) ?? null),
+      prDetails: (Array.isArray(task.data.prs) ? (task.data.prs as unknown[]).map(String) : [])
+        .map(url => prDigest(url, opts.prCache ? opts.prCache(url) : null, Date.now())),
       mtimeMs,
     });
   }
@@ -375,6 +417,10 @@ export function routeApi(
         snippet: h.snippet,
       })),
     });
+  }
+
+  if (pathname === "/api/config" && opts.configSnapshot) {
+    return json(200, { config: opts.configSnapshot() });
   }
 
   if (pathname === "/api/vocab") {
