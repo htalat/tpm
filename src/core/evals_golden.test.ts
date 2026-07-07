@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -121,6 +121,32 @@ test("golden runner: budget stops the suite before the next dispatch", { timeout
     const report = await runGoldenSuite({ reps: 3, only: "fix-bug", agentBin: agent, budgetUsd: 0.005, minutes: 2 });
     assert.equal(report.results.length, 1);
     assert.equal(report.budgetExhausted, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("golden runner: a FILE-form task survives the fold at dispatch (tpm/188 regression)", { timeout: 120_000 }, async () => {
+  // Reproduce the pre-fix crash shape: seed the fixture as file-form by
+  // converting the folder task back to a flat .md, then dispatch.
+  const dir = mkdtempSync(join(tmpdir(), "tpm-fake-agent-"));
+  try {
+    const agent = writeAgent(dir, "good-fix2.mjs", GOOD_FIX_BUG);
+    const report = await runGoldenSuite({
+      reps: 1,
+      only: "fix-bug",
+      agentBin: agent,
+      minutes: 2,
+      mutateEnv: (env) => {
+        // fold back to file-form: tasks/<slug>/task.md -> tasks/<slug>.md
+        const folder = join(env.root, "golden", "tasks", env.slug);
+        const flat = join(env.root, "golden", "tasks", `${env.slug}.md`);
+        writeFileSync(flat, readFileSync(join(folder, "task.md"), "utf8"));
+        rmSync(folder, { recursive: true, force: true });
+      },
+    });
+    const r = report.results[0];
+    assert.equal(r.pass, true, JSON.stringify(r.checks.filter(c => !c.ok), null, 2));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
