@@ -27,6 +27,7 @@ A tpm tree (data — lives wherever `tpm init` was run, e.g. `~/Documents/projec
 ```
 <root>/.tpm/templates/                          per-tree templates (copied from defaults)
 <root>/.tpm/locks/<project>--<slug>.lock        per-task orchestrator locks (gitignore if syncing)
+<root>/.tpm/events.ndjson                       append-only journal of status transitions (audit trail)
 <root>/reports/index.html                       generated rollup
 <root>/<slug>/project.md                        goals, context, notes, project log
 <root>/<slug>/tasks/NNN-*/task.md               folder-form task (default; task.md + supporting files)
@@ -169,14 +170,16 @@ tpm splits work across two inboxes:
 |-------------------|-------------|-----------------------------------|
 | `open`            | human       | `tpm inbox` / manual triage       |
 | `ready`           | agent       | `tpm next` → `/tpm <slug>`        |
-| `needs-feedback`  | agent       | `tpm next` → `/tpm feedback <slug>` |
-| `needs-close`     | (transient) | poller auto-closes inline; manual `/tpm done <slug>` for stragglers |
+| `rework`  | agent       | `tpm next` → `/tpm feedback <slug>` |
+| `closing`     | human (alert) | poller auto-closes inline; stragglers land in `tpm inbox` for manual `/tpm done <slug>` |
 | `in-progress`     | passive     | (work happening or waiting on review) |
-| `needs-review`    | human       | `tpm inbox` (agent escalated)     |
+| `review`    | human       | `tpm inbox` (agent escalated)     |
 | `blocked`         | human       | `tpm inbox` (external dep)        |
 | `done` / `dropped`| —           | (terminal)                        |
 
-`tpm next` selection priority: `needs-feedback` > stranded `in-progress` > `ready` (in-flight signal first, then reclaim, then new tasks). A task counts as "stranded" when its status is `in-progress` but no per-task lock file exists — the lock is the source of truth for "is someone working on this," and a released lock with a stuck status means a prior agent exited without cleaning up. `tpm next` admits the stranded task on the next tick — that in-process admission is the sole recovery mechanism. `needs-close` isn't dispatched — the PR-signal poller flips a merged PR's task to `needs-close` then immediately calls `tpm complete --outcome "<derived from PR title + body>"` in the same tick. Stragglers (auto-close failed: PR body empty, Outcome already filled, lock contention) stay at `needs-close` for the manual `/tpm done <slug>` escape hatch — `tpm ls --status needs-close` surfaces them. `tpm inbox` lists `needs-review`, `blocked`, and `open` cross-project, most actionable first.
+> **Migrating a pre-rename tree.** The `needs-*` statuses were renamed to one-word, actor-implying names: `needs-feedback` → `rework` (agent's turn), `needs-review` → `review` (human's turn), `needs-close` → `closing` (auto-close-failed alert). The new CLI treats the old names as unknown statuses (visible in `tpm ls`, ignored by the queues and the poller), so after updating the CLI run **`tpm migrate`** once per tree — it rewrites every task in place (live + archived), stamps a Log line per rewrite, and is idempotent. `tpm migrate --dry-run` previews.
+
+`tpm next` selection priority: `rework` > stranded `in-progress` > `ready` (in-flight signal first, then reclaim, then new tasks). A task counts as "stranded" when its status is `in-progress` but no per-task lock file exists — the lock is the source of truth for "is someone working on this," and a released lock with a stuck status means a prior agent exited without cleaning up. `tpm next` admits the stranded task on the next tick — that in-process admission is the sole recovery mechanism. `closing` isn't dispatched — the PR-signal poller flips a merged PR's task to `closing` then immediately calls `tpm complete --outcome "<derived from PR title + body>"` in the same tick. Stragglers (auto-close failed: PR body empty, Outcome already filled, lock contention) stay at `closing` for the manual `/tpm done <slug>` escape hatch — they surface in `tpm inbox` (and the dashboard's Your-inbox section) as the top-ranked alert, or query directly with `tpm ls --status closing`. `tpm inbox` lists `closing`, `review`, `blocked`, and `open` cross-project, most actionable first.
 
 Promotion `open` → `ready` is a deliberate human act. The canonical way is the `/tpm discuss <slug>` Claude Code skill mode, which shapes the task body via conversation and only flips status on explicit confirmation. Manual frontmatter edits also work.
 
@@ -191,19 +194,19 @@ stateDiagram-v2
     ready --> blocked: external dep noted
 
     in_progress --> done: poller — PR merged (auto-close inline)
-    in_progress --> needs_feedback: poller — conflict / CI red / behind / threads
-    in_progress --> needs_close: poller — auto-close failed (escape hatch)
-    in_progress --> needs_review: poller — changes requested
+    in_progress --> rework: poller — conflict / CI red / behind / threads
+    in_progress --> closing: poller — auto-close failed (escape hatch)
+    in_progress --> review: poller — changes requested
     in_progress --> blocked: external dep
     in_progress --> dropped
 
-    needs_feedback --> in_progress: /tpm feedback (round done)
-    needs_feedback --> needs_review: agent escalates
+    rework --> in_progress: /tpm feedback (round done)
+    rework --> review: agent escalates
 
-    needs_close --> done: manual /tpm done (escape hatch)
+    closing --> done: manual /tpm done (escape hatch)
 
-    needs_review --> in_progress: human pushed update
-    needs_review --> dropped
+    review --> in_progress: human pushed update
+    review --> dropped
 
     blocked --> ready: unblocked, no PR
     blocked --> in_progress: unblocked, PR exists
@@ -213,7 +216,9 @@ stateDiagram-v2
     dropped --> [*]
 ```
 
-The poller that flips `in-progress` → `done` (inline auto-close on merge) / `needs-feedback` / `needs-review` is `tpm poll` — see [PR-signal poller](#pr-signal-poller) below.
+The poller that flips `in-progress` → `done` (inline auto-close on merge) / `rework` / `review` is `tpm poll` — see [PR-signal poller](#pr-signal-poller) below.
+
+The diagram is enforced, not just documented: every status write goes through the allow-list transition table in `src/core/transitions.ts`. Terminals (`done` / `dropped`) have exactly one exit (`tpm reopen`), `open` can't jump straight to a `needs-*` state, and the in-flight statuses are fully connected (operator, agent, and poller all legitimately move tasks between them). `tpm status <task> <new-status> --force` bypasses the table for repairing hand-mangled frontmatter. Every transition is also journaled to `<root>/.tpm/events.ndjson` (one NDJSON line: timestamp, task, from → to, verb, actor) — the audit trail for "who moved what, when".
 
 ### Drain the agent queue: three flavors
 
@@ -267,10 +272,11 @@ The `--autonomous` gate is the safety boundary between "an agent can run this wh
 - **Same-repo strategy** — when two agents claim different tasks in the same `repo.local`, they collide on the working tree. Each project picks one of two strategies via the `same_repo_strategy` frontmatter field:
   - **`serialize`** (default) — adds a repo-level lock alongside each per-task lock. Only one task runs against a given repo at a time; tasks in *other* repos still run in parallel. `tpm next --claim` and `tpm orchestrate` both honor it; if the repo is busy, they fall through to the next eligible candidate. Safe for any repo size; caps same-repo throughput at 1 (which is usually correct — most teams don't want two LLMs editing the same checkout simultaneously).
   - **`worktree`** — *declared but not implemented in v0.* Each task would get its own `git worktree add` checkout, allowing same-repo parallelism at the cost of N working trees. The frontmatter field accepts the value (so projects can pre-declare intent), but `tpm orchestrate` and `tpm next --claim` currently refuse to dispatch worktree-strategy tasks. Implementation lands in a follow-up; until then, leave the field unset (or set to `serialize`) to use the harness.
-- **Repo presence** — before spawning, the orchestrator resolves the project's `repo.local` and confirms it exists on disk (the agent's sandbox cwd has to be a real checkout). If `repo.local` is unset or the path isn't cloned yet, the task is flipped to `blocked` (the reason names the missing path) rather than skipped — so it surfaces in `tpm inbox` and drops off the `ready`/`needs-feedback` queue instead of re-failing and re-logging the same WARN on every tick. Clone (or `git init`) the repo, then `tpm ready <task>` to re-enter the autonomous queue. A task already blocked this way isn't re-blocked on a later tick.
+- **Repo presence** — before spawning, the orchestrator resolves the project's `repo.local` and confirms it exists on disk (the agent's sandbox cwd has to be a real checkout). If `repo.local` is unset or the path isn't cloned yet, the task is flipped to `blocked` (the reason names the missing path) rather than skipped — so it surfaces in `tpm inbox` and drops off the `ready`/`rework` queue instead of re-failing and re-logging the same WARN on every tick. Clone (or `git init`) the repo, then `tpm ready <task>` to re-enter the autonomous queue. A task already blocked this way isn't re-blocked on a later tick.
 - **Fresh main** — the execution prompt instructs the agent to `git checkout main && git pull --ff-only` before cutting its feature branch and to `tpm block` on a dirty tree or non-fast-forward. The rule also lives in `AGENTS.md` step 4 so manual `/tpm <slug>` runs follow it. PR #120 hit the canonical failure (agent branched off stale local main → conflict at merge); putting the check in the prompt covers both paths without a second source of truth.
 - **Drift check** — `tpm drift-check <task>` refuses to dispatch if the project's `repo.local` is on a non-default branch or has uncommitted changes. Manual `/tpm <slug>` runs skip this; humans can knowingly work on a dirty tree.
 - **Time bound + revert** — each dispatched run is hard-killed at the `time_bound_minutes` boundary (cascade: task > project > global config > built-in default 30m). On timeout, `tpm revert <task>` flips the task back to `ready` so the next cron tick can retry. Exit codes mirror `timeout(1)` (`124` on timeout). In pool mode, `--minutes N` is the orchestrate-wide deadline — workers stop picking new tasks once it passes and finish whatever's in flight.
+- **Retry cap** — revert-to-ready means re-dispatch, so without a cap a perma-failing task burns an agent run on every tick forever. Each dispatch bumps `orchestrator_attempts` in the task's frontmatter; once it reaches `max_attempts` (cascade: task > project > global config > built-in default 3) the dispatcher auto-blocks the task instead of claiming it — it lands in `tpm inbox` with a reason pointing at the run logs. The counter clears when a run ships (PR/report delivered) or when a human re-promotes (`tpm ready` / `tpm reopen` — the explicit "try again"); the orchestrator's own revert keeps it, so the cap counts consecutive burned runs.
 - **Worker pool** — `--workers N` (default 1) fans out N concurrent worker loops inside one orchestrate invocation. Each worker independently picks + claims its own task via the per-task lock — no cross-worker coordination needed. Worker ids (`worker-1`, `worker-2`, …) are used both for lock attribution and as the `agent=<id>` prefix on envelope log lines so a merged log file stays readable. Mix CLIs across slots with `--cli claude,copilot,…` (length must equal `--workers`).
 - **Notifications** — desktop pings at start/finish/fail, gated by a `notifications` cascade (task > project > global config > default `{ start: false, finish: true, fail: true }`). Channels per platform: macOS uses `osascript`; Windows uses `powershell.exe` and prefers the [BurntToast](https://www.powershellgallery.com/packages/BurntToast) module (`Install-Module BurntToast` — optional but recommended), falling back to the built-in `Windows.UI.Notifications` WinRT API if BurntToast isn't installed; Linux uses `notify-send` (libnotify — on GNOME/KDE and most freedesktop.org desktops; install your distro's `libnotify-bin`/`libnotify` if absent); other platforms log to stderr and skip. `tpm notify <event> <task>` is the same hook as a CLI verb. **Clicking a notification opens the task's `tpm serve` page** (`<serve.url>/t/<project>/<slug>`): on macOS that needs [`terminal-notifier`](https://github.com/julienXX/terminal-notifier) on PATH (`brew install terminal-notifier` — optional; `osascript` has no click-action API, so without it the notification still fires, just non-clickable); on Windows the toast launches the URL as a protocol; on Linux the notification is display-only (`notify-send` has no portable click action). The link only resolves while `tpm serve` is running — see `serve.url` under [Config fields](#config-fields).
 
@@ -278,12 +284,12 @@ The `--autonomous` gate is the safety boundary between "an agent can run this wh
 
 ### PR-signal poller
 
-`tpm poll` is the in-process PR-signal poller. Walks every non-terminal task with a linked PR (plus every `in-progress` task — the round may open its PR mid-tick): `ready`, `in-progress`, `needs-review`, `needs-feedback`, `needs-close`. The PR is alive across all of those — review states, CI runs, eventual merge — so the watch set spans the whole non-terminal lifecycle rather than just the in-flight slice. `open` / `blocked` / `done` / `dropped` are skipped. The rule lives in `shouldWatchForPrSignal` in `src/core/pr_signal.ts`. Each candidate dispatches to a host adapter per linked PR URL. Adapters ship for GitHub (`gh pr view`) and Azure DevOps (`az repos pr show` + `az pipelines runs list`); adding a new host is one file under `src/core/hosts/<name>.ts` plus an entry in the `HOSTS` array in `src/core/pr_signal.ts`. Each adapter answers the same coarse question in its own dialect — `merged` / `needs-agent` / `needs-human` / `abandoned` / `no-action` — so the harness never carries `if host === 'ado'` branches. Per-host CLI presence is checked inside the adapter (an ADO-only user doesn't need `gh` installed). Aggregated signal flips status to `needs-feedback` (merge conflict / CI red / branch behind / open threads — agent attempts the rebase and other fixes via `/tpm feedback`), `needs-review` (`CHANGES_REQUESTED`, ADO vote ≤ -5, or a PR closed-without-merge — the human decides whether to reopen or drop), or **auto-closes inline** when any linked PR merged: flips to `needs-close`, derives an Outcome from PR title + body (Test plan + Claude Code footer stripped), and calls the same code path as `tpm complete --outcome "<derived>"` in the same tick. No claude session spawned, no orchestrator wait. If the inline auto-close fails (body empty, Outcome already filled, lock contention) the task stays at `needs-close` for manual `/tpm done <slug>`. `tpm poll --dry-run` previews decisions without mutating.
+`tpm poll` is the in-process PR-signal poller. Walks every non-terminal task with a linked PR (plus every `in-progress` task — the round may open its PR mid-tick): `ready`, `in-progress`, `review`, `rework`, `closing`. The PR is alive across all of those — review states, CI runs, eventual merge — so the watch set spans the whole non-terminal lifecycle rather than just the in-flight slice. `open` / `blocked` / `done` / `dropped` are skipped. The rule lives in `shouldWatchForPrSignal` in `src/core/pr_signal.ts`. Each candidate dispatches to a host adapter per linked PR URL. Adapters ship for GitHub (`gh pr view`) and Azure DevOps (`az repos pr show` + `az pipelines runs list`); adding a new host is one file under `src/core/hosts/<name>.ts` plus an entry in the `HOSTS` array in `src/core/pr_signal.ts`. Each adapter answers the same coarse question in its own dialect — `merged` / `needs-agent` / `needs-human` / `abandoned` / `no-action` — so the harness never carries `if host === 'ado'` branches. Per-host CLI presence is checked inside the adapter (an ADO-only user doesn't need `gh` installed). Aggregated signal flips status to `rework` (merge conflict / CI red / branch behind / open threads — agent attempts the rebase and other fixes via `/tpm feedback`), `review` (`CHANGES_REQUESTED`, ADO vote ≤ -5, or a PR closed-without-merge — the human decides whether to reopen or drop), or **auto-closes inline** when any linked PR merged: flips to `closing`, derives an Outcome from PR title + body (Test plan + Claude Code footer stripped), and calls the same code path as `tpm complete --outcome "<derived>"` in the same tick. No claude session spawned, no orchestrator wait. If the inline auto-close fails (body empty, Outcome already filled, lock contention) the task stays at `closing` for manual `/tpm done <slug>`. `tpm poll --dry-run` previews decisions without mutating.
 
 Cron pattern combining the signal poller and the drain:
 
 ```cron
-# Every 15 min during work hours: flip in-flight PRs to needs-feedback / needs-review
+# Every 15 min during work hours: flip in-flight PRs to rework / review
 */15 9-19 * * 1-5   /opt/homebrew/bin/tpm poll >> ~/.tpm/recurring-poll.log 2>&1
 # Every 5 min: drain the agent queue with two concurrent workers
 */5 * * * *         /opt/homebrew/bin/tpm orchestrate --workers 2 >> ~/.tpm/orchestrator.log 2>&1
@@ -297,6 +303,16 @@ tpm loop --orchestrate-interval 300 --workers 2
 tpm loop --once                                      # one pass of each, then exit
 ```
 
+**Or the whole harness in one process** — `tpm up` supersedes the serve-in-one-pane + loop-in-another pattern. One supervisor owns the web UI, the PR-signal poll loop, and a daemon-mode orchestrate pool (no deadline — it drains the queue for as long as the process runs):
+
+```sh
+tpm up                                   # UI on :7777 + poller + 1-worker pool
+tpm up --workers 2 --poll-interval 120
+tpm up --workers 0                       # start parked: UI + poller only, scale up later
+```
+
+Because the pool lives in the same process as the UI, the index gains a **harness panel**: state chip (running / paused / draining), last poll outcome, and a workers stepper + pause/resume that write the same `workers` config knob the pool's reconcile tick already hot-reloads (so the controls also steer an external cron pool). `/api/harness` serves the same snapshot as JSON. Stale-lock hygiene runs on every poll tick — a daemon that runs for days keeps sweeping crashed agents' locks, not just at startup. Ctrl-C drains gracefully (in-flight tasks finish; press again to force-exit — the stale-lock sweep and stranded re-admission recover whatever a force-exit strands). Stop a single running task from the UI with its **Pull** button (the run's terminal-state poll SIGTERMs the agent within ~5s), or scale to 0 to pause the whole pool.
+
 Two independent loops (a slow orchestrate tick never blocks a poll tick); SIGINT/SIGTERM kills the in-flight child and exits. It's a faithful port of the bash one-liner this section used to carry — `trap 'kill 0' EXIT` plus two backgrounded `while true; do …; sleep; done` loops — kept as TypeScript so there's no second language to maintain. Each tick runs as a child `tpm` (resolved via `$TPM_BIN` → this install's `bin/tpm` → bare `tpm` on PATH, same as `tpm schedule`), so a crashing tick can't take the loop down.
 
 `tpm orchestrate` and `tpm poll` emit one structured line per event so a single log file greps + sorts cleanly:
@@ -304,7 +320,7 @@ Two independent loops (a slow orchestrate tick never blocks a poll tick); SIGINT
 ```
 2026-05-15T09:14:33-07:00  INFO   poll             no tasks to watch
 2026-05-15T09:14:35-07:00  INFO   poll             decide tpm/040-serve-mutations pr=https://… host=github action=no-signal reason=no-action
-2026-05-15T09:14:36-07:00  INFO   poll             flipped tpm/041-foo -> needs-feedback (CI FAIL on https://…)
+2026-05-15T09:14:36-07:00  INFO   poll             flipped tpm/041-foo -> rework (CI FAIL on https://…)
 2026-05-15T09:14:37-07:00  INFO   poll             decide tpm/043-baz pr=https://… host=ado action=skip reason=throttled (age=4m, floor=15m)
 2026-05-15T09:14:37-07:00  INFO   poll             auto-closed tpm/042-bar (merged https://…)
 2026-05-15T09:14:38-07:00  INFO   poll             summary checked=6 flipped=2 no-signal=3 fetch-failed=1 throttled=1
@@ -344,7 +360,9 @@ open http://127.0.0.1:7777
 tmux kill-session -t tpm-web     # stop
 ```
 
-Routes: `/` (Your inbox / Agent queue / In flight, with a project-chip nav across the top to jump into any project; append `?project=<slug>` to filter the queues; rows for tasks with linked PRs carry a `[PR #N <state>]` chip linking out to GitHub), `/p/<project>` (project view — sidebar with project frontmatter, rendered Goal / Context / Notes / Log, and tasks grouped by status; archived tasks hidden by default, append `?archived=1` or use the "Show archived" toggle), `/t/<project>/<slug>` (task view with rendered Context / Plan / Log / Outcome, a PR panel — one card per linked PR with state / CI / review / mergeable badges + a GitHub link — and an Actions panel; resolves archived tasks too), `/api/refresh` (JSON for client polling). Auto-refreshes every 30s via meta-refresh — no JS framework. The markdown subset rendered in task bodies covers headings, lists, fenced code, links, and basic emphasis; intentionally rejects GFM tables / footnotes (write HTML in the body if you need them).
+Live updates ride two rails: the soft-poll interval (every 5–30s depending on the page) stays as the fallback, and `/events` — a server-sent-events stream tailing the status journal (`<root>/.tpm/events.ndjson`) — pushes every transition to open tabs within ~1s, no matter which process made it (an agent's `tpm pr`, a cron poller flip, another tab). The index also renders an **Activity** feed (the journal's newest entries: who moved what, when) and — under `tpm up` — the harness panel described above. On a task's `/runs` page, an in-progress run streams **live**: a 2-second incremental tail (`…/runs/<name>/tail?offset=N`) appends new transcript events as the agent emits them — byte-offset framed, so you watch tool calls land in near-real-time instead of waiting for a page refresh.
+
+Routes: `/search?q=<text>` (global task search — case-insensitive over slug, title, status, tags, PR URLs, and body, slug/title hits ranked first, body hits shown with a highlighted snippet; the masthead search box on every page lands here; `&archived=1` widens to archived tasks), `/` (Your inbox / Agent queue / In flight / Activity, with a project-chip nav across the top to jump into any project; append `?project=<slug>` to filter the queues; rows for tasks with linked PRs carry a `[PR #N <state>]` chip linking out to GitHub), `/p/<project>` (project view — sidebar with project frontmatter, rendered Goal / Context / Notes / Log, and tasks grouped by status; archived tasks hidden by default, append `?archived=1` or use the "Show archived" toggle), `/t/<project>/<slug>` (task view with rendered Context / Plan / Log / Outcome, a PR panel — one card per linked PR with state / CI / review / mergeable badges + a GitHub link — and an Actions panel; resolves archived tasks too), `/api/refresh` (JSON for client polling). Auto-refreshes every 30s via meta-refresh — no JS framework. The markdown subset rendered in task bodies covers headings, lists, fenced code, links, and basic emphasis; intentionally rejects GFM tables / footnotes (write HTML in the body if you need them).
 
 The PR panel reads host-native PR snapshots cached at `~/.tpm/pr-cache/<host-namespaced-path>.json` (GitHub: `<owner>/<repo>/<number>.json`; Azure DevOps: `ado/<org>/<project>/<repo>/<id>.json`), written by `tpm poll` on each tick — stale-while-revalidate, so the page renders instantly and the badges are at most one poll interval old (the "fetched X ago" hint says when). A cache miss or a snapshot older than an hour renders a placeholder instead of blocking on a live `gh` / `az` call; it fills in on the next poll. The rich badge set (CI rollup / mergeable / review decision) is GitHub-only today; ADO entries currently render a minimal card with the host label — host-idiomatic ADO rendering (vote scores, policy state) is a follow-up.
 
@@ -421,20 +439,22 @@ tpm complete <task> [--outcome "..."] [--no-archive] [--archive]
 tpm block <task> "<reason>"               # set status: blocked, log the reason
 tpm reopen <task> ["<reason>"]            # set status: open, log reopened (optional reason)
 tpm revert <task> ["<reason>"]            # flip in-progress -> ready, log a timeout/revert (no-op otherwise)
-tpm status <task> <new-status>            # generic status setter (validated)
+tpm status <task> <new-status> [--force]  # generic status setter, validated against the
+                                          # transition table (src/core/transitions.ts);
+                                          # --force bypasses (repair hatch)
 tpm log <task> "<message>"                # append a single timestamped Log line
 tpm pr <task> <url>                       # add URL to prs:, log opened PR
 tpm report <task>                         # attach a report artifact to an investigation task
                                           # at <project>/tasks/<slug>/report.md (auto-folds file-form tasks);
-                                          # auto-flips in-progress -> needs-review (investigation analogue of tpm pr)
+                                          # auto-flips in-progress -> review (investigation analogue of tpm pr)
 tpm report <task> --export text           # print the report as plain text (drops HTML comments)
 tpm lgtm <task>                           # reviewer LGTM on a report task: derive Outcome + complete
-tpm request-changes <task> "<comment>"    # reviewer pushback: append to ## Reviewer feedback + flip to needs-feedback
+tpm request-changes <task> "<comment>"    # reviewer pushback: append to ## Reviewer feedback + flip to rework
 tpm archive <task | project/task>         # move a done/dropped task (or whole folder-form parent) to tasks/archive/
 tpm fold <task | project/task>            # promote a file-form task to folder-form (idempotent)
 tpm reparent <task> <new-parent | --top>  # move a task under a new parent (or to top-level); folds the new parent if needed
 tpm next [--project <slug>] [--autonomous] [--claim <id>]  # print next leaf task (--claim atomically locks it); exits non-zero if none/all-locked
-tpm inbox                                 # list human-queue tasks (needs-review, blocked, open) cross-project
+tpm inbox                                 # list human-queue tasks (review, blocked, open) cross-project
 tpm orchestrate [--minutes <N>] [--agent <name>] [--claude <path>] [--task <slug>]  # claim next --autonomous (or use --task pre-claimed) and run the agent CLI (claude, copilot, …) with a hard time bound; --claude <path> is a back-compat alias pinning the agent to claude with a bin override
 tpm lock acquire <task> --as <id>         # claim a per-task lock (atomic O_CREAT|O_EXCL)
 tpm lock release <task> --as <id> [--force]  # release a per-task lock
@@ -448,6 +468,10 @@ tpm schedule uninstall <name>             # remove a tpm-managed scheduled job
 tpm schedule status [<name>]              # named: installed | missing; bare: list everything installed
 tpm schedule list                         # names of all tpm-managed jobs (one per line)
 tpm serve [--port 7777] [--host 127.0.0.1]  # start a localhost HTTP UI (read + status-gated mutation forms)
+tpm up [--port 7777] [--workers N] [--poll-interval 60] [--agent <name>]
+                                          # the whole harness in one process: web UI + PR-signal
+                                          # poller + daemon-mode orchestrate pool (no deadline;
+                                          # Ctrl-C drains, twice force-exits)
 tpm report [--md]                         # rollup of every project/task -> reports/index.{html,md}
 tpm root                                  # print the tree root
 tpm path <project | task | project/task>  # print the local checkout path
@@ -496,6 +520,7 @@ cat ~/.tpm/config.json
 - `time_bound_minutes` — global default for `tpm orchestrate`'s hard time bound. Positive integer. Defaults to 30 if absent. Project and task frontmatter can override per-scope (see [Scheduling unattended runs](#scheduling-unattended-runs-cron)).
 - `notifications` — global default for `tpm orchestrate`'s system-notification calls. Three independent boolean keys: `start` / `finish` / `fail`. Default `{ start: false, finish: true, fail: true }` — quiet on every cron tick, visible on completion + failure. Project and task frontmatter can override per-scope (cascade: task > project > global). Channels: macOS `osascript`; Windows `powershell.exe` (BurntToast preferred — `Install-Module BurntToast` — WinRT fallback otherwise); Linux `notify-send` (libnotify); other platforms log to stderr.
 - `serve` — `{ "url": "..." }`, the base URL clicking a notification deep-links into (`<url>/t/<project>/<slug>`). Defaults to `http://127.0.0.1:7777` (the `tpm serve` default host/port); set it if you run serve on a non-default `--port`/`--host`. Hand-edited only — there's no `tpm config set serve.url` setter. The link resolves only while `tpm serve` is up; clicking when it's down lands the browser on a connection error.
+- `max_attempts` — orchestrator retry cap: runs a task gets before the dispatcher auto-blocks it instead of re-claiming (default 3; task/project frontmatter override, tightest cascade win). See the retry-cap rail under [Setting up the harness](#setting-up-the-harness).
 - `poll` — per-PR fetch floor for the `tpm poll` PR-signal poller: it skips any PR whose cached snapshot is younger than the floor, so a fast cron stops re-hitting the host API for PRs that haven't moved. `min_interval_minutes` is the global floor; `per_host.<host>.min_interval_minutes` overrides it for a single host (`github`, `ado`, …). Resolution is `per_host[host] ?? min_interval_minutes ?? built-in default`. The built-in defaults are deliberately ADO-friendly: **5 minutes globally, 15 for `ado`** — so an unconfigured tree keeps GitHub responsive while it stops hammering ADO. Positive integers only. `tpm poll --force` (alias `--no-throttle`) bypasses the floor for a manual diagnostic run; cron uses the throttled path. The throttled-PR count surfaces in the poller's `summary … throttled=N` log line.
 
 ## Frontmatter schema
@@ -513,6 +538,7 @@ host: github          # github | ado — informational; agents read it to pick g
 tags: []
 workflow: AGENTS.md   # optional: path (relative to repo root) to the doc agents follow when shipping work
 time_bound_minutes: 45  # optional: per-project override for `tpm orchestrate` hard time bound (positive int)
+max_attempts: 5       # optional: per-project override for the orchestrator retry cap (default 3)
 notifications:        # optional: per-project override for orchestrator notifications (any subset of keys)
   fail: false         #   silence the fail ping for this project; inherit start/finish from global
 same_repo_strategy: serialize  # serialize | worktree — how parallel agents share repo.local. Default serialize.
@@ -523,7 +549,7 @@ same_repo_strategy: serialize  # serialize | worktree — how parallel agents sh
 title: Refactor auth middleware
 slug: refactor-auth
 project: my-project
-status: open          # open | ready | in-progress | needs-feedback | needs-close | needs-review | blocked | done | dropped
+status: open          # open | ready | in-progress | rework | closing | review | blocked | done | dropped
 type: pr              # pr | investigation
 created: 2026-04-25 09:30 PDT
 closed:               # YYYY-MM-DD HH:MM ZZZ when status flips to done
@@ -532,6 +558,8 @@ tags: []
 parent: NNN-foo       # optional: marks this as a child within a folder-form parent
 workflow: AGENTS.md   # optional: per-task workflow override; falls back to project.workflow if unset
 time_bound_minutes: 15  # optional: per-task override for `tpm orchestrate` hard time bound; tightest cascade win
+max_attempts: 5       # optional: per-task override for the orchestrator retry cap (default 3)
+orchestrator_attempts: 2  # managed by the orchestrator: runs burned since the last ship/re-promote; don't hand-edit
 notifications:        # optional: per-task override for orchestrator notifications (tightest cascade win)
   start: true         #   ping when this task starts (e.g. for a long-running task you want to know kicked off)
 ```

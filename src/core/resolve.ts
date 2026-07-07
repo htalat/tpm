@@ -58,6 +58,23 @@ export function findTask(projects: Project[], query: string): TaskMatch | null {
   return null;
 }
 
+// Resolve every task in a project whose slug carries the given numeric id
+// prefix (e.g. id 12 matches "012-foo" and "12-foo"). Returns all matches so the
+// caller can distinguish "no such id" from an ambiguous id shared by a top-level
+// task and a child (numbering is per-container, so ids aren't project-unique).
+export function findTasksByNumericId(project: Project, id: number): TaskMatch[] {
+  const matches: TaskMatch[] = [];
+  for (const task of flatTasks(project.tasks)) {
+    if (taskNumericId(task.slug) === id) matches.push({ project, task });
+  }
+  return matches;
+}
+
+function taskNumericId(slug: string): number | null {
+  const m = slug.match(/^(\d+)-/);
+  return m ? Number(m[1]) : null;
+}
+
 export function findRepoTarget(projects: Project[], query: string): RepoTarget | null {
   if (!query.includes("/")) {
     const project = projects.find(pr => pr.slug === query);

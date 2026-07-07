@@ -124,7 +124,7 @@ test("runPoll: empty queue -> 'no tasks to watch', summary all zero", async () =
   }
 });
 
-test("runPoll: in-progress task with merged PR -> needs-close + inline auto-close", async () => {
+test("runPoll: in-progress task with merged PR -> closing + inline auto-close", async () => {
   const root = setupTree();
   writeTask(root, "001-foo", "in-progress", ["https://github.com/o/r/pull/1"]);
   const { sink, lines } = captureLog();
@@ -155,7 +155,7 @@ test("runPoll: in-progress task with merged PR -> needs-close + inline auto-clos
   }
 });
 
-test("runPoll: ready task + PR with CI red -> flip-to-needs-feedback", async () => {
+test("runPoll: ready task + PR with CI red -> flip-to-rework", async () => {
   const root = setupTree();
   writeTask(root, "002-bar", "ready", ["https://github.com/o/r/pull/2"]);
   const { sink, lines } = captureLog();
@@ -177,10 +177,10 @@ test("runPoll: ready task + PR with CI red -> flip-to-needs-feedback", async () 
     const { data, body } = parse(
       readFileSync(join(root, "alpha", "tasks", "002-bar.md"), "utf8"),
     );
-    assert.equal(data.status, "needs-feedback");
+    assert.equal(data.status, "rework");
     assert.match(body, /poller — CI FAIL on https:\/\/github\.com\/o\/r\/pull\/2/);
     assert.ok(
-      lines.some((l) => l.includes("flipped alpha/002-bar -> needs-feedback")),
+      lines.some((l) => l.includes("flipped alpha/002-bar -> rework")),
       `expected flip log line; got:\n${lines.join("\n")}`,
     );
   } finally {

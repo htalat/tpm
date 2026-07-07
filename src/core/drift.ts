@@ -40,6 +40,25 @@ export function checkDrift(repoLocal: string): DriftResult {
   return { clean: true, branch: current, expected, repoLocal };
 }
 
+export interface BranchState {
+  branch: string;
+  dirty: boolean;
+}
+
+// Lightweight read of a repo's current working state for the briefing: which
+// branch HEAD is on and whether the tree has uncommitted changes. Returns null
+// when `repoLocal` isn't a git repo (or doesn't exist) so the caller can simply
+// omit the line. Unlike `checkDrift`, this makes no judgement about the
+// *expected* branch — it just reports what's there, so an agent reading
+// `tpm context` knows the lay of the land without shelling into the tree.
+export function branchState(repoLocal: string): BranchState | null {
+  if (!isGitRepo(repoLocal)) return null;
+  return {
+    branch: currentBranch(repoLocal),
+    dirty: run(repoLocal, ["status", "--porcelain"]).trim().length > 0,
+  };
+}
+
 function run(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
