@@ -30,11 +30,16 @@ export class ProcessSupervisor {
     }
   }
 
-  start(name: string, script: string, env: Record<string, string | undefined> = {}): ManagedProcess {
+  start(
+    name: string,
+    script: string,
+    env: Record<string, string | undefined> = {},
+    args: string[] = [],
+  ): ManagedProcess {
     if (this.procs.has(name)) throw new Error(`${name} already running`);
     // node --import tsx: ONE OS process per component, so SIGKILL really kills it
     // (the tsx CLI would spawn a grandchild that survives the kill).
-    const child = spawn(process.execPath, ['--import', 'tsx', join(REPO_ROOT, script)], {
+    const child = spawn(process.execPath, ['--import', 'tsx', join(REPO_ROOT, script), ...args], {
       cwd: REPO_ROOT,
       env: { ...process.env, ...this.baseEnv, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],

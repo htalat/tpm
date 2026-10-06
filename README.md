@@ -118,6 +118,20 @@ adapter needs no API key. An optional Anthropic adapter
 (`examples/src/anthropic-adapter.ts`) is loaded only with
 `AGENT_ADAPTER=anthropic`. See [docs/worker-protocol.md](docs/worker-protocol.md).
 
+## agent-runner: coding agents on GitHub Issues
+
+`packages/agent-runner` + `apps/agent-runner` use the engine to run coding
+agents (Claude Code, Copilot CLI) on GitHub issues labelled `agent:ready`, one
+agent per checkout, and hand the result back as a PR (`agent:review`). A crash
+after the agent opened its PR reconciles instead of running the agent again.
+See [docs/agent-runner.md](docs/agent-runner.md).
+
+```bash
+npm run agent-runner -- labels   # once per repo
+npm run agent-runner -- sync     # GitHub -> runs
+npm run agent-runner -- worker   # runs agents
+```
+
 ---
 
 ## Run it

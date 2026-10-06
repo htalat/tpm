@@ -1,11 +1,14 @@
+#!/usr/bin/env node
 // Stand-in for an agent CLI (claude -p ...). Driven by env so tests can choose behaviour.
 //   FAKE_AGENT_MODE: pr (default) | noop | ratelimit | slow
 //   FAKE_PR_DIR:     where "opened PRs" are recorded (read by FakeSource)
 //   FAKE_AGENT_CALLS: file that gets one line per invocation
-import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const prompt = process.argv[2] ?? '';
+// Called either as `fake-agent <prompt>` or with claude's flags (`-p <prompt> ...`).
+const pIdx = process.argv.indexOf('-p');
+const prompt = (pIdx >= 0 ? process.argv[pIdx + 1] : process.argv[2]) ?? '';
 const ref = /\((github:[^)]+)\)/.exec(prompt)?.[1] ?? 'unknown';
 const branch = /branch name: `([^`]+)`/.exec(prompt)?.[1] ?? 'unknown';
 const mode = process.env.FAKE_AGENT_MODE ?? 'pr';
@@ -18,6 +21,17 @@ if (mode === 'slow') {
     '{"type":"result","is_error":true,"result":"Claude usage limit reached. Your limit will reset at 2099-01-01T00:00:00Z"}',
   );
   process.exit(1);
+} else if (mode === 'pr' && process.env.FAKE_GH_STATE) {
+  // Open the PR in the fake gh state, like `gh pr create` would.
+  const f = process.env.FAKE_GH_STATE;
+  const state = JSON.parse(readFileSync(f, 'utf8'));
+  const repo = /^github:([^#]+)#/.exec(ref)?.[1];
+  const n = /#(\d+)$/.exec(ref)?.[1];
+  state.prs[`${repo}:${branch}`] = { url: `https://github.example/${repo}/pull/${n}`, state: 'OPEN' };
+  const tmp = `${f}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(state, null, 2));
+  renameSync(tmp, f);
+  console.log('opened pull request');
 } else if (mode === 'pr') {
   mkdirSync(process.env.FAKE_PR_DIR, { recursive: true });
   const n = /#(\d+)$/.exec(ref)?.[1];
