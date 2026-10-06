@@ -350,6 +350,9 @@ export class GitHubPrHost implements PrHost {
       const { repo, number } = parsePrUrl(url);
       return labelEvents(this.run, this.bin, repo, number, label);
     },
+    addPrLabel: async (url, label) => {
+      await this.gh(['pr', 'edit', url, '--add-label', label]);
+    },
     merge: async (url, sha) => {
       const { repo, number } = parsePrUrl(url);
       const pr = JSON.parse(await this.gh(['pr', 'view', url, '--json', 'state,headRefName'])) as {

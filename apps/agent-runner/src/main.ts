@@ -4,15 +4,10 @@ import { createPool, loadEnv } from '@durable/db';
 import { Engine } from '@durable/engine';
 import {
   createAgentRunnerHandlers,
-  AdoPrHost,
-  AzureBoardsTracker,
-  createSourceResolver,
-  GitHubIssuesTracker,
-  GitHubPrHost,
+  createDefaultIntegrations,
   loadAgentRunnerConfig,
   pollPullRequestsOnce,
   syncOnce,
-  type Tracker,
 } from '@durable/agent-runner';
 import { createLogger } from '@durable/observability';
 import { HttpTransport, WorkerRuntime } from '@durable/sdk';
@@ -32,14 +27,7 @@ const configPath = resolve(process.env.AGENT_RUNNER_CONFIG ?? 'agent-runner.conf
 const config = loadAgentRunnerConfig(configPath);
 // Trackers (where items come from) and PR hosts (where PRs live); each repo
 // in the config picks one of each.
-const trackers: Record<string, Tracker> = {
-  github: new GitHubIssuesTracker(),
-  'azure-boards': new AzureBoardsTracker(),
-};
-const sources = createSourceResolver({
-  trackers,
-  hosts: { github: new GitHubPrHost(), ado: new AdoPrHost() },
-});
+const { trackers, sources } = createDefaultIntegrations();
 const logger = createLogger(`agent-runner-${cmd ?? 'help'}`);
 
 if (cmd === 'labels') {

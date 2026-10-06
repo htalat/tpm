@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@durable/agent-runner": "*",
     "@durable/core": "*",
     "@durable/db": "*",
     "@durable/engine": "*",

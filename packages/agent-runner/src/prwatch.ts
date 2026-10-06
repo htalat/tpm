@@ -68,6 +68,19 @@ export async function pollPullRequestsOnce(
       } else {
         outcome = classifyPullRequest(pr);
       }
+      // For UIs only: why is this run waiting? (overwritten on every poll)
+      await engine.deps.pool.query(
+        `INSERT INTO agent_run_watch (task_id, kind, reason, level, head_sha, checked_at) VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (task_id) DO UPDATE SET kind = $2, reason = $3, level = $4, head_sha = $5, checked_at = $6`,
+        [
+          w.task_id,
+          outcome.kind,
+          outcome.reason,
+          outcome.level ?? null,
+          outcome.headSha,
+          engine.deps.clock.now(),
+        ],
+      );
       if (outcome.kind === 'no-action') continue;
       const res = await engine.signal(w.task_id, {
         type: PR_OUTCOME_EVENT,

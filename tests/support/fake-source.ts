@@ -52,6 +52,10 @@ export class FakeSource implements TaskSource {
       return { posted: true };
     },
     labelEvents: async () => [...this.approvalEvents],
+    addPrLabel: async (_url, label) => {
+      if (label === LABELS.approve)
+        this.approvalEvents.push({ actor: 'htalat', at: new Date(Date.now() + 1000).toISOString() });
+    },
     merge: async (url, sha) => {
       const pr = await this.getPullRequest(url);
       if (pr.state === 'MERGED') return;

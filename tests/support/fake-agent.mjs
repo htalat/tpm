@@ -114,6 +114,7 @@ if (mode === 'slow') {
       type: 'result',
       is_error: process.env.FAKE_AGENT_RESULT_ERROR === '1',
       result: 'pushed',
+      total_cost_usd: 0.25,
     }),
   );
 } else {

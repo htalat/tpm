@@ -20,6 +20,22 @@ export interface AgentRunOutput {
   branch: string;
   exitCode: number | null;
   reconciled?: boolean;
+  /** Reported by the agent CLI (claude stream-json result), if any. */
+  costUsd?: number;
+}
+
+/** total_cost_usd from the agent's final result event (claude --output-format stream-json). */
+export function agentCostFromOutput(tail: string): number | undefined {
+  for (const line of tail.trim().split('\n').reverse()) {
+    if (!line.includes('total_cost_usd')) continue;
+    try {
+      const v = (JSON.parse(line) as { total_cost_usd?: unknown }).total_cost_usd;
+      if (typeof v === 'number') return v;
+    } catch {
+      // not a JSON line
+    }
+  }
+  return undefined;
 }
 
 type TrackerInput = { repo: string; ref: string; round: number } & (
@@ -295,6 +311,7 @@ export function createAgentCliHandler(
           headSha: result.pr.headSha,
           branch,
           exitCode: res.exitCode,
+          costUsd: agentCostFromOutput(res.tail),
         };
       }
       // No evidence of work. Only now is a provider limit a plausible explanation.

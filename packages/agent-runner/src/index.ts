@@ -15,3 +15,5 @@ export * from './policy';
 export * from './factory';
 export * from './reviewers';
 export * from './factory-handlers';
+export * from './api';
+export * from './defaults';

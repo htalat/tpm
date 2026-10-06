@@ -14,7 +14,10 @@ import {
   type AgentCli,
   type AgentRunnerConfig,
 } from '@durable/agent-runner';
+import { registerAgentRunRoutes } from '@durable/agent-runner';
+import { silentLogger } from '@durable/observability';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { buildServer } from '../../apps/api/src/server';
 import { FakeSource } from '../support/fake-source';
 import { useHarness } from '../support/harness';
 
@@ -277,6 +280,64 @@ describe('software factory: agents write, agents review, policy merges', () => {
     source.add(REPO, 11);
     const r = await syncOnce(h.engine, () => source, config);
     expect(r).toMatchObject({ created: [], unauthorized: [`github:${REPO}#11`] });
+  });
+
+  it('menu bar API: lists runs with "needs you", approves, retries and cancels through the same paths', async () => {
+    const app = await buildServer({
+      engine: h.engine,
+      logger: silentLogger,
+      extend: (a, guard) =>
+        registerAgentRunRoutes(a, { engine: h.engine, config, sources: () => source, guard }),
+    });
+    try {
+      process.env.FAKE_AGENT_FILE = 'dist/menu-{n}.html';
+      const ref = source.add(REPO, 20);
+      const { taskId } = await roundToReview();
+      await pollPullRequestsOnce(h.engine, () => source, config); // records "waiting for approval"
+      let list = (await app.inject({ method: 'GET', url: '/agent-runs' })).json();
+      const run = list.runs.find((r: { id: string }) => r.id === taskId);
+      expect(run).toMatchObject({
+        number: 20,
+        status: 'WAITING',
+        step: { key: 'review', status: 'WAITING' },
+        attention: { kind: 'approve' },
+        costUsd: 0.26, // agent 0.25 + claude review 0.01 (copilot reports no cost)
+      });
+      expect(list.overview).toMatchObject({ active: 1, attention: 1 });
+
+      // Approve from the app = the approve label on the PR; the watcher then merges.
+      expect((await app.inject({ method: 'POST', url: `/agent-runs/${taskId}/approve` })).json()).toEqual({
+        ok: true,
+      });
+      await decide(taskId);
+      list = (await app.inject({ method: 'GET', url: '/agent-runs' })).json();
+      expect(list.runs[0]).toMatchObject({ status: 'COMPLETED', decision: 'merged', attention: null });
+      expect((await app.inject({ method: 'POST', url: `/agent-runs/${taskId}/approve` })).statusCode).toBe(
+        409,
+      );
+
+      // Detail has the durable history.
+      const detail = (await app.inject({ method: 'GET', url: `/agent-runs/${taskId}` })).json();
+      expect(detail.history.map((e: { event_type: string }) => e.event_type)).toContain('task.completed');
+
+      // Retry puts the item back in the queue; cancel stops an active run and tells the tracker.
+      expect((await app.inject({ method: 'POST', url: `/agent-runs/${taskId}/retry` })).json()).toEqual({
+        ok: true,
+      });
+      expect(source.item(ref).labels).toContain(LABELS.ready);
+      const { created } = await syncOnce(h.engine, () => source, config);
+      expect((await app.inject({ method: 'POST', url: `/agent-runs/${created[0]}/cancel` })).json()).toEqual({
+        ok: true,
+      });
+      expect((await h.task(created[0]!)).status).toBe('CANCELLED');
+      expect(source.item(ref).labels).toEqual([LABELS.failed]);
+      expect(
+        (await app.inject({ method: 'GET', url: '/agent-runs/00000000-0000-4000-8000-000000000000' }))
+          .statusCode,
+      ).toBe(404);
+    } finally {
+      await app.close();
+    }
   });
 
   it('without a policy file the factory still reviews, but a human merges', async () => {

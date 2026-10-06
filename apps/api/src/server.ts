@@ -29,6 +29,11 @@ export interface ServerOptions {
   /** If set, required as a Bearer token on worker endpoints. */
   workerToken?: string;
   bodyLimitBytes?: number;
+  /** Extra routes (e.g. the agent-runner read model), registered with the admin guard. */
+  extend?: (
+    app: FastifyInstance,
+    adminGuard: (req: FastifyRequest, reply: FastifyReply) => Promise<void>,
+  ) => void;
 }
 
 const STATUS: Record<ErrorCode, number> = {
@@ -182,5 +187,6 @@ export async function buildServer(o: ServerOptions): Promise<FastifyInstance> {
     return engine.fail(id, parse(FailRequestSchema, req.body));
   });
 
+  o.extend?.(app, guard(o.apiToken));
   return app;
 }

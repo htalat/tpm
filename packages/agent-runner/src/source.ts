@@ -75,6 +75,8 @@ export interface FactoryHost {
   commentOnPr(url: string, body: string, marker: string): Promise<{ posted: boolean }>;
   /** Who added `label` to the PR, and when. */
   labelEvents(url: string, label: string): Promise<Array<{ actor: string; at: string }>>;
+  /** Add a label to the PR (e.g. the approve label). */
+  addPrLabel(url: string, label: string): Promise<void>;
   /** Merge exactly `sha` (refused by the platform if the head moved) and delete the branch. */
   merge(url: string, sha: string): Promise<void>;
   /** URL to clone the repo from (for the separate review checkout). */
