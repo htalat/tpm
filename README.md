@@ -135,6 +135,12 @@ npm run agent-runner -- sync     # GitHub -> runs, PR outcomes -> signals
 npm run agent-runner -- worker   # runs agents
 ```
 
+### Menu bar app (macOS)
+
+`npm run menubar` builds `Factory.app`: it starts and supervises the factory
+processes, shows which runs need you, and lets you approve, retry or cancel
+runs and see their history. See [apps/menubar/README.md](apps/menubar/README.md).
+
 ---
 
 ## Run it

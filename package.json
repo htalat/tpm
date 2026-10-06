@@ -29,7 +29,8 @@
     "test:all": "vitest run",
     "demo:durability": "tsx apps/cli/src/main.ts demo durability",
     "check": "npm run format:check && npm run typecheck && npm run test",
-    "agent-runner": "tsx apps/agent-runner/src/main.ts"
+    "agent-runner": "tsx apps/agent-runner/src/main.ts",
+    "menubar": "apps/menubar/build.sh"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

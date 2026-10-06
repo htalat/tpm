@@ -304,6 +304,17 @@ describe('software factory: agents write, agents review, policy merges', () => {
         costUsd: 0.26, // agent 0.25 + claude review 0.01 (copilot reports no cost)
       });
       expect(list.overview).toMatchObject({ active: 1, attention: 1 });
+      // Contract fixture for the Swift menu bar app's decoding tests.
+      if (process.env.UPDATE_FIXTURES) {
+        writeFileSync(
+          resolve('apps/menubar/Tests/FactoryKitTests/Fixtures/runs.json'),
+          JSON.stringify(list, null, 2),
+        );
+        writeFileSync(
+          resolve('apps/menubar/Tests/FactoryKitTests/Fixtures/detail.json'),
+          JSON.stringify((await app.inject({ method: 'GET', url: `/agent-runs/${taskId}` })).json(), null, 2),
+        );
+      }
 
       // Approve from the app = the approve label on the PR; the watcher then merges.
       expect((await app.inject({ method: 'POST', url: `/agent-runs/${taskId}/approve` })).json()).toEqual({

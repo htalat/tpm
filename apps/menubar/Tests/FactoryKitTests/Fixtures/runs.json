@@ -1,0 +1,88 @@
+{
+  "runs": [
+    {
+      "id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "ref": "github:acme/site#20",
+      "url": "https://github.example/acme/site/issues/20",
+      "repo": "acme/site",
+      "round": 1,
+      "title": "Issue 20",
+      "number": 20,
+      "maxRounds": 2,
+      "status": "WAITING",
+      "step": {
+        "key": "review",
+        "status": "WAITING"
+      },
+      "steps": [
+        {
+          "key": "start",
+          "status": "COMPLETED"
+        },
+        {
+          "key": "prepare",
+          "status": "COMPLETED"
+        },
+        {
+          "key": "agent",
+          "status": "COMPLETED"
+        },
+        {
+          "key": "finish",
+          "status": "COMPLETED"
+        },
+        {
+          "key": "verify",
+          "status": "COMPLETED"
+        },
+        {
+          "key": "reviewA",
+          "status": "COMPLETED"
+        },
+        {
+          "key": "reviewB",
+          "status": "COMPLETED"
+        },
+        {
+          "key": "review",
+          "status": "WAITING"
+        },
+        {
+          "key": "close",
+          "status": "PENDING"
+        }
+      ],
+      "prUrl": "https://github.example/pr/20",
+      "headSha": "7c8ee4a3f69947ccc75b7724819d5a1edab95943",
+      "watch": {
+        "kind": "no-action",
+        "reason": "policy: waiting for approval by htalat (dist/menu-20.html: human-approve)",
+        "level": "human-approve",
+        "checkedAt": "2026-01-01T00:00:00.000Z"
+      },
+      "outcome": null,
+      "decision": null,
+      "attention": {
+        "kind": "approve",
+        "reason": "policy: waiting for approval by htalat (dist/menu-20.html: human-approve)"
+      },
+      "costUsd": 0.26,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "completedAt": null
+    }
+  ],
+  "overview": {
+    "active": 1,
+    "attention": 1,
+    "mergedLast24h": 0,
+    "failedLast24h": 0,
+    "costLast24hUsd": 0.26
+  },
+  "repos": [
+    {
+      "name": "acme/site",
+      "factory": true
+    }
+  ]
+}

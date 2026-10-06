@@ -1,0 +1,523 @@
+{
+  "run": {
+    "id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+    "ref": "github:acme/site#20",
+    "url": "https://github.example/acme/site/issues/20",
+    "repo": "acme/site",
+    "round": 1,
+    "title": "Issue 20",
+    "number": 20,
+    "maxRounds": 2,
+    "status": "WAITING",
+    "step": {
+      "key": "review",
+      "status": "WAITING"
+    },
+    "steps": [
+      {
+        "key": "start",
+        "status": "COMPLETED"
+      },
+      {
+        "key": "prepare",
+        "status": "COMPLETED"
+      },
+      {
+        "key": "agent",
+        "status": "COMPLETED"
+      },
+      {
+        "key": "finish",
+        "status": "COMPLETED"
+      },
+      {
+        "key": "verify",
+        "status": "COMPLETED"
+      },
+      {
+        "key": "reviewA",
+        "status": "COMPLETED"
+      },
+      {
+        "key": "reviewB",
+        "status": "COMPLETED"
+      },
+      {
+        "key": "review",
+        "status": "WAITING"
+      },
+      {
+        "key": "close",
+        "status": "PENDING"
+      }
+    ],
+    "prUrl": "https://github.example/pr/20",
+    "headSha": "7c8ee4a3f69947ccc75b7724819d5a1edab95943",
+    "watch": {
+      "kind": "no-action",
+      "reason": "policy: waiting for approval by htalat (dist/menu-20.html: human-approve)",
+      "level": "human-approve",
+      "checkedAt": "2026-01-01T00:00:00.000Z"
+    },
+    "outcome": null,
+    "decision": null,
+    "attention": {
+      "kind": "approve",
+      "reason": "policy: waiting for approval by htalat (dist/menu-20.html: human-approve)"
+    },
+    "costUsd": 0.26,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z",
+    "completedAt": null
+  },
+  "history": [
+    {
+      "id": 1,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": null,
+      "attempt_id": null,
+      "event_type": "task.created",
+      "previous_state": null,
+      "new_state": "PENDING",
+      "payload": {
+        "type": "agent-run",
+        "parentTaskId": null,
+        "workflowVersion": 4
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 2,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "1c12fd7d-e095-4d25-babc-b3c5193273c8",
+      "attempt_id": null,
+      "event_type": "step.ready",
+      "previous_state": "PENDING",
+      "new_state": "READY",
+      "payload": {
+        "stepKey": "start"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 3,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": null,
+      "attempt_id": null,
+      "event_type": "task.ready",
+      "previous_state": "PENDING",
+      "new_state": "READY",
+      "payload": {},
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 4,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "1c12fd7d-e095-4d25-babc-b3c5193273c8",
+      "attempt_id": "83ebed33-eb05-436f-9a65-7f61043d121d",
+      "event_type": "step.running",
+      "previous_state": "READY",
+      "new_state": "RUNNING",
+      "payload": {
+        "leaseId": "lease_d07caddb",
+        "stepKey": "start",
+        "workerId": "410168bc-e399-4621-8b8a-959489364e96",
+        "attemptNumber": 1,
+        "leaseExpiresAt": "2026-01-01T00:00:10.000Z"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 5,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "1c12fd7d-e095-4d25-babc-b3c5193273c8",
+      "attempt_id": "83ebed33-eb05-436f-9a65-7f61043d121d",
+      "event_type": "attempt.completed",
+      "previous_state": "RUNNING",
+      "new_state": "COMPLETED",
+      "payload": {
+        "attemptNumber": 1
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 6,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "1c12fd7d-e095-4d25-babc-b3c5193273c8",
+      "attempt_id": "83ebed33-eb05-436f-9a65-7f61043d121d",
+      "event_type": "step.completed",
+      "previous_state": "RUNNING",
+      "new_state": "COMPLETED",
+      "payload": {
+        "stepKey": "start"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 7,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "a27bb924-5b00-45db-b78e-4dbd8d64e340",
+      "attempt_id": null,
+      "event_type": "step.ready",
+      "previous_state": "PENDING",
+      "new_state": "READY",
+      "payload": {
+        "stepKey": "prepare"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 8,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "a27bb924-5b00-45db-b78e-4dbd8d64e340",
+      "attempt_id": "db89c12a-cdcb-4d61-9434-db90484b1009",
+      "event_type": "step.running",
+      "previous_state": "READY",
+      "new_state": "RUNNING",
+      "payload": {
+        "leaseId": "lease_f53669af",
+        "stepKey": "prepare",
+        "workerId": "410168bc-e399-4621-8b8a-959489364e96",
+        "attemptNumber": 1,
+        "leaseExpiresAt": "2026-01-01T00:00:10.000Z"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 9,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "a27bb924-5b00-45db-b78e-4dbd8d64e340",
+      "attempt_id": "db89c12a-cdcb-4d61-9434-db90484b1009",
+      "event_type": "attempt.completed",
+      "previous_state": "RUNNING",
+      "new_state": "COMPLETED",
+      "payload": {
+        "attemptNumber": 1
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 10,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "a27bb924-5b00-45db-b78e-4dbd8d64e340",
+      "attempt_id": "db89c12a-cdcb-4d61-9434-db90484b1009",
+      "event_type": "step.completed",
+      "previous_state": "RUNNING",
+      "new_state": "COMPLETED",
+      "payload": {
+        "stepKey": "prepare"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 11,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "a9beb641-4050-48ff-8174-16ad8648bbd7",
+      "attempt_id": null,
+      "event_type": "step.ready",
+      "previous_state": "PENDING",
+      "new_state": "READY",
+      "payload": {
+        "stepKey": "agent",
+        "concurrencyKey": "repo:acme/site"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 12,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "a9beb641-4050-48ff-8174-16ad8648bbd7",
+      "attempt_id": "92fbae13-0524-4ee7-abc1-2f2deff02ac5",
+      "event_type": "step.running",
+      "previous_state": "READY",
+      "new_state": "RUNNING",
+      "payload": {
+        "leaseId": "lease_b4a19d99",
+        "stepKey": "agent",
+        "workerId": "410168bc-e399-4621-8b8a-959489364e96",
+        "attemptNumber": 1,
+        "leaseExpiresAt": "2026-01-01T00:00:10.000Z"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 13,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "a9beb641-4050-48ff-8174-16ad8648bbd7",
+      "attempt_id": "92fbae13-0524-4ee7-abc1-2f2deff02ac5",
+      "event_type": "attempt.completed",
+      "previous_state": "RUNNING",
+      "new_state": "COMPLETED",
+      "payload": {
+        "attemptNumber": 1
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 14,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "a9beb641-4050-48ff-8174-16ad8648bbd7",
+      "attempt_id": "92fbae13-0524-4ee7-abc1-2f2deff02ac5",
+      "event_type": "step.completed",
+      "previous_state": "RUNNING",
+      "new_state": "COMPLETED",
+      "payload": {
+        "stepKey": "agent"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 15,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "b826dda4-b559-4215-85ce-151627fa4863",
+      "attempt_id": null,
+      "event_type": "step.ready",
+      "previous_state": "PENDING",
+      "new_state": "READY",
+      "payload": {
+        "stepKey": "finish"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 16,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "b826dda4-b559-4215-85ce-151627fa4863",
+      "attempt_id": "c707221e-d863-4f88-b910-7c7e7f6d3c9a",
+      "event_type": "step.running",
+      "previous_state": "READY",
+      "new_state": "RUNNING",
+      "payload": {
+        "leaseId": "lease_c9841a93",
+        "stepKey": "finish",
+        "workerId": "410168bc-e399-4621-8b8a-959489364e96",
+        "attemptNumber": 1,
+        "leaseExpiresAt": "2026-01-01T00:00:10.000Z"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 17,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "b826dda4-b559-4215-85ce-151627fa4863",
+      "attempt_id": "c707221e-d863-4f88-b910-7c7e7f6d3c9a",
+      "event_type": "attempt.completed",
+      "previous_state": "RUNNING",
+      "new_state": "COMPLETED",
+      "payload": {
+        "attemptNumber": 1
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 18,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "b826dda4-b559-4215-85ce-151627fa4863",
+      "attempt_id": "c707221e-d863-4f88-b910-7c7e7f6d3c9a",
+      "event_type": "step.completed",
+      "previous_state": "RUNNING",
+      "new_state": "COMPLETED",
+      "payload": {
+        "stepKey": "finish"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 19,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "5f357016-eddf-4f7f-af14-d606b51417fe",
+      "attempt_id": null,
+      "event_type": "step.ready",
+      "previous_state": "PENDING",
+      "new_state": "READY",
+      "payload": {
+        "stepKey": "verify",
+        "concurrencyKey": "review:acme/site"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 20,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "5f357016-eddf-4f7f-af14-d606b51417fe",
+      "attempt_id": "11c44295-daf8-469b-a97f-784d20963c31",
+      "event_type": "step.running",
+      "previous_state": "READY",
+      "new_state": "RUNNING",
+      "payload": {
+        "leaseId": "lease_e191b01e",
+        "stepKey": "verify",
+        "workerId": "410168bc-e399-4621-8b8a-959489364e96",
+        "attemptNumber": 1,
+        "leaseExpiresAt": "2026-01-01T00:00:10.000Z"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 21,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "5f357016-eddf-4f7f-af14-d606b51417fe",
+      "attempt_id": "11c44295-daf8-469b-a97f-784d20963c31",
+      "event_type": "attempt.completed",
+      "previous_state": "RUNNING",
+      "new_state": "COMPLETED",
+      "payload": {
+        "attemptNumber": 1
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 22,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "5f357016-eddf-4f7f-af14-d606b51417fe",
+      "attempt_id": "11c44295-daf8-469b-a97f-784d20963c31",
+      "event_type": "step.completed",
+      "previous_state": "RUNNING",
+      "new_state": "COMPLETED",
+      "payload": {
+        "stepKey": "verify"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 23,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "14502091-1ca4-4e31-ba7b-133863e438fe",
+      "attempt_id": null,
+      "event_type": "step.ready",
+      "previous_state": "PENDING",
+      "new_state": "READY",
+      "payload": {
+        "stepKey": "reviewA",
+        "concurrencyKey": "review:acme/site"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 24,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "14502091-1ca4-4e31-ba7b-133863e438fe",
+      "attempt_id": "838d589d-7374-4209-a298-666bcdb9c885",
+      "event_type": "step.running",
+      "previous_state": "READY",
+      "new_state": "RUNNING",
+      "payload": {
+        "leaseId": "lease_3f029ca1",
+        "stepKey": "reviewA",
+        "workerId": "410168bc-e399-4621-8b8a-959489364e96",
+        "attemptNumber": 1,
+        "leaseExpiresAt": "2026-01-01T00:00:10.000Z"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 25,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "14502091-1ca4-4e31-ba7b-133863e438fe",
+      "attempt_id": "838d589d-7374-4209-a298-666bcdb9c885",
+      "event_type": "attempt.completed",
+      "previous_state": "RUNNING",
+      "new_state": "COMPLETED",
+      "payload": {
+        "attemptNumber": 1
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 26,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "14502091-1ca4-4e31-ba7b-133863e438fe",
+      "attempt_id": "838d589d-7374-4209-a298-666bcdb9c885",
+      "event_type": "step.completed",
+      "previous_state": "RUNNING",
+      "new_state": "COMPLETED",
+      "payload": {
+        "stepKey": "reviewA"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 27,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "eac92aed-9ac8-4c9a-a091-d4a495585252",
+      "attempt_id": null,
+      "event_type": "step.ready",
+      "previous_state": "PENDING",
+      "new_state": "READY",
+      "payload": {
+        "stepKey": "reviewB",
+        "concurrencyKey": "review:acme/site"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 28,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "eac92aed-9ac8-4c9a-a091-d4a495585252",
+      "attempt_id": "bdf12b3b-49af-47ee-82ff-1f2816c704b9",
+      "event_type": "step.running",
+      "previous_state": "READY",
+      "new_state": "RUNNING",
+      "payload": {
+        "leaseId": "lease_584ab8f1",
+        "stepKey": "reviewB",
+        "workerId": "410168bc-e399-4621-8b8a-959489364e96",
+        "attemptNumber": 1,
+        "leaseExpiresAt": "2026-01-01T00:00:10.000Z"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 29,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "eac92aed-9ac8-4c9a-a091-d4a495585252",
+      "attempt_id": "bdf12b3b-49af-47ee-82ff-1f2816c704b9",
+      "event_type": "attempt.completed",
+      "previous_state": "RUNNING",
+      "new_state": "COMPLETED",
+      "payload": {
+        "attemptNumber": 1
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 30,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "eac92aed-9ac8-4c9a-a091-d4a495585252",
+      "attempt_id": "bdf12b3b-49af-47ee-82ff-1f2816c704b9",
+      "event_type": "step.completed",
+      "previous_state": "RUNNING",
+      "new_state": "COMPLETED",
+      "payload": {
+        "stepKey": "reviewB"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 31,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": "6f1a80aa-90b9-4bb7-ac62-183331f54c03",
+      "attempt_id": null,
+      "event_type": "step.waiting",
+      "previous_state": "PENDING",
+      "new_state": "WAITING",
+      "payload": {
+        "stepKey": "review",
+        "waitingFor": "pr.outcome",
+        "correlationKey": "https://github.example/pr/20"
+      },
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": 32,
+      "task_id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "step_id": null,
+      "attempt_id": null,
+      "event_type": "task.waiting",
+      "previous_state": "READY",
+      "new_state": "WAITING",
+      "payload": {},
+      "timestamp": "2026-01-01T00:00:00.000Z"
+    }
+  ]
+}

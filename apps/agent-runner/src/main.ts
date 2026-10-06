@@ -50,8 +50,13 @@ if (cmd === 'labels') {
   });
   const engine = new Engine({ pool, registry: createRegistry(), logger });
   let running = true;
-  process.on('SIGTERM', () => (running = false));
-  process.on('SIGINT', () => (running = false));
+  let wake: () => void = () => undefined;
+  const stop = () => {
+    running = false;
+    wake(); // end the current sleep now, not after syncIntervalMs
+  };
+  process.on('SIGTERM', stop);
+  process.on('SIGINT', stop);
   logger.info({ repos: config.repos.map((r) => r.name), interval_ms: config.syncIntervalMs }, 'sync started');
   while (running) {
     try {
@@ -63,7 +68,13 @@ if (cmd === 'labels') {
       logger.error({ err: e }, 'sync failed; will retry');
     }
     if (process.argv.includes('--once')) break;
-    await new Promise((r) => setTimeout(r, config.syncIntervalMs));
+    await new Promise<void>((r) => {
+      const t = setTimeout(r, config.syncIntervalMs);
+      wake = () => {
+        clearTimeout(t);
+        r();
+      };
+    });
   }
   await pool.end();
 } else if (cmd === 'worker') {
