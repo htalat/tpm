@@ -66,7 +66,6 @@ export async function buildServer(o: ServerOptions): Promise<FastifyInstance> {
   const app = Fastify({
     loggerInstance: o.logger as FastifyBaseLogger,
     bodyLimit: o.bodyLimitBytes ?? 1024 * 1024,
-    disableRequestLogging: false,
   });
 
   const guard = (token: string | undefined) => async (req: FastifyRequest, reply: FastifyReply) => {
@@ -81,11 +80,9 @@ export async function buildServer(o: ServerOptions): Promise<FastifyInstance> {
 
   app.setErrorHandler((err, req, reply) => {
     if (err instanceof ZodError) {
-      return reply
-        .code(400)
-        .send({
-          error: { code: 'VALIDATION_ERROR', message: 'invalid request', details: { issues: err.issues } },
-        });
+      return reply.code(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'invalid request', details: { issues: err.issues } },
+      });
     }
     if (isDomainError(err)) {
       return reply
