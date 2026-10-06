@@ -50,7 +50,7 @@ describe('agent-runner end to end', () => {
             title: 'Add a greeting',
             body: 'Print hello.',
             url: 'https://github.example/acme/app/issues/42',
-            labels: ['agent:ready'],
+            labels: ['tpm:agent:ready'],
             comments: [],
           },
         },
@@ -115,7 +115,7 @@ describe('agent-runner end to end', () => {
         message: 'worker crash after side effect',
       });
       expect(gh().prs['acme/app:agent/issue-42']).toBeTruthy();
-      expect(gh().issues['acme/app#42'].labels).toEqual(['agent:running']);
+      expect(gh().issues['acme/app#42'].labels).toEqual(['tpm:agent:running']);
 
       // A fresh worker: the lease expires, the retry reconciles instead of running the agent again.
       sup.start('worker-2', runner, { WORKER_NAME: 'worker-2' }, ['worker']);
@@ -134,7 +134,7 @@ describe('agent-runner end to end', () => {
       ]);
       expect(readFileSync(calls, 'utf8').trim().split('\n')).toHaveLength(1); // the agent ran once
       let issue = gh().issues['acme/app#42'];
-      expect(issue.labels).toEqual(['agent:review']);
+      expect(issue.labels).toEqual(['tpm:agent:review']);
       expect(issue.comments).toHaveLength(2);
       expect(issue.comments[1]).toContain('https://github.example/acme/app/pull/42');
 
@@ -160,7 +160,7 @@ describe('agent-runner end to end', () => {
       expect(task.status).toBe('COMPLETED');
       expect(task.output).toMatchObject({ outcome: { kind: 'merged' }, next: { decision: 'done' } });
       issue = gh().issues['acme/app#42'];
-      expect(issue.labels).toEqual(['agent:done']);
+      expect(issue.labels).toEqual(['tpm:agent:done']);
       expect(issue.comments.at(-1)).toContain('merged');
       // Done items are not picked up again.
       await new Promise((r) => setTimeout(r, 2500));

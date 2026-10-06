@@ -215,7 +215,7 @@ export class GitHubIssuesSource implements TaskSource {
     });
   }
 
-  /** Create the agent:* labels in a repo (idempotent). */
+  /** Create the tpm:agent:* labels in a repo (idempotent). */
   async ensureLabels(repo: string): Promise<void> {
     const colors: Record<string, string> = {
       ready: '0e8a16',

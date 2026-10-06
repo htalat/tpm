@@ -27,24 +27,24 @@ const issue = (labels: string[]) => ({
 
 describe('GitHubIssuesSource', () => {
   it('lists ready issues per repo with stable refs', async () => {
-    const gh = fakeGh({ 'issue list --repo acme/app': [issue(['agent:ready'])] });
+    const gh = fakeGh({ 'issue list --repo acme/app': [issue(['tpm:agent:ready'])] });
     const items = await new GitHubIssuesSource(gh.run).listReady(['acme/app']);
     expect(items).toEqual([
       expect.objectContaining({
         ref: 'github:acme/app#12',
         repo: 'acme/app',
         number: 12,
-        labels: ['agent:ready'],
+        labels: ['tpm:agent:ready'],
       }),
     ]);
-    expect(gh.calls[0]).toEqual(expect.arrayContaining(['--label', 'agent:ready', '--state', 'open']));
+    expect(gh.calls[0]).toEqual(expect.arrayContaining(['--label', 'tpm:agent:ready', '--state', 'open']));
   });
 
   it('only sends label changes that change something', async () => {
-    const gh = fakeGh({ 'issue view 12': issue(['agent:ready', 'bug']) });
+    const gh = fakeGh({ 'issue view 12': issue(['tpm:agent:ready', 'bug']) });
     await new GitHubIssuesSource(gh.run).updateLabels('github:acme/app#12', {
-      add: ['agent:running'],
-      remove: ['agent:ready', 'agent:failed'],
+      add: ['tpm:agent:running'],
+      remove: ['tpm:agent:ready', 'tpm:agent:failed'],
     });
     const edit = gh.calls.find((c) => c[1] === 'edit')!;
     expect(edit).toEqual([
@@ -54,14 +54,14 @@ describe('GitHubIssuesSource', () => {
       '--repo',
       'acme/app',
       '--add-label',
-      'agent:running',
+      'tpm:agent:running',
       '--remove-label',
-      'agent:ready',
+      'tpm:agent:ready',
     ]);
-    const gh2 = fakeGh({ 'issue view 12': issue(['agent:running']) });
+    const gh2 = fakeGh({ 'issue view 12': issue(['tpm:agent:running']) });
     await new GitHubIssuesSource(gh2.run).updateLabels('github:acme/app#12', {
-      add: ['agent:running'],
-      remove: ['agent:ready'],
+      add: ['tpm:agent:running'],
+      remove: ['tpm:agent:ready'],
     });
     expect(gh2.calls.some((c) => c[1] === 'edit')).toBe(false);
   });

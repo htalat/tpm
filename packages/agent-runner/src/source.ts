@@ -58,11 +58,11 @@ export interface TaskSource {
 }
 
 export const LABELS = {
-  ready: 'agent:ready',
-  running: 'agent:running',
-  review: 'agent:review',
-  failed: 'agent:failed',
-  done: 'agent:done',
+  ready: 'tpm:agent:ready',
+  running: 'tpm:agent:running',
+  review: 'tpm:agent:review',
+  failed: 'tpm:agent:failed',
+  done: 'tpm:agent:done',
 } as const;
 
 /** Deterministic branch name: lets a retry find the work of a crashed attempt. */

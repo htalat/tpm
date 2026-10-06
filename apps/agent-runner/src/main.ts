@@ -14,12 +14,12 @@ import { HttpTransport, WorkerRuntime } from '@durable/sdk';
 import { createRegistry } from '@durable/workflows';
 
 /**
- * agent-runner: GitHub Issues labelled `agent:ready` -> `agent-run` tasks ->
- * coding agent in the local checkout -> PR -> issue labelled `agent:review`.
+ * agent-runner: GitHub Issues labelled `tpm:agent:ready` -> `agent-run` tasks ->
+ * coding agent in the local checkout -> PR -> issue labelled `tpm:agent:review`.
  *
  *   sync    poll the tracker (create runs) and the PRs of runs in review (signal outcomes)
  *   worker  execute run steps (talks to the API over HTTP, like any worker)
- *   labels  create the agent:* labels in every configured repo
+ *   labels  create the tpm:agent:* labels in every configured repo
  */
 loadEnv();
 const [cmd] = process.argv.slice(2);

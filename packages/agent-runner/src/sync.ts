@@ -5,7 +5,7 @@ import type { TaskSource } from './source';
 import type { AgentRunInput } from './workflow';
 
 /**
- * Turn tracker items labelled `agent:ready` into `agent-run` tasks.
+ * Turn tracker items labelled `tpm:agent:ready` into `agent-run` tasks.
  *
  * Safe to run from several processes at once and to crash at any point: the
  * create uses the idempotency key `agent-run:<ref>:<round>`, where round =

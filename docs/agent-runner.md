@@ -8,7 +8,7 @@ _execution_.
 
 ```mermaid
 flowchart LR
-  GH[(GitHub Issues<br/>label agent:ready)] -- sync --> E[(Engine / PostgreSQL<br/>agent-run task)]
+  GH[(GitHub Issues<br/>label tpm:agent:ready)] -- sync --> E[(Engine / PostgreSQL<br/>agent-run task)]
   E -- claim --> W[agent-runner worker]
   W -- labels, comments --> GH
   W -- claude -p … in checkout --> R[local git checkout]
@@ -18,17 +18,17 @@ flowchart LR
 
 ## Lifecycle of one item
 
-| Issue label     | Meaning                                                    | Set by                      |
-| --------------- | ---------------------------------------------------------- | --------------------------- |
-| `agent:ready`   | Start a round (a human opts in, or the PR needs the agent) | human, or `close` step      |
-| `agent:running` | A round is running                                         | `start` step                |
-| `agent:review`  | The PR is ready; waiting for review / CI / merge           | `finish` step               |
-| `agent:done`    | The PR was merged                                          | `close` step                |
-| `agent:failed`  | The round failed or the PR was closed; comment says why    | compensation / `close` step |
+| Issue label         | Meaning                                                    | Set by                      |
+| ------------------- | ---------------------------------------------------------- | --------------------------- |
+| `tpm:agent:ready`   | Start a round (a human opts in, or the PR needs the agent) | human, or `close` step      |
+| `tpm:agent:running` | A round is running                                         | `start` step                |
+| `tpm:agent:review`  | The PR is ready; waiting for review / CI / merge           | `finish` step               |
+| `tpm:agent:done`    | The PR was merged                                          | `close` step                |
+| `tpm:agent:failed`  | The round failed or the PR was closed; comment says why    | compensation / `close` step |
 
 ```mermaid
 stateDiagram-v2
-  [*] --> ready: human adds agent:ready
+  [*] --> ready: human adds tpm:agent:ready
   ready --> running: sync creates round N (start step)
   running --> review: agent pushed (finish step)
   running --> failed: no PR / no new commits / dirty checkout (compensation)
@@ -67,7 +67,7 @@ close    tracker: merged -> done | needs agent -> ready | needs human -> comment
   except our own) is stored in the `prepare` output (max 20 000 chars) and put
   into the round-2+ prompt.
 - **One agent per checkout**: `concurrencyGroup: { key: repo, limit: 1 }`.
-- **Dirty checkout or wrong branch**: POLICY failure, no retry, issue `agent:failed`.
+- **Dirty checkout or wrong branch**: POLICY failure, no retry, issue `tpm:agent:failed`.
 - **Provider usage limit**: TRANSIENT with `chargeAttempt: false` and the reset
   time from the output (default 30 min, max 6 h).
 - **Time bound** (`timeBoundMinutes`, default 30): the worker kills the agent's
@@ -93,7 +93,7 @@ It sends a `pr.outcome` signal with deduplication key
 `<pr url>:<outcome>:<head sha>`: polling the same state again (or from two
 processes) is a duplicate and changes nothing; a new push produces a new event.
 After `maxRounds` (default 3) automatic rounds, `needs-agent` only comments; a
-human adds `agent:ready` to allow another round.
+human adds `tpm:agent:ready` to allow another round.
 
 ## Setup
 
