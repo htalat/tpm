@@ -10,7 +10,7 @@ import { join } from 'node:path';
 // Called either as `fake-agent <prompt>` or with claude's flags (`-p <prompt> ...`).
 const pIdx = process.argv.indexOf('-p');
 const prompt = (pIdx >= 0 ? process.argv[pIdx + 1] : process.argv[2]) ?? '';
-const ref = /\((github:[^)]+)\)/.exec(prompt)?.[1] ?? 'unknown';
+const ref = /\(((?:github|ado):[^)]+)\)/.exec(prompt)?.[1] ?? 'unknown';
 const branch = /branch name: `([^`]+)`/.exec(prompt)?.[1] ?? 'unknown';
 const mode = process.env.FAKE_AGENT_MODE ?? 'pr';
 if (process.env.FAKE_AGENT_CALLS) appendFileSync(process.env.FAKE_AGENT_CALLS, `${ref} ${mode}\n`);

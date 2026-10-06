@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyPullRequest,
   detectRateLimit,
-  GitHubIssuesSource,
+  GitHubIssuesTracker,
+  GitHubPrHost,
+  RepoConfigSchema,
   parseRef,
   type CommandRunner,
 } from '@durable/agent-runner';
@@ -25,10 +27,12 @@ const issue = (labels: string[]) => ({
   labels: labels.map((name) => ({ name })),
 });
 
-describe('GitHubIssuesSource', () => {
+const ghRepo = RepoConfigSchema.parse({ name: 'acme/app', path: '/tmp/x' });
+
+describe('GitHubIssuesTracker', () => {
   it('lists ready issues per repo with stable refs', async () => {
     const gh = fakeGh({ 'issue list --repo acme/app': [issue(['tpm:agent:ready'])] });
-    const items = await new GitHubIssuesSource(gh.run).listReady(['acme/app']);
+    const items = await new GitHubIssuesTracker(gh.run).listReady(ghRepo);
     expect(items).toEqual([
       expect.objectContaining({
         ref: 'github:acme/app#12',
@@ -42,7 +46,7 @@ describe('GitHubIssuesSource', () => {
 
   it('only sends label changes that change something', async () => {
     const gh = fakeGh({ 'issue view 12': issue(['tpm:agent:ready', 'bug']) });
-    await new GitHubIssuesSource(gh.run).updateLabels('github:acme/app#12', {
+    await new GitHubIssuesTracker(gh.run).updateLabels('github:acme/app#12', {
       add: ['tpm:agent:running'],
       remove: ['tpm:agent:ready', 'tpm:agent:failed'],
     });
@@ -59,7 +63,7 @@ describe('GitHubIssuesSource', () => {
       'tpm:agent:ready',
     ]);
     const gh2 = fakeGh({ 'issue view 12': issue(['tpm:agent:running']) });
-    await new GitHubIssuesSource(gh2.run).updateLabels('github:acme/app#12', {
+    await new GitHubIssuesTracker(gh2.run).updateLabels('github:acme/app#12', {
       add: ['tpm:agent:running'],
       remove: ['tpm:agent:ready'],
     });
@@ -70,7 +74,7 @@ describe('GitHubIssuesSource', () => {
     const gh = fakeGh({
       'issue view 12 --repo acme/app --json comments': { comments: [{ body: 'x <!-- durable:k1 -->' }] },
     });
-    const src = new GitHubIssuesSource(gh.run);
+    const src = new GitHubIssuesTracker(gh.run);
     expect(await src.comment('github:acme/app#12', 'hello', 'k1')).toEqual({ posted: false });
     expect(await src.comment('github:acme/app#12', 'hello', 'k2')).toEqual({ posted: true });
     const post = gh.calls.find((c) => c[1] === 'comment')!;
@@ -79,9 +83,9 @@ describe('GitHubIssuesSource', () => {
 
   it('finds PRs by the deterministic head branch', async () => {
     const gh = fakeGh({ 'pr list --repo acme/app --head agent/issue-12': [{ url: 'u', state: 'OPEN' }] });
-    expect(
-      await new GitHubIssuesSource(gh.run).findPullRequests('github:acme/app#12', 'agent/issue-12'),
-    ).toEqual([{ url: 'u', state: 'OPEN' }]);
+    expect(await new GitHubPrHost(gh.run).findPullRequests(ghRepo, 'agent/issue-12')).toEqual([
+      { url: 'u', state: 'OPEN' },
+    ]);
   });
 
   it('parses refs and rejects garbage', () => {

@@ -38,17 +38,18 @@ const inp = (ctx: { input: unknown }) => ctx.input as AgentRunInput;
  */
 export const agentRunWorkflow = defineWorkflow({
   name: 'agent-run',
-  version: 2,
+  version: 3,
   description: 'One round of coding-agent work on a tracker item, through PR review',
   steps: {
     start: step({
       executor: 'tracker',
-      input: (ctx) => ({ op: 'start', ref: inp(ctx).ref, round: inp(ctx).round }),
+      input: (ctx) => ({ op: 'start', repo: inp(ctx).repo, ref: inp(ctx).ref, round: inp(ctx).round }),
       retry: { maxAttempts: 5, initialDelayMs: 5000 },
       compensate: {
         executor: 'tracker',
         input: (ctx) => ({
           op: 'fail',
+          repo: inp(ctx).repo,
           ref: inp(ctx).ref,
           round: inp(ctx).round,
           reason: ctx.failure
@@ -60,7 +61,7 @@ export const agentRunWorkflow = defineWorkflow({
     }),
     prepare: step({
       executor: 'tracker',
-      input: (ctx) => ({ op: 'snapshot', ref: inp(ctx).ref, round: inp(ctx).round }),
+      input: (ctx) => ({ op: 'snapshot', repo: inp(ctx).repo, ref: inp(ctx).ref, round: inp(ctx).round }),
       effect: 'pure',
       retry: { maxAttempts: 5, initialDelayMs: 5000 },
     }),
@@ -81,7 +82,13 @@ export const agentRunWorkflow = defineWorkflow({
     }),
     finish: step({
       executor: 'tracker',
-      input: (ctx) => ({ op: 'finish', ref: inp(ctx).ref, round: inp(ctx).round, agent: ctx.outputs.agent }),
+      input: (ctx) => ({
+        op: 'finish',
+        repo: inp(ctx).repo,
+        ref: inp(ctx).ref,
+        round: inp(ctx).round,
+        agent: ctx.outputs.agent,
+      }),
       retry: { maxAttempts: 10, initialDelayMs: 5000 },
     }),
     review: waitForEvent(PR_OUTCOME_EVENT, {
@@ -91,6 +98,7 @@ export const agentRunWorkflow = defineWorkflow({
       executor: 'tracker',
       input: (ctx) => ({
         op: 'close',
+        repo: inp(ctx).repo,
         ref: inp(ctx).ref,
         round: inp(ctx).round,
         maxRounds: inp(ctx).maxRounds,

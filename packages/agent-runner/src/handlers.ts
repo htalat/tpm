@@ -9,7 +9,7 @@ import { repoConfig, type AgentRunnerConfig } from './config';
 import { buildPrompt } from './prompt';
 import { detectRateLimit } from './rate-limit';
 import type { PrOutcome } from './pr-signal';
-import { branchFor, LABELS, type PullRequestState, type TaskSource } from './source';
+import { branchFor, LABELS, type PullRequestState, type SourceResolver, type TaskSource } from './source';
 import type { AgentRunInput, RoundBaseline } from './workflow';
 
 export interface AgentRunOutput {
@@ -21,12 +21,13 @@ export interface AgentRunOutput {
   reconciled?: boolean;
 }
 
-type TrackerInput =
-  | { op: 'start'; ref: string; round: number }
-  | { op: 'snapshot'; ref: string; round: number }
-  | { op: 'finish'; ref: string; round: number; agent: AgentRunOutput }
-  | { op: 'fail'; ref: string; round: number; reason?: string }
-  | { op: 'close'; ref: string; round: number; maxRounds: number; outcome: PrOutcome };
+type TrackerInput = { repo: string; ref: string; round: number } & (
+  | { op: 'start' }
+  | { op: 'snapshot' }
+  | { op: 'finish'; agent: AgentRunOutput }
+  | { op: 'fail'; reason?: string }
+  | { op: 'close'; maxRounds: number; outcome: PrOutcome }
+);
 
 export type CloseDecision = 'done' | 'next-round' | 'human' | 'failed';
 
@@ -35,10 +36,16 @@ export type CloseDecision = 'done' | 'next-round' | 'human' | 'failed';
  * comment marker is the step's idempotency key, so a retried attempt never
  * posts twice.
  */
-export function createTrackerHandler(source: TaskSource): WorkerHandler<TrackerInput, unknown> {
+export function createTrackerHandler(deps: {
+  sources: SourceResolver;
+  config: AgentRunnerConfig;
+}): WorkerHandler<TrackerInput, unknown> {
   return {
     async execute(input, ctx) {
       const marker = ctx.idempotencyKey;
+      const repo = repoConfig(deps.config, input.repo);
+      if (!repo) throw new WorkerError('PERMANENT', `repo ${input.repo} is not configured`);
+      const source = deps.sources(repo);
       switch (input.op) {
         case 'start':
           await source.updateLabels(input.ref, {
@@ -128,7 +135,8 @@ async function closeRound(
 }
 
 export interface AgentCliHandlerDeps {
-  source: TaskSource;
+  /** Tracker + PR host for a repo (see createSourceResolver). */
+  sources: SourceResolver;
   config: AgentRunnerConfig;
   /** Override or extend the agent CLI registry (tests add a fake agent). */
   agents?: Record<string, AgentCli>;
@@ -171,6 +179,7 @@ export function createAgentCliHandler(
     async execute(input, ctx) {
       const repo = repoConfig(deps.config, input.repo);
       if (!repo) throw new WorkerError('PERMANENT', `repo ${input.repo} is not configured`);
+      const source = deps.sources(repo);
       if (!existsSync(repo.path)) throw new WorkerError('POLICY', `checkout ${repo.path} does not exist`);
       const baseline = input.baseline ?? { pr: null, feedback: null };
 
@@ -178,8 +187,8 @@ export function createAgentCliHandler(
       // already did the work (success is defined by evidence, so this is
       // always safe). It saves an agent run, whatever the earlier failure was.
       if (ctx.attemptNumber > 1) {
-        const task0 = await deps.source.get(input.ref);
-        const earlier = await roundResult(deps.source, input.ref, branchFor(task0), baseline);
+        const task0 = await source.get(input.ref);
+        const earlier = await roundResult(source, input.ref, branchFor(task0), baseline);
         if ('pr' in earlier) {
           ctx.logger.info(
             { event_type: 'agent.already_done', pr: earlier.pr.url },
@@ -201,7 +210,7 @@ export function createAgentCliHandler(
       if (ready.switchedFrom)
         ctx.logger.info({ from: ready.switchedFrom }, 'switched clean checkout back to the default branch');
 
-      const task = await deps.source.get(input.ref);
+      const task = await source.get(input.ref);
       const branch = branchFor(task);
       const cli = resolveAgentCli(repo.agent, agents);
       const logFile = join(
@@ -245,7 +254,7 @@ export function createAgentCliHandler(
       if (res.spawnError) throw new WorkerError('PERMANENT', `could not start ${cli.bin}: ${res.spawnError}`);
 
       const result = await roundResult(
-        deps.source,
+        source,
         input.ref,
         branch,
         input.baseline ?? { pr: null, feedback: null },
@@ -276,10 +285,13 @@ export function createAgentCliHandler(
     },
 
     async reconcile(input) {
-      const task = await deps.source.get(input.ref);
+      const repo = repoConfig(deps.config, input.repo);
+      if (!repo) return { outcome: 'UNKNOWN', reason: `repo ${input.repo} is not configured` };
+      const source = deps.sources(repo);
+      const task = await source.get(input.ref);
       const branch = branchFor(task);
       const result = await roundResult(
-        deps.source,
+        source,
         input.ref,
         branch,
         input.baseline ?? { pr: null, feedback: null },
@@ -302,7 +314,7 @@ export function createAgentCliHandler(
 
 export function createAgentRunnerHandlers(deps: AgentCliHandlerDeps) {
   return {
-    tracker: createTrackerHandler(deps.source),
+    tracker: createTrackerHandler(deps),
     'agent-cli': createAgentCliHandler(deps),
   };
 }

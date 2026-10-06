@@ -1,5 +1,6 @@
 export * from './source';
 export * from './github';
+export * from './azure';
 export * from './config';
 export * from './agent-cli';
 export * from './checkout';

@@ -1,3 +1,4 @@
+import type { RepoConfig } from './config';
 /**
  * Where work comes from. The tracker (GitHub Issues, Linear, Jira, ...) is the
  * source of truth for *intent*: what should be done, discussion, priority.
@@ -42,19 +43,72 @@ export interface PullRequestState {
   lastCommitAt: string | null;
 }
 
-export interface TaskSource {
-  readonly name: string;
-  /** Open items carrying the "ready" label in the given repos. */
-  listReady(repos: string[]): Promise<SourceTask[]>;
+/** Where items come from: list opted-in work, read it, move its labels/tags, comment. */
+export interface Tracker {
+  readonly kind: string;
+  listReady(repo: RepoConfig): Promise<SourceTask[]>;
   get(ref: string): Promise<SourceTask>;
   updateLabels(ref: string, change: { add?: string[]; remove?: string[] }): Promise<void>;
-  /** Post `body` unless a comment containing `marker` already exists. */
+  /** Post `body` unless a comment containing the marker already exists. */
   comment(ref: string, body: string, marker: string): Promise<{ posted: boolean }>;
-  /** PRs opened from the agent's branch for this item (any state). */
-  findPullRequests(ref: string, branch: string): Promise<PullRequestRef[]>;
+  /** Create the tpm:agent:* labels if the tracker needs them created (idempotent). */
+  ensureLabels?(repo: RepoConfig): Promise<void>;
+}
+
+/** Where pull requests live. */
+export interface PrHost {
+  readonly kind: string;
+  /** PRs from `branch` in the repo (any state). */
+  findPullRequests(repo: RepoConfig, branch: string): Promise<PullRequestRef[]>;
   getPullRequest(url: string): Promise<PullRequestState>;
   /** Human-readable review feedback (reviews, comments, failed checks) for the next round's prompt. */
   getFeedback(url: string): Promise<string>;
+}
+
+/**
+ * The view the handlers use for ONE repo: its tracker plus its PR host.
+ * Every write is an external side effect done by a worker step, so each one
+ * is idempotent: label/tag edits converge, and comments carry a marker that
+ * `comment()` checks before posting.
+ */
+export interface TaskSource {
+  readonly name: string;
+  listReady(repo: RepoConfig): Promise<SourceTask[]>;
+  get(ref: string): Promise<SourceTask>;
+  updateLabels(ref: string, change: { add?: string[]; remove?: string[] }): Promise<void>;
+  comment(ref: string, body: string, marker: string): Promise<{ posted: boolean }>;
+  findPullRequests(ref: string, branch: string): Promise<PullRequestRef[]>;
+  getPullRequest(url: string): Promise<PullRequestState>;
+  getFeedback(url: string): Promise<string>;
+}
+
+/** Picks the TaskSource for a repo (tests inject a fake). */
+export type SourceResolver = (repo: RepoConfig) => TaskSource;
+
+export function combineSource(tracker: Tracker, host: PrHost, repo: RepoConfig): TaskSource {
+  return {
+    name: `${tracker.kind}+${host.kind}`,
+    listReady: (r) => tracker.listReady(r),
+    get: (ref) => tracker.get(ref),
+    updateLabels: (ref, change) => tracker.updateLabels(ref, change),
+    comment: (ref, body, marker) => tracker.comment(ref, body, marker),
+    findPullRequests: (_ref, branch) => host.findPullRequests(repo, branch),
+    getPullRequest: (url) => host.getPullRequest(url),
+    getFeedback: (url) => host.getFeedback(url),
+  };
+}
+
+export function createSourceResolver(registry: {
+  trackers: Record<string, Tracker>;
+  hosts: Record<string, PrHost>;
+}): SourceResolver {
+  return (repo) => {
+    const tracker = registry.trackers[repo.tracker];
+    const host = registry.hosts[repo.host];
+    if (!tracker) throw new Error(`no tracker "${repo.tracker}" for ${repo.name}`);
+    if (!host) throw new Error(`no PR host "${repo.host}" for ${repo.name}`);
+    return combineSource(tracker, host, repo);
+  };
 }
 
 export const LABELS = {
@@ -68,10 +122,13 @@ export const LABELS = {
 /** Deterministic branch name: lets a retry find the work of a crashed attempt. */
 export const branchFor = (task: Pick<SourceTask, 'number'>): string => `agent/issue-${task.number}`;
 
+/** "github:owner/repo#12" or "ado:org/Project Name#123" (ADO project names may contain spaces). */
 export function parseRef(ref: string): { provider: string; repo: string; number: number } {
-  const m = /^([a-z]+):([^#\s]+\/[^#\s]+)#(\d+)$/.exec(ref);
+  const m = /^([a-z-]+):([^#\/]+\/[^#]+)#(\d+)$/.exec(ref);
   if (!m) throw new Error(`invalid source ref "${ref}"`);
   return { provider: m[1]!, repo: m[2]!, number: Number(m[3]) };
 }
 
 export const markerComment = (marker: string) => `<!-- durable:${marker} -->`;
+/** Every tracker's marker contains this text, so detection is the same everywhere. */
+export const markerText = (marker: string) => `durable:${marker}`;

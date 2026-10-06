@@ -95,6 +95,53 @@ processes) is a duplicate and changes nothing; a new push produces a new event.
 After `maxRounds` (default 3) automatic rounds, `needs-agent` only comments; a
 human adds `tpm:agent:ready` to allow another round.
 
+## Trackers and PR hosts
+
+Each repo in the config picks where items come from (`tracker`) and where PRs
+live (`host`). The handlers see one combined view per repo, so the workflow is
+the same for every combination.
+
+| `tracker`      | Items are               | `tpm:agent:*` are  | CLI         |
+| -------------- | ----------------------- | ------------------ | ----------- |
+| `github`       | GitHub issues           | labels             | `gh`        |
+| `azure-boards` | Azure Boards work items | work item **tags** | `az boards` |
+
+| `host`   | PRs are         | CI signal                                | CLI                        |
+| -------- | --------------- | ---------------------------------------- | -------------------------- |
+| `github` | GitHub PRs      | status check rollup                      | `gh`                       |
+| `ado`    | Azure Repos PRs | newest Azure Pipelines run on the branch | `az repos`, `az pipelines` |
+
+Azure DevOps details (ported from tpm's ADO adapter):
+
+- **Ready items**: WIQL query for work items in `ado.project` (optionally
+  under `ado.areaPath`) whose tags contain `tpm:agent:ready` and whose state is
+  not Closed/Removed/Done/Resolved; the tag is then checked exactly.
+  Use `areaPath` when one project feeds several repos.
+- **Refs** look like `ado:<organization>/<project>#<work item id>`.
+- **Tags** are one field (`a; b; c`): the runner reads them and writes the new
+  set. A human editing tags at the same moment can lose that edit (rare).
+- **Comments** go to the work item discussion. ADO strips HTML comments, so the
+  idempotency marker is a small visible line `durable:<key>`. If existing
+  comments cannot be read, nothing is posted and the step retries.
+- **PR outcome**: completed → merged; abandoned → closed; a reviewer vote of
+  -5 or -10 → changes requested (a human); merge conflicts or a failed /
+  canceled newest pipeline run → the agent's next round.
+- **Feedback** for the next round: active text comments of the PR threads, the
+  failed pipeline and the conflict state.
+- **PR creation**: the prompt tells the agent to use
+  `az repos pr create … --work-items <id>`, which links the PR to the work item.
+
+ADO setup:
+
+```bash
+az extension add --name azure-devops
+az login                     # or: export AZURE_DEVOPS_EXT_PAT=<PAT with Work Items (read/write), Code (read/write), Build (read)>
+```
+
+The agent itself runs `git` and `az repos pr create`, so its permissions must
+allow `Bash(az:*)` (for Claude Code: `permissions.allow` in
+`~/.claude/settings.json`). See `agent-runner.config.ado.example.json`.
+
 ## Setup
 
 1. `gh auth login` (the GitHub adapter uses the `gh` CLI).
@@ -119,7 +166,8 @@ and are recorded as `agent-log` artifacts.
   comment needs only an answer, the round fails and a human handles it.
 - **Review threads**: feedback includes reviews and PR comments, not inline
   review-thread resolution state (needs the GraphQL API).
-- **Other trackers**: only GitHub Issues. Linear/Jira are a new `TaskSource`.
+- **Other trackers**: GitHub Issues and Azure Boards. Linear/Jira are a new `Tracker`.
+- **ADO adapters are tested with a fake `az`**, not yet against a real Azure DevOps organization.
 - **Worktrees**: one checkout per repo, serialized. Per-run `git worktree`
   would allow parallel runs in one repo.
 - **Webhooks**: the watcher polls (every `syncIntervalMs`). A GitHub webhook

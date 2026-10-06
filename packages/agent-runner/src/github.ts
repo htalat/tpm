@@ -1,13 +1,16 @@
 import { execFile } from 'node:child_process';
 import { FAILED_CONCLUSIONS, formatFeedback } from './pr-signal';
+import type { RepoConfig } from './config';
 import {
   LABELS,
   markerComment,
+  markerText,
   parseRef,
+  type PrHost,
   type PullRequestRef,
   type PullRequestState,
   type SourceTask,
-  type TaskSource,
+  type Tracker,
 } from './source';
 
 /** Runs a command and returns stdout. Injected so tests never call the real `gh`. */
@@ -30,8 +33,8 @@ interface GhIssue {
 }
 
 /** GitHub Issues through the `gh` CLI (auth comes from `gh auth login`). */
-export class GitHubIssuesSource implements TaskSource {
-  readonly name = 'github';
+export class GitHubIssuesTracker implements Tracker {
+  readonly kind = 'github';
   constructor(
     private readonly run: CommandRunner = execRunner,
     private readonly bin = process.env.GH_BIN ?? 'gh',
@@ -53,9 +56,10 @@ export class GitHubIssuesSource implements TaskSource {
     };
   }
 
-  async listReady(repos: string[]): Promise<SourceTask[]> {
+  async listReady(repoCfg: RepoConfig): Promise<SourceTask[]> {
     const out: SourceTask[] = [];
-    for (const repo of repos) {
+    {
+      const repo = repoCfg.name;
       const raw = await this.gh([
         'issue',
         'list',
@@ -112,13 +116,41 @@ export class GitHubIssuesSource implements TaskSource {
     const tag = markerComment(marker);
     const raw = await this.gh(['issue', 'view', String(number), '--repo', repo, '--json', 'comments']);
     const comments = (JSON.parse(raw) as { comments: Array<{ body: string }> }).comments ?? [];
-    if (comments.some((c) => c.body.includes(tag))) return { posted: false };
+    if (comments.some((c) => c.body.includes(markerText(marker)))) return { posted: false };
     await this.gh(['issue', 'comment', String(number), '--repo', repo, '--body', `${body}\n\n${tag}`]);
     return { posted: true };
   }
 
-  async findPullRequests(ref: string, branch: string): Promise<PullRequestRef[]> {
-    const { repo } = parseRef(ref);
+  /** Create the tpm:agent:* labels in a repo (idempotent). */
+  async ensureLabels(repoCfg: RepoConfig): Promise<void> {
+    const repo = repoCfg.name;
+    const colors: Record<string, string> = {
+      ready: '0e8a16',
+      running: 'fbca04',
+      review: '1d76db',
+      failed: 'b60205',
+      done: '5319e7',
+    };
+    for (const [k, name] of Object.entries(LABELS)) {
+      await this.gh(['label', 'create', name, '--repo', repo, '--color', colors[k]!, '--force']);
+    }
+  }
+}
+
+/** Pull requests on GitHub through the `gh` CLI. */
+export class GitHubPrHost implements PrHost {
+  readonly kind = 'github';
+  constructor(
+    private readonly run: CommandRunner = execRunner,
+    private readonly bin = process.env.GH_BIN ?? 'gh',
+  ) {}
+
+  private gh(args: string[]) {
+    return this.run(this.bin, args);
+  }
+
+  async findPullRequests(repoCfg: RepoConfig, branch: string): Promise<PullRequestRef[]> {
+    const repo = repoCfg.name;
     const raw = await this.gh([
       'pr',
       'list',
@@ -213,19 +245,5 @@ export class GitHubIssuesSource implements TaskSource {
         .map((c) => c.name ?? c.context ?? '?'),
       mergeStateStatus: (pr.mergeStateStatus ?? 'UNKNOWN').toUpperCase(),
     });
-  }
-
-  /** Create the tpm:agent:* labels in a repo (idempotent). */
-  async ensureLabels(repo: string): Promise<void> {
-    const colors: Record<string, string> = {
-      ready: '0e8a16',
-      running: 'fbca04',
-      review: '1d76db',
-      failed: 'b60205',
-      done: '5319e7',
-    };
-    for (const [k, name] of Object.entries(LABELS)) {
-      await this.gh(['label', 'create', name, '--repo', repo, '--color', colors[k]!, '--force']);
-    }
   }
 }

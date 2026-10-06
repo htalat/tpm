@@ -1,7 +1,8 @@
 import { isTerminalTask } from '@durable/core';
 import type { Engine } from '@durable/engine';
 import { classifyPullRequest } from './pr-signal';
-import type { TaskSource } from './source';
+import { repoConfig, type AgentRunnerConfig } from './config';
+import type { SourceResolver } from './source';
 import { PR_OUTCOME_EVENT } from './workflow';
 
 /**
@@ -15,11 +16,12 @@ import { PR_OUTCOME_EVENT } from './workflow';
  */
 export async function pollPullRequestsOnce(
   engine: Engine,
-  source: TaskSource,
+  sources: SourceResolver,
+  config: AgentRunnerConfig,
 ): Promise<{ checked: number; signalled: number; duplicates: number; errors: number }> {
   const waiting = (
-    await engine.deps.pool.query<{ task_id: string; url: string; task_status: string }>(
-      `SELECT s.task_id, s.wait->>'correlationKey' AS url, t.status AS task_status
+    await engine.deps.pool.query<{ task_id: string; url: string; task_status: string; repo: string }>(
+      `SELECT s.task_id, s.wait->>'correlationKey' AS url, t.status AS task_status, t.input->>'repo' AS repo
        FROM steps s JOIN tasks t ON t.id = s.task_id
        WHERE t.type = 'agent-run' AND s.status = 'WAITING' AND s.type = 'wait_event'
          AND s.wait->>'eventType' = $1`,
@@ -29,9 +31,11 @@ export async function pollPullRequestsOnce(
   const r = { checked: 0, signalled: 0, duplicates: 0, errors: 0 };
   for (const w of waiting) {
     if (!w.url || isTerminalTask(w.task_status as never)) continue;
+    const repo = repoConfig(config, w.repo);
+    if (!repo) continue; // repo removed from config: leave the run waiting
     r.checked++;
     try {
-      const outcome = classifyPullRequest(await source.getPullRequest(w.url));
+      const outcome = classifyPullRequest(await sources(repo).getPullRequest(w.url));
       if (outcome.kind === 'no-action') continue;
       const res = await engine.signal(w.task_id, {
         type: PR_OUTCOME_EVENT,

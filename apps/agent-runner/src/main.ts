@@ -4,34 +4,55 @@ import { createPool, loadEnv } from '@durable/db';
 import { Engine } from '@durable/engine';
 import {
   createAgentRunnerHandlers,
-  GitHubIssuesSource,
+  AdoPrHost,
+  AzureBoardsTracker,
+  createSourceResolver,
+  GitHubIssuesTracker,
+  GitHubPrHost,
   loadAgentRunnerConfig,
   pollPullRequestsOnce,
   syncOnce,
+  type Tracker,
 } from '@durable/agent-runner';
 import { createLogger } from '@durable/observability';
 import { HttpTransport, WorkerRuntime } from '@durable/sdk';
 import { createRegistry } from '@durable/workflows';
 
 /**
- * agent-runner: GitHub Issues labelled `tpm:agent:ready` -> `agent-run` tasks ->
+ * agent-runner: GitHub issues labelled / Azure Boards work items tagged `tpm:agent:ready` -> `agent-run` tasks ->
  * coding agent in the local checkout -> PR -> issue labelled `tpm:agent:review`.
  *
  *   sync    poll the tracker (create runs) and the PRs of runs in review (signal outcomes)
  *   worker  execute run steps (talks to the API over HTTP, like any worker)
- *   labels  create the tpm:agent:* labels in every configured repo
+ *   labels  create the tpm:agent:* labels in every configured GitHub repo (ADO tags need no setup)
  */
 loadEnv();
 const [cmd] = process.argv.slice(2);
 const configPath = resolve(process.env.AGENT_RUNNER_CONFIG ?? 'agent-runner.config.json');
 const config = loadAgentRunnerConfig(configPath);
-const source = new GitHubIssuesSource();
+// Trackers (where items come from) and PR hosts (where PRs live); each repo
+// in the config picks one of each.
+const trackers: Record<string, Tracker> = {
+  github: new GitHubIssuesTracker(),
+  'azure-boards': new AzureBoardsTracker(),
+};
+const sources = createSourceResolver({
+  trackers,
+  hosts: { github: new GitHubPrHost(), ado: new AdoPrHost() },
+});
 const logger = createLogger(`agent-runner-${cmd ?? 'help'}`);
 
 if (cmd === 'labels') {
   for (const r of config.repos) {
-    await source.ensureLabels(r.name);
-    console.log(`labels ready in ${r.name}`);
+    const tracker = trackers[r.tracker]!;
+    if (tracker.ensureLabels) {
+      await tracker.ensureLabels(r);
+      console.log(`labels ready in ${r.name}`);
+    } else {
+      console.log(
+        `${r.name}: ${r.tracker} uses tags; nothing to create (add the tag tpm:agent:ready to a work item)`,
+      );
+    }
   }
 } else if (cmd === 'sync') {
   const pool = createPool({
@@ -46,9 +67,9 @@ if (cmd === 'labels') {
   logger.info({ repos: config.repos.map((r) => r.name), interval_ms: config.syncIntervalMs }, 'sync started');
   while (running) {
     try {
-      const r = await syncOnce(engine, source, config);
+      const r = await syncOnce(engine, sources, config);
       if (r.created.length) logger.info({ created: r.created, skipped: r.skipped }, 'runs created');
-      const p = await pollPullRequestsOnce(engine, source);
+      const p = await pollPullRequestsOnce(engine, sources, config);
       if (p.signalled || p.errors) logger.info(p, 'pull requests polled');
     } catch (e) {
       logger.error({ err: e }, 'sync failed; will retry');
@@ -64,7 +85,7 @@ if (cmd === 'labels') {
       process.env.WORKER_TOKEN || undefined,
     ),
     name: process.env.WORKER_NAME ?? `agent-runner-${process.pid}`,
-    handlers: createAgentRunnerHandlers({ source, config }),
+    handlers: createAgentRunnerHandlers({ sources, config }),
     concurrency: Number(process.env.WORKER_CONCURRENCY ?? 2),
     leaseMs: Number(process.env.LEASE_MS ?? 60_000),
     logger,

@@ -6,6 +6,7 @@ import {
   agentRunWorkflow,
   AgentRunnerConfigSchema,
   createAgentRunnerHandlers,
+  createSourceResolver,
   LABELS,
   pollPullRequestsOnce,
   syncOnce,
@@ -58,9 +59,17 @@ describe('agent-runner: tracker -> rounds of agent work -> PR outcome', () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   const worker = (crashAt?: Record<string, number>) =>
-    h.worker(createAgentRunnerHandlers({ source, config, agents: { fake: fakeCli }, killGraceMs: 500 }), {
-      crashAt,
-    });
+    h.worker(
+      createAgentRunnerHandlers({
+        sources: () => source,
+        config,
+        agents: { fake: fakeCli },
+        killGraceMs: 500,
+      }),
+      {
+        crashAt,
+      },
+    );
   const calls = () =>
     existsSync(callsFile) ? readFileSync(callsFile, 'utf8').trim().split('\n').filter(Boolean) : [];
   const prompts = () =>
@@ -79,14 +88,14 @@ describe('agent-runner: tracker -> rounds of agent work -> PR outcome', () => {
 
   /** Sync one new round for the item and drive it until it waits for review (or ends). */
   async function runRound(opts: { advanceMs?: number } = {}) {
-    const { created } = await syncOnce(h.engine, source, config);
+    const { created } = await syncOnce(h.engine, () => source, config);
     expect(created).toHaveLength(1);
     const t = await h.drive(created[0]!, [worker()], { advanceMs: opts.advanceMs });
     return { taskId: created[0]!, task: t };
   }
   /** One watcher pass + drive to the end. */
   async function settle(taskId: string) {
-    await pollPullRequestsOnce(h.engine, source);
+    await pollPullRequestsOnce(h.engine, () => source, config);
     return h.drive(taskId, [worker()]);
   }
 
@@ -97,9 +106,12 @@ describe('agent-runner: tracker -> rounds of agent work -> PR outcome', () => {
     expect(await stepStatus(taskId, 'review')).toBe('WAITING');
     expect(source.item(ref).labels).toEqual([LABELS.review]);
     // Nothing actionable yet: the watcher signals nothing.
-    expect(await pollPullRequestsOnce(h.engine, source)).toMatchObject({ checked: 1, signalled: 0 });
+    expect(await pollPullRequestsOnce(h.engine, () => source, config)).toMatchObject({
+      checked: 1,
+      signalled: 0,
+    });
     // Not ready: no second run.
-    expect((await syncOnce(h.engine, source, config)).created).toEqual([]);
+    expect((await syncOnce(h.engine, () => source, config)).created).toEqual([]);
 
     source.patchPr(ref, { state: 'MERGED' });
     const done = await settle(taskId);
@@ -159,7 +171,7 @@ describe('agent-runner: tracker -> rounds of agent work -> PR outcome', () => {
     source.patchPr(ref, { checks: [{ name: 'lint', conclusion: 'FAILURE' }] });
     await settle(r1.taskId);
 
-    const { created } = await syncOnce(h.engine, source, config);
+    const { created } = await syncOnce(h.engine, () => source, config);
     const taskId = created[0]!;
     await h.engine.runUntilIdle();
     await worker().pollOnce(); // start
@@ -186,7 +198,9 @@ describe('agent-runner: tracker -> rounds of agent work -> PR outcome', () => {
     const ref = source.add(REPO, 23);
     const r1 = await runRound();
     source.patchPr(ref, { mergeStateStatus: 'BEHIND' });
-    const passes = await Promise.all([1, 2, 3].map(() => pollPullRequestsOnce(h.engine, source)));
+    const passes = await Promise.all(
+      [1, 2, 3].map(() => pollPullRequestsOnce(h.engine, () => source, config)),
+    );
     expect(passes.reduce((n, p) => n + p.signalled, 0)).toBe(1);
     const events = await h.pool.query(
       `SELECT deduplication_key FROM events WHERE task_id = $1 AND event_type = 'pr.outcome'`,
@@ -199,7 +213,7 @@ describe('agent-runner: tracker -> rounds of agent work -> PR outcome', () => {
     const t = await h.drive(r1.taskId, [worker()]);
     expect(t.status).toBe('COMPLETED');
     // After completion nothing is watched any more.
-    expect(await pollPullRequestsOnce(h.engine, source)).toMatchObject({ checked: 0 });
+    expect(await pollPullRequestsOnce(h.engine, () => source, config)).toMatchObject({ checked: 0 });
   });
 
   it('stops after maxRounds and hands the item to a human', async () => {
@@ -213,7 +227,7 @@ describe('agent-runner: tracker -> rounds of agent work -> PR outcome', () => {
     }
     expect(source.item(ref).labels).toEqual([LABELS.review]);
     expect(source.item(ref).comments.at(-1)).toContain('already used 2 round(s)');
-    expect((await syncOnce(h.engine, source, config)).created).toEqual([]);
+    expect((await syncOnce(h.engine, () => source, config)).created).toEqual([]);
   });
 
   it('changes requested -> stays in review for a human; closed PR -> failed', async () => {
@@ -236,7 +250,7 @@ describe('agent-runner: tracker -> rounds of agent work -> PR outcome', () => {
     // "Restart": only PostgreSQL and the tracker survive.
     const engine2 = h.newEngine();
     source.patchPr(ref, { state: 'MERGED' });
-    expect(await pollPullRequestsOnce(engine2, source)).toMatchObject({ signalled: 1 });
+    expect(await pollPullRequestsOnce(engine2, () => source, config)).toMatchObject({ signalled: 1 });
     await engine2.runUntilIdle();
     await worker().pollOnce();
     await engine2.runUntilIdle();
@@ -246,7 +260,7 @@ describe('agent-runner: tracker -> rounds of agent work -> PR outcome', () => {
   it('runs at most one agent per repository at a time', async () => {
     source.add(REPO, 1);
     source.add(REPO, 2);
-    await syncOnce(h.engine, source, config);
+    await syncOnce(h.engine, () => source, config);
     const w = worker();
     for (let i = 0; i < 2; i++) {
       await h.engine.runUntilIdle();
@@ -278,7 +292,7 @@ describe('agent-runner: tracker -> rounds of agent work -> PR outcome', () => {
   it('a provider usage limit is retried later without using up an attempt', async () => {
     process.env.FAKE_AGENT_MODE = 'ratelimit';
     source.add(REPO, 4);
-    const [taskId] = (await syncOnce(h.engine, source, config)).created;
+    const [taskId] = (await syncOnce(h.engine, () => source, config)).created;
     for (let i = 0; i < 2; i++) {
       await h.engine.runUntilIdle();
       await worker().pollOnce(); // start, prepare
@@ -314,7 +328,7 @@ describe('agent-runner: tracker -> rounds of agent work -> PR outcome', () => {
     process.env.FAKE_AGENT_MODE = 'slow';
     config.repos[0]!.timeBoundMinutes = 0.02; // 1.2 s
     source.add(REPO, 6);
-    const [taskId] = (await syncOnce(h.engine, source, config)).created;
+    const [taskId] = (await syncOnce(h.engine, () => source, config)).created;
     for (let i = 0; i < 2; i++) {
       await h.engine.runUntilIdle();
       await worker().pollOnce(); // start, prepare
@@ -360,7 +374,7 @@ describe('agent-runner: tracker -> rounds of agent work -> PR outcome', () => {
   it('trial regression: any retry checks for evidence first and does not run the agent again', async () => {
     source.add(REPO, 32);
     source.failFinds = 0;
-    const [taskId] = (await syncOnce(h.engine, source, config)).created;
+    const [taskId] = (await syncOnce(h.engine, () => source, config)).created;
     for (let i = 0; i < 2; i++) {
       await h.engine.runUntilIdle();
       await worker().pollOnce(); // start, prepare
@@ -378,9 +392,47 @@ describe('agent-runner: tracker -> rounds of agent work -> PR outcome', () => {
     expect(out).toMatchObject({ reconciled: true });
   });
 
+  it('an Azure DevOps repo (Boards tags + Azure Repos) runs through the same workflow', async () => {
+    const adoRepo = 'contoso/Web Project/website';
+    config = AgentRunnerConfigSchema.parse({
+      runsDir: join(dir, 'runs'),
+      repos: [
+        {
+          name: adoRepo,
+          path: join(dir, 'repo'),
+          agent: 'fake',
+          tracker: 'azure-boards',
+          host: 'ado',
+          ado: { organization: 'contoso', project: 'Web Project', repository: 'website' },
+          maxRounds: 1,
+        },
+      ],
+    });
+    // The fake plays both roles, registered under the ADO kinds: this checks the routing.
+    const sources = createSourceResolver({ trackers: { 'azure-boards': source }, hosts: { ado: source } });
+    const ref = source.add(adoRepo, 77, 'Footer typo', [LABELS.ready], 'ado:contoso/Web Project#77');
+    const { created } = await syncOnce(h.engine, sources, config);
+    expect(created).toHaveLength(1);
+    const w = h.worker(
+      createAgentRunnerHandlers({ sources, config, agents: { fake: fakeCli }, killGraceMs: 500 }),
+    );
+    const t = await h.drive(created[0]!, [w]);
+    expect(t.status).toBe('WAITING');
+    expect(prompts().at(-1)).toContain(
+      'az repos pr create --org https://dev.azure.com/contoso --project "Web Project"',
+    );
+    expect(prompts().at(-1)).toContain('--work-items 77');
+    expect(source.item(ref).labels).toEqual([LABELS.review]);
+    source.patchPr(ref, { state: 'MERGED' });
+    await pollPullRequestsOnce(h.engine, sources, config);
+    const done = await h.drive(created[0]!, [w]);
+    expect(done.status).toBe('COMPLETED');
+    expect(source.item(ref).labels).toEqual([LABELS.done]);
+  });
+
   it('concurrent syncers create one run per item', async () => {
     source.add(REPO, 8);
-    const results = await Promise.all([1, 2, 3].map(() => syncOnce(h.engine, source, config)));
+    const results = await Promise.all([1, 2, 3].map(() => syncOnce(h.engine, () => source, config)));
     expect(results.flatMap((r) => r.created)).toHaveLength(1);
   });
 });

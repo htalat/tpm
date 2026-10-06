@@ -1,7 +1,7 @@
 import { isTerminalTask, type TaskStatus } from '@durable/core';
 import type { Engine } from '@durable/engine';
 import type { AgentRunnerConfig } from './config';
-import type { TaskSource } from './source';
+import type { SourceResolver } from './source';
 import type { AgentRunInput } from './workflow';
 
 /**
@@ -14,10 +14,11 @@ import type { AgentRunInput } from './workflow';
  */
 export async function syncOnce(
   engine: Engine,
-  source: TaskSource,
+  sources: SourceResolver,
   config: AgentRunnerConfig,
 ): Promise<{ created: string[]; skipped: number }> {
-  const ready = await source.listReady(config.repos.map((r) => r.name));
+  const ready = [];
+  for (const repo of config.repos) ready.push(...(await sources(repo).listReady(repo)));
   const created: string[] = [];
   let skipped = 0;
   for (const item of ready) {

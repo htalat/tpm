@@ -1,0 +1,22 @@
+{
+  "syncIntervalMs": 60000,
+  "runsDir": "data/agent-runs",
+  "repos": [
+    {
+      "name": "contoso/Web/website",
+      "tracker": "azure-boards",
+      "host": "ado",
+      "ado": {
+        "organization": "contoso",
+        "project": "Web",
+        "repository": "website",
+        "areaPath": "Web\\Agents"
+      },
+      "path": "/absolute/path/to/website",
+      "defaultBranch": "main",
+      "agent": "claude",
+      "timeBoundMinutes": 30,
+      "maxRounds": 3
+    }
+  ]
+}

@@ -4,7 +4,9 @@ import {
   formatFeedback,
   LABELS,
   markerComment,
+  markerText,
   type PullRequestRef,
+  type RepoConfig,
   type PullRequestState,
   type SourceTask,
   type TaskSource,
@@ -18,14 +20,20 @@ export interface FakePr extends PullRequestState {
 /** In-memory tracker. PRs are JSON files the fake agent writes (one per item). */
 export class FakeSource implements TaskSource {
   readonly name = 'fake';
+  readonly kind = 'fake';
   readonly items = new Map<string, SourceTask & { comments: string[] }>();
   prReads = 0;
   /** Make the next N findPullRequests calls fail (tracker outage). */
   failFinds = 0;
   constructor(readonly prDir: string) {}
 
-  add(repo: string, number: number, title = `Issue ${number}`, labels: string[] = [LABELS.ready]) {
-    const ref = `github:${repo}#${number}`;
+  add(
+    repo: string,
+    number: number,
+    title = `Issue ${number}`,
+    labels: string[] = [LABELS.ready],
+    ref = `github:${repo}#${number}`,
+  ) {
     this.items.set(ref, {
       ref,
       repo,
@@ -54,8 +62,8 @@ export class FakeSource implements TaskSource {
     writeFileSync(this.prFile(ref), JSON.stringify({ ...this.pr(ref), ...patch }));
   }
 
-  async listReady(repos: string[]) {
-    return [...this.items.values()].filter((i) => repos.includes(i.repo) && i.labels.includes(LABELS.ready));
+  async listReady(repo: RepoConfig) {
+    return [...this.items.values()].filter((i) => i.repo === repo.name && i.labels.includes(LABELS.ready));
   }
   async get(ref: string) {
     return { ...this.item(ref), labels: [...this.item(ref).labels] };
@@ -69,18 +77,25 @@ export class FakeSource implements TaskSource {
   async comment(ref: string, body: string, marker: string) {
     const i = this.item(ref);
     const tag = markerComment(marker);
-    if (i.comments.some((c) => c.includes(tag))) return { posted: false };
+    if (i.comments.some((c) => c.includes(markerText(marker)))) return { posted: false };
     i.comments.push(`${body}\n\n${tag}`);
     return { posted: true };
   }
-  async findPullRequests(ref: string, branch: string): Promise<PullRequestRef[]> {
+  /** As a TaskSource it gets the item ref; as a PrHost (via the resolver) it gets the repo config. */
+  async findPullRequests(refOrRepo: string | RepoConfig, branch: string): Promise<PullRequestRef[]> {
     if (this.failFinds > 0) {
       this.failFinds--;
       throw new Error('tracker unavailable');
     }
-    if (!existsSync(this.prFile(ref))) return [];
-    const pr = this.pr(ref);
-    return pr.branch === branch ? [{ url: pr.url, state: pr.state }] : [];
+    const files =
+      typeof refOrRepo === 'string'
+        ? [this.prFile(refOrRepo)]
+        : (existsSync(this.prDir) ? readdirSync(this.prDir) : []).map((f) => join(this.prDir, f));
+    return files
+      .filter((f) => existsSync(f))
+      .map((f) => JSON.parse(readFileSync(f, 'utf8')) as FakePr)
+      .filter((pr) => pr.branch === branch)
+      .map((pr) => ({ url: pr.url, state: pr.state }));
   }
   async getPullRequest(url: string): Promise<FakePr> {
     this.prReads++;
