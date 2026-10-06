@@ -7,7 +7,7 @@
     "@durable/core": "*",
     "@durable/db": "*",
     "@durable/engine": "*",
-    "@durable/examples": "*",
-    "@durable/observability": "*"
+    "@durable/observability": "*",
+    "@durable/workflows": "*"
   }
 }

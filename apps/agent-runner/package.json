@@ -1,15 +1,15 @@
 {
-  "name": "@durable/app-api",
+  "name": "@durable/app-agent-runner",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "dependencies": {
+    "@durable/agent-runner": "*",
     "@durable/core": "*",
     "@durable/db": "*",
     "@durable/engine": "*",
     "@durable/observability": "*",
-    "@durable/workflows": "*",
-    "fastify": "^5.12.5",
-    "zod": "^4.6.5"
+    "@durable/sdk": "*",
+    "@durable/workflows": "*"
   }
 }

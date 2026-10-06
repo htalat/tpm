@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { ConfiguredFailureInjector, parseCrashRules } from '@durable/core';
 import { createPool, loadEnv } from '@durable/db';
 import { Engine } from '@durable/engine';
-import { createExampleRegistry } from '@durable/examples';
+import { createRegistry } from '@durable/workflows';
 import { createLogger, MetricsRegistry } from '@durable/observability';
 
 /**
@@ -18,7 +18,7 @@ const pool = createPool({ connectionString: url, applicationName: 'durable-orche
 const metrics = new MetricsRegistry();
 const engine = new Engine({
   pool,
-  registry: createExampleRegistry(),
+  registry: createRegistry(),
   logger,
   metrics,
   leaseMs: Number(process.env.LEASE_MS ?? 30_000),

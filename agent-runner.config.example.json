@@ -1,0 +1,15 @@
+{
+  "source": "github",
+  "syncIntervalMs": 60000,
+  "runsDir": "data/agent-runs",
+  "repos": [
+    {
+      "name": "your-org/your-repo",
+      "path": "/absolute/path/to/your-repo",
+      "defaultBranch": "main",
+      "agent": "claude",
+      "timeBoundMinutes": 30,
+      "instructions": "Follow AGENTS.md. Run the test suite before you open the PR."
+    }
+  ]
+}
