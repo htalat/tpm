@@ -1,7 +1,8 @@
 import { isTerminalTask, type TaskStatus } from '@durable/core';
 import type { Engine } from '@durable/engine';
 import type { AgentRunnerConfig } from './config';
-import type { SourceResolver } from './source';
+import { loadPolicy } from './factory-handlers';
+import { LABELS, type SourceResolver } from './source';
 import type { AgentRunInput } from './workflow';
 
 /**
@@ -16,11 +17,28 @@ export async function syncOnce(
   engine: Engine,
   sources: SourceResolver,
   config: AgentRunnerConfig,
-): Promise<{ created: string[]; skipped: number }> {
-  const ready = [];
-  for (const repo of config.repos) ready.push(...(await sources(repo).listReady(repo)));
+): Promise<{ created: string[]; skipped: number; unauthorized: string[] }> {
   const created: string[] = [];
+  const unauthorized: string[] = [];
   let skipped = 0;
+  const ready = [];
+  for (const repo of config.repos) {
+    const source = sources(repo);
+    const items = await source.listReady(repo);
+    // Factory repos: if the policy lists `starters`, only they may start a run.
+    const policy =
+      repo.factory && source.factory && items.length ? await loadPolicy(source.factory, repo) : null;
+    for (const item of items) {
+      if (policy?.starters?.length) {
+        const actor = source.labelActor ? await source.labelActor(item.ref, LABELS.ready) : null;
+        if (!actor || !policy.starters.includes(actor)) {
+          unauthorized.push(item.ref);
+          continue;
+        }
+      }
+      ready.push(item);
+    }
+  }
   for (const item of ready) {
     const runs = (
       await engine.deps.pool.query<{ id: string; status: TaskStatus }>(
@@ -49,5 +67,5 @@ export async function syncOnce(
     );
     if (isNew) created.push(task.id);
   }
-  return { created, skipped };
+  return { created, skipped, unauthorized };
 }

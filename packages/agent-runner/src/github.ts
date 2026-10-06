@@ -10,8 +10,42 @@ import {
   type PullRequestRef,
   type PullRequestState,
   type SourceTask,
+  type FactoryHost,
   type Tracker,
 } from './source';
+
+const PR_URL = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/i;
+function parsePrUrl(url: string): { repo: string; number: number } {
+  const m = PR_URL.exec(url);
+  if (!m) throw new Error(`not a GitHub pull request URL: ${url}`);
+  return { repo: m[1]!, number: Number(m[2]) };
+}
+
+/** `labeled` events for an issue or PR (same endpoint), oldest first. */
+async function labelEvents(
+  run: CommandRunner,
+  bin: string,
+  repo: string,
+  number: number,
+  label: string,
+): Promise<Array<{ actor: string; at: string }>> {
+  const raw = await run(bin, ['api', '--paginate', `repos/${repo}/issues/${number}/events`, '--jq', '.[]']);
+  return raw
+    .split('\n')
+    .filter((l) => l.trim())
+    .map(
+      (l) =>
+        JSON.parse(l) as {
+          event?: string;
+          label?: { name?: string };
+          actor?: { login?: string };
+          created_at?: string;
+        },
+    )
+    .filter((e) => e.event === 'labeled' && e.label?.name === label)
+    .map((e) => ({ actor: e.actor?.login ?? '', at: e.created_at ?? '' }))
+    .sort((a, b) => (a.at < b.at ? -1 : 1));
+}
 
 /** Runs a command and returns stdout. Injected so tests never call the real `gh`. */
 export type CommandRunner = (bin: string, args: string[]) => Promise<string>;
@@ -121,6 +155,12 @@ export class GitHubIssuesTracker implements Tracker {
     return { posted: true };
   }
 
+  async labelActor(ref: string, label: string): Promise<string | null> {
+    const { repo, number } = parseRef(ref);
+    const events = await labelEvents(this.run, this.bin, repo, number, label);
+    return events.at(-1)?.actor ?? null;
+  }
+
   /** Create the tpm:agent:* labels in a repo (idempotent). */
   async ensureLabels(repoCfg: RepoConfig): Promise<void> {
     const repo = repoCfg.name;
@@ -130,6 +170,7 @@ export class GitHubIssuesTracker implements Tracker {
       review: '1d76db',
       failed: 'b60205',
       done: '5319e7',
+      approve: 'c5def5',
     };
     for (const [k, name] of Object.entries(LABELS)) {
       await this.gh(['label', 'create', name, '--repo', repo, '--color', colors[k]!, '--force']);
@@ -246,4 +287,94 @@ export class GitHubPrHost implements PrHost {
       mergeStateStatus: (pr.mergeStateStatus ?? 'UNKNOWN').toUpperCase(),
     });
   }
+
+  readonly factory: FactoryHost = {
+    readPolicy: async (repo, path) => {
+      try {
+        const raw = await this.gh([
+          'api',
+          `repos/${repo.name}/contents/${path}?ref=${encodeURIComponent(repo.defaultBranch)}`,
+          '--jq',
+          '.content',
+        ]);
+        return Buffer.from(raw.replace(/\s/g, ''), 'base64').toString('utf8');
+      } catch (e) {
+        if (/Not Found|404/.test((e as Error).message)) return null;
+        throw e;
+      }
+    },
+    getChanges: async (url) => {
+      const pr = JSON.parse(await this.gh(['pr', 'view', url, '--json', 'files,additions,deletions'])) as {
+        files?: Array<{ path: string }>;
+        additions?: number;
+        deletions?: number;
+      };
+      return {
+        files: (pr.files ?? []).map((f) => f.path),
+        additions: pr.additions ?? 0,
+        deletions: pr.deletions ?? 0,
+      };
+    },
+    getStatuses: async (repo, sha) => {
+      const res = JSON.parse(await this.gh(['api', `repos/${repo.name}/commits/${sha}/status`])) as {
+        statuses?: Array<{ context: string; state: string; description?: string | null }>;
+      };
+      // The combined status already holds the latest status per context.
+      return Object.fromEntries(
+        (res.statuses ?? []).map((s) => [s.context, { state: s.state, description: s.description ?? '' }]),
+      );
+    },
+    setStatus: async (repo, sha, context, state, description) => {
+      await this.gh([
+        'api',
+        '-X',
+        'POST',
+        `repos/${repo.name}/statuses/${sha}`,
+        '-f',
+        `state=${state}`,
+        '-f',
+        `context=${context}`,
+        '-f',
+        `description=${description.slice(0, 140)}`,
+      ]);
+    },
+    commentOnPr: async (url, body, marker) => {
+      const pr = JSON.parse(await this.gh(['pr', 'view', url, '--json', 'comments'])) as {
+        comments?: Array<{ body: string }>;
+      };
+      if ((pr.comments ?? []).some((c) => c.body.includes(markerText(marker)))) return { posted: false };
+      await this.gh(['pr', 'comment', url, '--body', `${body}\n\n${markerComment(marker)}`]);
+      return { posted: true };
+    },
+    labelEvents: async (url, label) => {
+      const { repo, number } = parsePrUrl(url);
+      return labelEvents(this.run, this.bin, repo, number, label);
+    },
+    merge: async (url, sha) => {
+      const { repo, number } = parsePrUrl(url);
+      const pr = JSON.parse(await this.gh(['pr', 'view', url, '--json', 'state,headRefName'])) as {
+        state: string;
+        headRefName: string;
+      };
+      if (pr.state !== 'MERGED') {
+        // REST merge (no local git side effects). `sha` makes GitHub refuse if the head moved.
+        await this.gh([
+          'api',
+          '-X',
+          'PUT',
+          `repos/${repo}/pulls/${number}/merge`,
+          '-f',
+          'merge_method=squash',
+          '-f',
+          `sha=${sha}`,
+        ]);
+      }
+      try {
+        await this.gh(['api', '-X', 'DELETE', `repos/${repo}/git/refs/heads/${pr.headRefName}`]);
+      } catch {
+        // already deleted
+      }
+    },
+    cloneUrl: (repo) => `https://github.com/${repo.name}.git`,
+  };
 }

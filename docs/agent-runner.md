@@ -142,6 +142,73 @@ The agent itself runs `git` and `az repos pr create`, so its permissions must
 allow `Bash(az:*)` (for Claude Code: `permissions.allow` in
 `~/.claude/settings.json`). See `agent-runner.config.ado.example.json`.
 
+## Software factory: agents write, agents review, policy merges
+
+With `"factory": true` on a repo (GitHub host), every round adds three gates
+after the agent pushes, and the PR watcher decides from their evidence:
+
+```
+finish → verify → reviewA → reviewB → review (wait) → close (merge exactly the reviewed commit)
+```
+
+- **Roles are separate.** The author agent pushes to `agent/*` only. Reviewers
+  run read-only (CLI tool permissions: read files and `git diff/log/show`
+  only; no edit, commit, push or `gh`) in a **separate review clone** checked
+  out at the agent's exact commit, with a fresh context (task + diff + repo
+  rules, not the author's reasoning). The merger is not an LLM: a pure
+  decision function over durable evidence, then a merge of exactly that commit.
+- **Default reviewers:** Claude (`claude -p --json-schema`) and Copilot
+  (`copilot -p`, verdict in `<verdict>` tags) — two vendors. Malformed or
+  missing output is `needs-human`, never `approve`. Reviewer B is skipped when
+  verify failed or reviewer A did not approve (no wasted cost).
+- **Evidence = commit statuses on the reviewed SHA:** `tpm/verify`,
+  `tpm/review-claude`, `tpm/review-copilot`, `tpm/human-approval`. A new push
+  has none of them, so it can never merge on old evidence. Findings are also
+  PR comments, and they are the next round's feedback.
+- **Merge** uses GitHub's REST merge with `sha=<reviewed commit>`: GitHub
+  refuses if the head moved. Then the branch is deleted.
+
+### Policy: `.tpm/agent-policy.yml` in the repo (read from the default branch)
+
+```yaml
+version: 1
+default: human-merge # unmatched paths
+rules: # first matching rule per file; a change gets its strictest file
+  - paths: ['docs/**', '*.md']
+    level: auto-merge # agents write + review, the factory merges
+  - paths: ['dist/**']
+    level: human-approve # + an approver adds the PR label tpm:agent:approve
+    verify: true # run verify.command first
+reviewers:
+  - { name: claude, model: claude-sonnet-5-5, maxBudgetUsd: 3 }
+  - { name: copilot }
+approvers: [htalat] # who may approve human-approve changes
+starters: [htalat] # who may start a run (adds tpm:agent:ready)
+verify:
+  command: npm ci && npx playwright install chromium && npm test
+  timeoutMinutes: 30
+maxAutoMergesPerDay: 5
+maxChangedLines: 400 # bigger changes need at least human-approve
+```
+
+Rules that cannot be configured away: a change to `.tpm/**` always needs a
+human merge (an agent cannot raise its own autonomy); no policy file means a
+human merges; an approval only counts if given after the newest commit and by
+a listed approver; signals only escalate. On platforms with rules (rulesets,
+CODEOWNERS, ADO branch policies) a `BLOCKED` merge state also waits, so the
+platform stays a second guard.
+
+| Decision         | When                                                                    | Result                           |
+| ---------------- | ----------------------------------------------------------------------- | -------------------------------- |
+| `ready-to-merge` | all gates pass on the reviewed commit, and auto-merge or approved       | factory merges, `tpm:agent:done` |
+| `needs-agent`    | verify failed, a reviewer requested changes, CI red, conflict           | next round with the findings     |
+| `needs-human`    | reviewer unsure/malfunctioned, human-merge paths, cap reached, new push | comment; a human decides         |
+| `no-action`      | waiting for a gate, an approval, or platform rules                      | keep waiting                     |
+
+Cost note: one Claude Code reviewer call with the default model and context
+cost about $0.67 in our test; with a small model about $0.06. Set `model` and
+`maxBudgetUsd` per reviewer.
+
 ## Setup
 
 1. `gh auth login` (the GitHub adapter uses the `gh` CLI).

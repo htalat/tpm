@@ -5,10 +5,11 @@ import { WorkerError } from '@durable/core';
 import type { WorkerHandler } from '@durable/sdk';
 import { AGENT_CLIS, resolveAgentCli, runAgentProcess, type AgentCli } from './agent-cli';
 import { resetCheckout } from './checkout';
-import { repoConfig, type AgentRunnerConfig } from './config';
+import { repoConfig, type AgentRunnerConfig, type RepoConfig } from './config';
 import { buildPrompt } from './prompt';
 import { detectRateLimit } from './rate-limit';
-import type { PrOutcome } from './pr-signal';
+import { STATUS, type FactoryDecision } from './factory';
+import { createReviewerHandler, createVerifyHandler, type FactoryDeps } from './factory-handlers';
 import { branchFor, LABELS, type PullRequestState, type SourceResolver, type TaskSource } from './source';
 import type { AgentRunInput, RoundBaseline } from './workflow';
 
@@ -26,10 +27,10 @@ type TrackerInput = { repo: string; ref: string; round: number } & (
   | { op: 'snapshot' }
   | { op: 'finish'; agent: AgentRunOutput }
   | { op: 'fail'; reason?: string }
-  | { op: 'close'; maxRounds: number; outcome: PrOutcome }
+  | { op: 'close'; maxRounds: number; outcome: FactoryDecision }
 );
 
-export type CloseDecision = 'done' | 'next-round' | 'human' | 'failed';
+export type CloseDecision = 'done' | 'merged' | 'next-round' | 'human' | 'failed';
 
 /**
  * Tracker side effects. Each op is idempotent: label edits converge, and the
@@ -72,7 +73,7 @@ export function createTrackerHandler(deps: {
           await source.updateLabels(input.ref, { add: [LABELS.review], remove: [LABELS.running] });
           await source.comment(
             input.ref,
-            `🤖 Round ${input.round} done: ${input.agent.prUrl} (head ${input.agent.headSha.slice(0, 7)}) — ready for review.`,
+            `🤖 Round ${input.round} done: ${input.agent.prUrl} (head ${input.agent.headSha.slice(0, 7)}).`,
             marker,
           );
           return { ok: true };
@@ -90,7 +91,7 @@ export function createTrackerHandler(deps: {
           return { ok: true };
 
         case 'close':
-          return closeRound(source, input, marker);
+          return closeRound(source, repo, input, marker);
       }
     },
   };
@@ -98,11 +99,37 @@ export function createTrackerHandler(deps: {
 
 async function closeRound(
   source: TaskSource,
+  repo: RepoConfig,
   input: Extract<TrackerInput, { op: 'close' }>,
   marker: string,
-): Promise<{ decision: CloseDecision }> {
+): Promise<{ decision: CloseDecision; level?: string; approvedBy?: string }> {
   const o = input.outcome;
   switch (o.kind) {
+    case 'ready-to-merge': {
+      // The watcher decided from durable evidence; merge exactly the commit it judged.
+      const factory = source.factory;
+      if (!factory) throw new WorkerError('PERMANENT', 'ready-to-merge on a host without factory support');
+      if (o.approvedBy) {
+        await factory.setStatus(repo, o.headSha, STATUS.approval, 'success', `approved by ${o.approvedBy}`);
+      }
+      try {
+        await factory.merge(o.url, o.headSha);
+      } catch (e) {
+        await source.comment(
+          input.ref,
+          `👀 Could not merge ${o.url} at ${o.headSha.slice(0, 7)}: ${(e as Error).message.slice(0, 500)}. A human needs to look.`,
+          marker,
+        );
+        return { decision: 'human' };
+      }
+      await source.updateLabels(input.ref, { add: [LABELS.done], remove: [LABELS.review, LABELS.running] });
+      await source.comment(
+        input.ref,
+        `✅ ${o.url} merged by the factory at ${o.headSha.slice(0, 7)} (${o.level}${o.approvedBy ? `, approved by ${o.approvedBy}` : ''}): ${o.reason}.`,
+        marker,
+      );
+      return { decision: 'merged', level: o.level, approvedBy: o.approvedBy };
+    }
     case 'merged':
       await source.updateLabels(input.ref, { add: [LABELS.done], remove: [LABELS.review, LABELS.running] });
       await source.comment(input.ref, `✅ ${o.url} merged.`, marker);
@@ -312,9 +339,11 @@ export function createAgentCliHandler(
   };
 }
 
-export function createAgentRunnerHandlers(deps: AgentCliHandlerDeps) {
+export function createAgentRunnerHandlers(deps: AgentCliHandlerDeps & Pick<FactoryDeps, 'reviewers'>) {
   return {
     tracker: createTrackerHandler(deps),
     'agent-cli': createAgentCliHandler(deps),
+    verify: createVerifyHandler(deps),
+    reviewer: createReviewerHandler(deps),
   };
 }

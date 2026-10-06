@@ -5,7 +5,7 @@
 //   FAKE_AGENT_CALLS: file that gets one line per invocation
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 // Called either as `fake-agent <prompt>` or with claude's flags (`-p <prompt> ...`).
 const pIdx = process.argv.indexOf('-p');
@@ -80,15 +80,35 @@ if (mode === 'slow') {
     };
   }
   // A push: new head commit; CI result and stale review comments are reset.
-  pr.headSha = Math.random().toString(16).slice(2).padEnd(40, '0');
+  // In a git checkout the fake makes a REAL commit on the branch (the review
+  // clone fetches it from here); otherwise it invents a SHA.
+  const file = (process.env.FAKE_AGENT_FILE ?? 'docs/note-{n}.md').replace('{n}', n);
+  let headSha = Math.random().toString(16).slice(2).padEnd(40, '0');
+  try {
+    const g = (...a) =>
+      execFileSync('git', a, { stdio: ['ignore', 'pipe', 'ignore'] })
+        .toString()
+        .trim();
+    g('rev-parse', '--git-dir');
+    try {
+      g('checkout', '-q', branch);
+    } catch {
+      g('checkout', '-q', '-b', branch);
+    }
+    mkdirSync(dirname(join(process.cwd(), file)), { recursive: true });
+    appendFileSync(join(process.cwd(), file), `change ${Date.now()} ${Math.random()}\n`);
+    g('add', file);
+    g('-c', 'user.email=agent@example.com', '-c', 'user.name=agent', 'commit', '-q', '-m', `agent: ${ref}`);
+    headSha = g('rev-parse', 'HEAD');
+  } catch {
+    // not a git checkout
+  }
+  pr.headSha = headSha;
   pr.lastCommitAt = new Date().toISOString();
   pr.checks = [];
+  pr.files = [...new Set([...(pr.files ?? []), file])];
+  pr.additions = (pr.additions ?? 0) + Number(process.env.FAKE_AGENT_LINES ?? 1);
   writeFileSync(f, JSON.stringify(pr));
-  try {
-    execFileSync('git', ['checkout', '-q', '-B', branch], { stdio: 'ignore' });
-  } catch {
-    // not a git checkout (unit-style use)
-  }
   console.log(
     JSON.stringify({
       type: 'result',

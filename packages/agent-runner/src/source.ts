@@ -51,8 +51,34 @@ export interface Tracker {
   updateLabels(ref: string, change: { add?: string[]; remove?: string[] }): Promise<void>;
   /** Post `body` unless a comment containing the marker already exists. */
   comment(ref: string, body: string, marker: string): Promise<{ posted: boolean }>;
+  /** Who most recently added `label` to the item. */
+  labelActor?(ref: string, label: string): Promise<string | null>;
   /** Create the tpm:agent:* labels if the tracker needs them created (idempotent). */
   ensureLabels?(repo: RepoConfig): Promise<void>;
+}
+
+/** Platform operations the software factory needs (merge gates, statuses, merge). */
+export interface FactoryHost {
+  /** The policy file at the default branch, or null if there is none. */
+  readPolicy(repo: RepoConfig, path: string): Promise<string | null>;
+  getChanges(url: string): Promise<{ files: string[]; additions: number; deletions: number }>;
+  /** Latest commit status per context on `sha`. */
+  getStatuses(repo: RepoConfig, sha: string): Promise<Record<string, { state: string; description: string }>>;
+  setStatus(
+    repo: RepoConfig,
+    sha: string,
+    context: string,
+    state: 'success' | 'failure' | 'error' | 'pending',
+    description: string,
+  ): Promise<void>;
+  /** PR comment, idempotent by marker. */
+  commentOnPr(url: string, body: string, marker: string): Promise<{ posted: boolean }>;
+  /** Who added `label` to the PR, and when. */
+  labelEvents(url: string, label: string): Promise<Array<{ actor: string; at: string }>>;
+  /** Merge exactly `sha` (refused by the platform if the head moved) and delete the branch. */
+  merge(url: string, sha: string): Promise<void>;
+  /** URL to clone the repo from (for the separate review checkout). */
+  cloneUrl(repo: RepoConfig): string;
 }
 
 /** Where pull requests live. */
@@ -63,6 +89,8 @@ export interface PrHost {
   getPullRequest(url: string): Promise<PullRequestState>;
   /** Human-readable review feedback (reviews, comments, failed checks) for the next round's prompt. */
   getFeedback(url: string): Promise<string>;
+  /** Present when the host supports the software factory. */
+  readonly factory?: FactoryHost;
 }
 
 /**
@@ -80,6 +108,9 @@ export interface TaskSource {
   findPullRequests(ref: string, branch: string): Promise<PullRequestRef[]>;
   getPullRequest(url: string): Promise<PullRequestState>;
   getFeedback(url: string): Promise<string>;
+  readonly factory?: FactoryHost;
+  /** Who most recently added `label` to the item (for "who may start a run"). */
+  labelActor?(ref: string, label: string): Promise<string | null>;
 }
 
 /** Picks the TaskSource for a repo (tests inject a fake). */
@@ -95,6 +126,8 @@ export function combineSource(tracker: Tracker, host: PrHost, repo: RepoConfig):
     findPullRequests: (_ref, branch) => host.findPullRequests(repo, branch),
     getPullRequest: (url) => host.getPullRequest(url),
     getFeedback: (url) => host.getFeedback(url),
+    factory: host.factory,
+    labelActor: tracker.labelActor ? (ref, label) => tracker.labelActor!(ref, label) : undefined,
   };
 }
 
@@ -117,6 +150,8 @@ export const LABELS = {
   review: 'tpm:agent:review',
   failed: 'tpm:agent:failed',
   done: 'tpm:agent:done',
+  /** On a PR: an approver says "merge it" (human-approve level). */
+  approve: 'tpm:agent:approve',
 } as const;
 
 /** Deterministic branch name: lets a retry find the work of a crashed attempt. */

@@ -14,7 +14,11 @@ function fakeGh(responses: Record<string, unknown>) {
   const run: CommandRunner = async (_bin, args) => {
     calls.push(args);
     const key = Object.keys(responses).find((k) => args.join(' ').startsWith(k));
-    return key ? JSON.stringify(responses[key]) : '';
+    return key
+      ? typeof responses[key] === 'string'
+        ? (responses[key] as string)
+        : JSON.stringify(responses[key])
+      : '';
   };
   return { run, calls };
 }
@@ -167,5 +171,64 @@ describe('classifyPullRequest (ported from tpm)', () => {
     expect(kind({ latestReviews: [{ state: 'COMMENTED', submittedAt: '2026-01-03T00:00:00Z' }] })).toBe(
       'needs-agent',
     );
+  });
+});
+
+describe('GitHubPrHost factory operations', () => {
+  const url = 'https://github.com/acme/app/pull/7';
+
+  it('merges through the REST API with the reviewed sha, then deletes the branch', async () => {
+    const gh = fakeGh({
+      [`pr view ${url} --json state,headRefName`]: { state: 'OPEN', headRefName: 'agent/issue-3' },
+    });
+    await new GitHubPrHost(gh.run).factory.merge(url, 'abc123');
+    expect(gh.calls[1]).toEqual([
+      'api',
+      '-X',
+      'PUT',
+      'repos/acme/app/pulls/7/merge',
+      '-f',
+      'merge_method=squash',
+      '-f',
+      'sha=abc123',
+    ]);
+    expect(gh.calls[2]).toEqual(['api', '-X', 'DELETE', 'repos/acme/app/git/refs/heads/agent/issue-3']);
+    // No local git side effects: never `gh pr merge`.
+    expect(gh.calls.some((c) => c[0] === 'pr' && c[1] === 'merge')).toBe(false);
+  });
+
+  it('does not merge twice', async () => {
+    const gh = fakeGh({ [`pr view ${url} --json state,headRefName`]: { state: 'MERGED', headRefName: 'b' } });
+    await new GitHubPrHost(gh.run).factory.merge(url, 'abc');
+    expect(gh.calls.some((c) => c.includes('PUT'))).toBe(false);
+  });
+
+  it('posts and reads commit statuses on a sha', async () => {
+    const gh = fakeGh({
+      'api repos/acme/app/commits/abc/status': {
+        statuses: [{ context: 'tpm/review-claude', state: 'success', description: 'approve: ok' }],
+      },
+    });
+    const host = new GitHubPrHost(gh.run);
+    expect(await host.factory.getStatuses(ghRepo, 'abc')).toEqual({
+      'tpm/review-claude': { state: 'success', description: 'approve: ok' },
+    });
+    await host.factory.setStatus(ghRepo, 'abc', 'tpm/verify', 'failure', 'x'.repeat(300));
+    const post = gh.calls.at(-1)!;
+    expect(post.slice(0, 4)).toEqual(['api', '-X', 'POST', 'repos/acme/app/statuses/abc']);
+    expect(post).toContain('context=tpm/verify');
+    expect(post.find((a) => a.startsWith('description='))!.length).toBe('description='.length + 140);
+  });
+
+  it('reads the policy from the default branch, and returns null when it does not exist', async () => {
+    const content = Buffer.from('version: 1\n').toString('base64');
+    const gh = fakeGh({ 'api repos/acme/app/contents/.tpm/agent-policy.yml?ref=main': content });
+    expect(await new GitHubPrHost(gh.run).factory.readPolicy(ghRepo, '.tpm/agent-policy.yml')).toBe(
+      'version: 1\n',
+    );
+    const missing: CommandRunner = async () => {
+      throw new Error('gh: Not Found (HTTP 404)');
+    };
+    expect(await new GitHubPrHost(missing).factory.readPolicy(ghRepo, '.tpm/agent-policy.yml')).toBeNull();
   });
 });

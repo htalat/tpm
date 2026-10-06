@@ -19,6 +19,12 @@ export interface RoundBaseline {
 export const PR_OUTCOME_EVENT = 'pr.outcome';
 
 const inp = (ctx: { input: unknown }) => ctx.input as AgentRunInput;
+const factoryInput = (ctx: { input: unknown; outputs: Readonly<Record<string, unknown>> }) => ({
+  repo: inp(ctx).repo,
+  ref: inp(ctx).ref,
+  round: inp(ctx).round,
+  agent: ctx.outputs.agent,
+});
 
 /**
  * One round of agent work on one tracker item:
@@ -28,8 +34,11 @@ const inp = (ctx: { input: unknown }) => ctx.input as AgentRunInput;
  *   agent    agent CLI in the checkout (one per repo); succeeds only if the PR exists
  *            and its head moved past the baseline; reconcile uses the same rule
  *   finish   tracker: running -> review, comment with PR
+ *   verify   factory: run the policy's verify command at the agent's commit -> status tpm/verify
+ *   reviewA  factory: independent agent reviewer #1 (read-only) -> status tpm/review-<name>
+ *   reviewB  factory: independent agent reviewer #2 -> status tpm/review-<name>
  *   review   durable wait for a `pr.outcome` signal from the PR watcher (days are fine)
- *   close    tracker: merged -> done | needs agent -> ready (next round, capped)
+ *   close    ready-to-merge -> merge exactly the reviewed commit; merged -> done | needs agent -> ready (next round, capped)
  *            | needs human -> stay in review | abandoned -> failed
  *
  * The baseline is its own step: if the agent step took it, a retry after a
@@ -38,7 +47,7 @@ const inp = (ctx: { input: unknown }) => ctx.input as AgentRunInput;
  */
 export const agentRunWorkflow = defineWorkflow({
   name: 'agent-run',
-  version: 3,
+  version: 4,
   description: 'One round of coding-agent work on a tracker item, through PR review',
   steps: {
     start: step({
@@ -91,6 +100,29 @@ export const agentRunWorkflow = defineWorkflow({
       }),
       retry: { maxAttempts: 10, initialDelayMs: 5000 },
     }),
+    // Software factory gates (no-ops when the repo's factory is off). They share
+    // the read-only review checkout, so they run one at a time per repo.
+    verify: step({
+      executor: 'verify',
+      input: (ctx) => factoryInput(ctx),
+      concurrencyGroup: { key: (input) => `review:${(input as { repo: string }).repo}`, limit: 1 },
+      timeoutMs: 4 * 3600_000,
+      retry: { maxAttempts: 3, initialDelayMs: 30_000 },
+    }),
+    reviewA: step({
+      executor: 'reviewer',
+      input: (ctx) => ({ ...factoryInput(ctx), slot: 0 }),
+      concurrencyGroup: { key: (input) => `review:${(input as { repo: string }).repo}`, limit: 1 },
+      timeoutMs: 2 * 3600_000,
+      retry: { maxAttempts: 3, initialDelayMs: 30_000 },
+    }),
+    reviewB: step({
+      executor: 'reviewer',
+      input: (ctx) => ({ ...factoryInput(ctx), slot: 1 }),
+      concurrencyGroup: { key: (input) => `review:${(input as { repo: string }).repo}`, limit: 1 },
+      timeoutMs: 2 * 3600_000,
+      retry: { maxAttempts: 3, initialDelayMs: 30_000 },
+    }),
     review: waitForEvent(PR_OUTCOME_EVENT, {
       correlationKey: (ctx) => (ctx.outputs.agent as { prUrl: string }).prUrl,
     }),
@@ -107,6 +139,6 @@ export const agentRunWorkflow = defineWorkflow({
       retry: { maxAttempts: 10, initialDelayMs: 5000 },
     }),
   },
-  flow: sequence('start', 'prepare', 'agent', 'finish', 'review', 'close'),
+  flow: sequence('start', 'prepare', 'agent', 'finish', 'verify', 'reviewA', 'reviewB', 'review', 'close'),
   output: (ctx) => ({ pr: ctx.outputs.agent, outcome: ctx.outputs.review, next: ctx.outputs.close }),
 });

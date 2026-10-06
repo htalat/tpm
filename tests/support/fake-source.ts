@@ -5,6 +5,7 @@ import {
   LABELS,
   markerComment,
   markerText,
+  type FactoryHost,
   type PullRequestRef,
   type RepoConfig,
   type PullRequestState,
@@ -15,6 +16,8 @@ import {
 export interface FakePr extends PullRequestState {
   branch: string;
   feedback?: string;
+  files?: string[];
+  additions?: number;
 }
 
 /** In-memory tracker. PRs are JSON files the fake agent writes (one per item). */
@@ -23,6 +26,51 @@ export class FakeSource implements TaskSource {
   readonly kind = 'fake';
   readonly items = new Map<string, SourceTask & { comments: string[] }>();
   prReads = 0;
+  // ---- software factory side ----
+  policyText: string | null = null;
+  readonly statuses = new Map<string, Record<string, { state: string; description: string }>>();
+  readonly prComments: Array<{ url: string; body: string }> = [];
+  readonly approvalEvents: Array<{ actor: string; at: string }> = [];
+  readonly merges: Array<{ url: string; sha: string }> = [];
+  /** Who added the ready label (for the starters check). */
+  readyLabelActor: string | null = 'htalat';
+
+  readonly factory: FactoryHost = {
+    readPolicy: async () => this.policyText,
+    getChanges: async (url) => {
+      const pr = await this.getPullRequest(url);
+      return { files: pr.files ?? [], additions: pr.additions ?? 0, deletions: 0 };
+    },
+    getStatuses: async (_repo, sha) => ({ ...(this.statuses.get(sha) ?? {}) }),
+    setStatus: async (_repo, sha, context, state, description) => {
+      this.statuses.set(sha, { ...(this.statuses.get(sha) ?? {}), [context]: { state, description } });
+    },
+    commentOnPr: async (url, body, marker) => {
+      if (this.prComments.some((c) => c.url === url && c.body.includes(markerText(marker))))
+        return { posted: false };
+      this.prComments.push({ url, body: `${body}\n\n${markerComment(marker)}` });
+      return { posted: true };
+    },
+    labelEvents: async () => [...this.approvalEvents],
+    merge: async (url, sha) => {
+      const pr = await this.getPullRequest(url);
+      if (pr.state === 'MERGED') return;
+      // Like GitHub's `sha` merge parameter: refuse if the head moved.
+      if (pr.headSha !== sha)
+        throw new Error(`Head branch was modified (head ${pr.headSha}, expected ${sha})`);
+      this.merges.push({ url, sha });
+      for (const f of readdirSync(this.prDir)) {
+        const p = JSON.parse(readFileSync(join(this.prDir, f), 'utf8')) as FakePr;
+        if (p.url === url) writeFileSync(join(this.prDir, f), JSON.stringify({ ...p, state: 'MERGED' }));
+      }
+    },
+    cloneUrl: () => '',
+  };
+
+  async labelActor(): Promise<string | null> {
+    return this.readyLabelActor;
+  }
+
   /** Make the next N findPullRequests calls fail (tracker outage). */
   failFinds = 0;
   constructor(readonly prDir: string) {}
@@ -109,7 +157,7 @@ export class FakeSource implements TaskSource {
     const pr = (await this.getPullRequest(url)) as FakePr;
     return formatFeedback({
       reviews: pr.feedback ? [{ author: 'reviewer', state: 'COMMENTED', body: pr.feedback }] : [],
-      comments: [],
+      comments: this.prComments.filter((c) => c.url === url).map((c) => ({ author: 'bot', body: c.body })),
       failedChecks: pr.checks.filter((c) => c.conclusion === 'FAILURE').map((c) => c.name),
       mergeStateStatus: pr.mergeStateStatus,
     });

@@ -11,3 +11,7 @@ export * from './handlers';
 export * from './sync';
 export * from './pr-signal';
 export * from './prwatch';
+export * from './policy';
+export * from './factory';
+export * from './reviewers';
+export * from './factory-handlers';

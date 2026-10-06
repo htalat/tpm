@@ -6,7 +6,11 @@ import type { PullRequestState } from './source';
  * (changes requested) > agent-actionable (conflict > CI > behind > fresh
  * review comments) > no action.
  */
-export type PrOutcomeKind = 'merged' | 'abandoned' | 'needs-human' | 'needs-agent' | 'no-action';
+export type PrOutcomeKind =
+  'merged' | 'abandoned' | 'needs-human' | 'needs-agent' | 'no-action' | 'ready-to-merge';
+
+/** Commit-status contexts the factory owns; generic classification ignores them. */
+export const FACTORY_CONTEXT_PREFIX = 'tpm/';
 
 export interface PrOutcome {
   kind: PrOutcomeKind;
@@ -27,7 +31,11 @@ export function classifyPullRequest(pr: PullRequestState): PrOutcome {
   if (pr.reviewDecision === 'CHANGES_REQUESTED')
     return { ...base, kind: 'needs-human', reason: 'changes requested by a reviewer' };
   if (pr.mergeStateStatus === 'DIRTY') return { ...base, kind: 'needs-agent', reason: 'merge conflict' };
-  const failed = pr.checks.filter((c) => FAILED_CONCLUSIONS.has((c.conclusion ?? '').toUpperCase()));
+  const failed = pr.checks.filter(
+    (c) =>
+      !c.name.startsWith(FACTORY_CONTEXT_PREFIX) &&
+      FAILED_CONCLUSIONS.has((c.conclusion ?? '').toUpperCase()),
+  );
   if (failed.length)
     return { ...base, kind: 'needs-agent', reason: `CI failed: ${failed.map((c) => c.name).join(', ')}` };
   if (pr.mergeStateStatus === 'BEHIND')
@@ -56,8 +64,10 @@ export function formatFeedback(f: {
   if (f.mergeStateStatus === 'BEHIND') parts.push('The branch is behind the base branch.');
   for (const r of f.reviews.filter((r) => r.body.trim()))
     parts.push(`Review by ${r.author} (${r.state}):\n${r.body.trim()}`);
-  // Our own status comments carry a durable marker; they are not feedback.
-  for (const c of f.comments.filter((c) => c.body.trim() && !c.body.includes('<!-- durable:'))) {
+  // Our own status comments carry a durable marker and are not feedback;
+  // agent review findings (marker "durable:review:") are.
+  const ours = (b: string) => b.includes('<!-- durable:') && !b.includes('<!-- durable:review:');
+  for (const c of f.comments.filter((c) => c.body.trim() && !ours(c.body))) {
     parts.push(`Comment by ${c.author}:\n${c.body.trim()}`);
   }
   const text = parts.join('\n\n') || '(no written feedback)';

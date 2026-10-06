@@ -32,6 +32,10 @@ export const RepoConfigSchema = z.object({
     .positive()
     .max(24 * 60)
     .default(30),
+  /** Software factory: verify + agent reviews + policy-based merge (GitHub host only for now). */
+  factory: z.boolean().default(false),
+  /** Read-only review checkout; default: "<path>.review". */
+  reviewPath: z.string().optional(),
   /** Automatic agent rounds per item before a human must step in. */
   maxRounds: z.number().int().min(1).max(20).default(3),
   /** Extra instructions appended to the prompt (e.g. "read AGENTS.md"). */
@@ -45,6 +49,13 @@ function checkRepo(r: RepoConfig, ctx: z.RefinementCtx, i: number): void {
       code: 'custom',
       path: ['repos', i, 'ado'],
       message: `${r.name}: "ado" settings are required for Azure DevOps`,
+    });
+  }
+  if (r.factory && r.host !== 'github') {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['repos', i, 'factory'],
+      message: `${r.name}: the software factory supports GitHub PR hosts only (for now)`,
     });
   }
   if (r.tracker === 'github' && !/^[^/\s]+\/[^/\s]+$/.test(r.name)) {
