@@ -256,6 +256,7 @@ export class WorkerRuntime {
             leaseToken: item.leaseToken,
             error: { category: err.category, message: err.message },
             retryAfterMs: err.retryAfterMs,
+            chargeAttempt: err.chargeAttempt,
           }),
         );
       } catch (re) {

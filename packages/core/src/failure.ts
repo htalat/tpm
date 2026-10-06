@@ -20,6 +20,8 @@ export class WorkerError extends Error {
     readonly category: FailureCategory,
     message: string,
     readonly retryAfterMs?: number,
+    /** false = this failure is not the step's fault (e.g. provider usage limit) and does not use up an attempt. */
+    readonly chargeAttempt = true,
   ) {
     super(message);
     this.name = 'WorkerError';

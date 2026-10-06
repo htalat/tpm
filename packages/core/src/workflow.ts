@@ -46,7 +46,18 @@ export interface CompensationSpec {
   timeoutMs?: number;
 }
 
+/**
+ * Limit how many steps sharing a key may be RUNNING at once, across all tasks
+ * (e.g. key = git checkout path, limit = 1: one agent per working tree). The
+ * key is computed from the step's own input when the step becomes READY.
+ */
+export interface ConcurrencyGroupSpec {
+  key: (input: unknown, ctx: WorkflowContext) => string;
+  limit: number;
+}
+
 interface Exec {
+  concurrencyGroup?: ConcurrencyGroupSpec;
   retry?: Partial<RetryPolicy>;
   timeoutMs?: number;
   effect?: Effect;
@@ -186,6 +197,10 @@ export function defineWorkflow(spec: WorkflowSpec): CompiledWorkflow {
     if (n.kind === 'map') {
       if (!!n.executor === !!n.workflow) fail(`map step ${k} needs exactly one of executor or workflow`);
       if (!Number.isInteger(n.concurrency) || n.concurrency < 1) fail(`map step ${k} needs concurrency >= 1`);
+    }
+    if ((n.kind === 'task' || n.kind === 'map') && n.concurrencyGroup) {
+      const l = n.concurrencyGroup.limit;
+      if (!Number.isInteger(l) || l < 1) fail(`step ${k} concurrencyGroup.limit must be an integer >= 1`);
     }
     if (n.kind === 'sleep' && typeof n.durationMs === 'number' && n.durationMs < 0)
       fail(`sleep ${k} is negative`);

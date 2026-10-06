@@ -54,6 +54,9 @@ export interface StepRow {
   effect: 'pure' | 'idempotent' | 'unsafe';
   idempotency_key: string;
   attempt_count: number;
+  uncharged_attempts: number;
+  concurrency_key: string | null;
+  concurrency_limit: number | null;
   available_at: Date;
   version: number;
   created_at: Date;

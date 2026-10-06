@@ -161,7 +161,14 @@ async function applyCommand(
         step: stepOf(cmd.stepId),
         to: 'READY',
         now,
-        patch: { input: cmd.input, available_at: now },
+        patch: {
+          input: cmd.input,
+          available_at: now,
+          ...(cmd.concurrency
+            ? { concurrency_key: cmd.concurrency.key, concurrency_limit: cmd.concurrency.limit }
+            : {}),
+        },
+        payload: cmd.concurrency ? { concurrencyKey: cmd.concurrency.key } : {},
       });
       return same;
 

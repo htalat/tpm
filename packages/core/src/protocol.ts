@@ -71,6 +71,8 @@ export const FailRequestSchema = z.object({
     .min(0)
     .max(24 * 3600_000)
     .optional(),
+  /** false: do not count this attempt toward maxAttempts (bounded by the engine). */
+  chargeAttempt: z.boolean().default(true),
 });
 
 export const ResolveStepRequestSchema = z.object({

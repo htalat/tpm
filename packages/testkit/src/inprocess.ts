@@ -31,7 +31,12 @@ export class InProcessTransport implements WorkerTransport {
   }
   fail(
     attemptId: string,
-    req: { leaseToken: string; error: { category: FailureCategory; message: string }; retryAfterMs?: number },
+    req: {
+      leaseToken: string;
+      error: { category: FailureCategory; message: string };
+      retryAfterMs?: number;
+      chargeAttempt?: boolean;
+    },
   ) {
     return this.wrap(() => this.engine.fail(attemptId, req));
   }

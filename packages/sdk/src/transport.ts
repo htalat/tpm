@@ -26,7 +26,12 @@ export interface WorkerTransport {
   ): Promise<CompletionResponse>;
   fail(
     attemptId: string,
-    req: { leaseToken: string; error: { category: FailureCategory; message: string }; retryAfterMs?: number },
+    req: {
+      leaseToken: string;
+      error: { category: FailureCategory; message: string };
+      retryAfterMs?: number;
+      chargeAttempt?: boolean;
+    },
   ): Promise<CompletionResponse>;
 }
 
@@ -91,7 +96,12 @@ export class HttpTransport implements WorkerTransport {
   }
   fail(
     attemptId: string,
-    req: { leaseToken: string; error: { category: FailureCategory; message: string }; retryAfterMs?: number },
+    req: {
+      leaseToken: string;
+      error: { category: FailureCategory; message: string };
+      retryAfterMs?: number;
+      chargeAttempt?: boolean;
+    },
   ) {
     return this.call<CompletionResponse>(`/attempts/${attemptId}/fail`, req);
   }

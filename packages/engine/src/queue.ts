@@ -44,6 +44,31 @@ interface ClaimRow extends StepRow {
   task_type: string;
 }
 
+const CLAIM_LOOKAHEAD = 20;
+/** Hard cap so a worker that always says "not my fault" cannot retry forever. */
+export const MAX_UNCHARGED_ATTEMPTS = 20;
+
+/**
+ * Concurrency groups. Claimers for the same key serialize on a
+ * transaction-scoped advisory lock (held until COMMIT), so the RUNNING count
+ * they read already includes every committed claim for that key. A claimer
+ * that cannot get the lock skips the candidate instead of waiting. No slot
+ * table: a slot is freed exactly when the step leaves RUNNING (complete, fail,
+ * reaper), in the same transaction that changes the status.
+ */
+async function concurrencySlotFree(tx: Queryable, key: string, limit: number): Promise<boolean> {
+  const lock = await tx.query<{ ok: boolean }>(
+    `SELECT pg_try_advisory_xact_lock(hashtextextended($1, 727274)) AS ok`,
+    [`concurrency:${key}`],
+  );
+  if (!lock.rows[0]!.ok) return false;
+  const r = await tx.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM steps WHERE concurrency_key = $1 AND status = 'RUNNING'`,
+    [key],
+  );
+  return r.rows[0]!.n < limit;
+}
+
 /**
  * Atomically claim up to `maxItems` READY steps. In ONE transaction:
  * select eligible steps with FOR UPDATE SKIP LOCKED (concurrent claimers skip
@@ -73,11 +98,15 @@ export async function claim(
            ORDER BY s.available_at, s.created_at
            LIMIT $4
            FOR UPDATE OF s SKIP LOCKED`,
-          [now, req.capabilities, CLAIMABLE_TASK_STATUSES, req.maxItems],
+          // Look ahead past candidates that a concurrency group may reject.
+          [now, req.capabilities, CLAIMABLE_TASK_STATUSES, req.maxItems + CLAIM_LOOKAHEAD],
         )
       ).rows;
       const items: WorkItem[] = [];
       for (const s of rows) {
+        if (items.length >= req.maxItems) break;
+        if (s.concurrency_key && !(await concurrencySlotFree(tx, s.concurrency_key, s.concurrency_limit!)))
+          continue;
         const prev = (
           await tx.query<Pick<AttemptRow, 'attempt_number' | 'status' | 'error_type' | 'error_message'>>(
             `SELECT attempt_number, status, error_type, error_message FROM attempts
@@ -275,6 +304,7 @@ export async function fail(
     leaseToken: string;
     error: { category: FailureCategory; message: string; type?: string };
     retryAfterMs?: number;
+    chargeAttempt?: boolean;
   },
 ): Promise<CompletionResponse> {
   return withRetryingTransaction(deps.pool, async (tx) => {
@@ -312,6 +342,7 @@ export async function fail(
       req.error.message,
       now,
       req.retryAfterMs,
+      req.chargeAttempt ?? true,
     );
     return { status: 'ACCEPTED' as const };
   });
@@ -333,8 +364,13 @@ export async function handleStepFailure(
   message: string,
   now: Date,
   retryAfterMs?: number,
+  chargeAttempt = true,
 ): Promise<void> {
   const error = { category, message: message.slice(0, 4000), attempt: attempt.attempt_number };
+  // Uncharged failures (bounded) do not use up maxAttempts.
+  const uncharge = !chargeAttempt && step.uncharged_attempts < MAX_UNCHARGED_ATTEMPTS;
+  const uncharged = step.uncharged_attempts + (uncharge ? 1 : 0);
+  const effectiveAttempt = attempt.attempt_number - uncharged;
   const base = { step, now, attemptId: attempt.id };
   if (task.status === 'CANCELLED') {
     await transitionStep(tx, { ...base, to: 'CANCELLED', reason: 'task cancelled', patch: { error } });
@@ -345,15 +381,16 @@ export async function handleStepFailure(
       reason: 'ambiguous outcome on unsafe step',
       patch: { error },
     });
-  } else if (isRetryable(step.retry_policy, category, attempt.attempt_number)) {
-    const delayMs = retryAfterMs ?? computeBackoffMs(step.retry_policy, attempt.attempt_number, deps.random);
+  } else if (isRetryable(step.retry_policy, category, effectiveAttempt)) {
+    const delayMs =
+      retryAfterMs ?? computeBackoffMs(step.retry_policy, Math.max(1, effectiveAttempt), deps.random);
     const nextAttemptAt = new Date(now.getTime() + delayMs);
     await transitionStep(tx, {
       ...base,
       to: 'RETRYING',
-      reason: `${category} failure`,
-      patch: { error, available_at: nextAttemptAt },
-      payload: { delayMs, nextAttemptAt, nextAttemptNumber: attempt.attempt_number + 1 },
+      reason: `${category} failure${uncharge ? ' (not charged)' : ''}`,
+      patch: { error, available_at: nextAttemptAt, uncharged_attempts: uncharged },
+      payload: { delayMs, nextAttemptAt, nextAttemptNumber: attempt.attempt_number + 1, charged: !uncharge },
     });
     deps.metrics.retries.inc({ category });
   } else if (category === 'AMBIGUOUS') {

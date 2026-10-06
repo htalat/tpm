@@ -74,10 +74,11 @@ export interface NewStep {
   parentStepId: string | null;
   itemIndex: number | null;
   config: { workflow?: string } | null;
+  concurrency: { key: string; limit: number } | null;
 }
 
 export type Command =
-  | { kind: 'promote'; stepId: string; input: unknown }
+  | { kind: 'promote'; stepId: string; input: unknown; concurrency?: { key: string; limit: number } | null }
   | { kind: 'startWait'; stepId: string; input: unknown; eventType: string; correlationKey: string | null }
   | { kind: 'startSleep'; stepId: string; fireAt: Date; durationMs: number }
   | { kind: 'spawnChild'; stepId: string; workflow: string; input: unknown }
@@ -117,6 +118,7 @@ export function initialSteps(def: CompiledWorkflow): NewStep[] {
       parentStepId: null,
       itemIndex: null,
       config: s.kind === 'child' ? { workflow: s.workflow } : null,
+      concurrency: null, // computed from the input at promotion
     };
   });
 }
@@ -292,8 +294,15 @@ function promoteTopLevel(
   now: Date,
 ): Command {
   switch (spec.kind) {
-    case 'task':
-      return { kind: 'promote', stepId: s.id, input: spec.input ? spec.input(ctx) : (ctx.input ?? null) };
+    case 'task': {
+      const input = spec.input ? spec.input(ctx) : (ctx.input ?? null);
+      return {
+        kind: 'promote',
+        stepId: s.id,
+        input,
+        concurrency: groupFor(spec.concurrencyGroup, input, ctx),
+      };
+    }
     case 'wait_event':
       return {
         kind: 'startWait',
@@ -323,22 +332,38 @@ function promoteTopLevel(
       return {
         kind: 'expandMap',
         stepId: s.id,
-        items: items.map((item, i) => ({
-          key: `${s.key}[${i}]`,
-          type: spec.workflow ? 'child' : 'task',
-          executorType: spec.executor ?? null,
-          dependencies: [],
-          retryPolicy: node.retryPolicy,
-          timeoutMs: node.timeoutMs,
-          effect: node.effect,
-          input: spec.itemInput ? spec.itemInput(item, i, ctx) : item,
-          parentStepId: s.id,
-          itemIndex: i,
-          config: spec.workflow ? { workflow: spec.workflow } : null,
-        })),
+        items: items.map((item, i) => {
+          const input = spec.itemInput ? spec.itemInput(item, i, ctx) : item;
+          return {
+            key: `${s.key}[${i}]`,
+            type: spec.workflow ? 'child' : 'task',
+            executorType: spec.executor ?? null,
+            dependencies: [],
+            retryPolicy: node.retryPolicy,
+            timeoutMs: node.timeoutMs,
+            effect: node.effect,
+            input,
+            parentStepId: s.id,
+            itemIndex: i,
+            config: spec.workflow ? { workflow: spec.workflow } : null,
+            concurrency: spec.workflow ? null : groupFor(spec.concurrencyGroup, input, ctx),
+          };
+        }),
       };
     }
   }
+}
+
+function groupFor(
+  g: { key: (input: unknown, ctx: WorkflowContext) => string; limit: number } | undefined,
+  input: unknown,
+  ctx: WorkflowContext,
+): { key: string; limit: number } | null {
+  if (!g) return null;
+  const key = g.key(input, ctx);
+  if (typeof key !== 'string' || key.length === 0 || key.length > 512)
+    throw new Error('concurrency key must be a non-empty string');
+  return { key, limit: g.limit };
 }
 
 function decideFailure(
@@ -396,6 +421,7 @@ function decideFailure(
         parentStepId: null,
         itemIndex: null,
         config: null,
+        concurrency: null,
       });
       prev = key;
     }

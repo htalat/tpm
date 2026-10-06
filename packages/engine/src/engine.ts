@@ -151,7 +151,12 @@ export class Engine {
 
   fail(
     attemptId: string,
-    req: { leaseToken: string; error: { category: FailureCategory; message: string }; retryAfterMs?: number },
+    req: {
+      leaseToken: string;
+      error: { category: FailureCategory; message: string };
+      retryAfterMs?: number;
+      chargeAttempt?: boolean;
+    },
   ) {
     return fail(this.deps, attemptId, req);
   }

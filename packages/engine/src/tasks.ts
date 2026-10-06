@@ -79,8 +79,9 @@ export async function insertSteps(
   for (const s of steps) {
     await tx.query(
       `INSERT INTO steps (id, task_id, key, type, status, input, executor_type, dependencies, parent_step_id, item_index,
-                          config, retry_policy, timeout_ms, effect, idempotency_key, available_at, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,'PENDING',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,$15)`,
+                          config, retry_policy, timeout_ms, effect, idempotency_key, available_at, created_at, updated_at,
+                          concurrency_key, concurrency_limit)
+       VALUES ($1,$2,$3,$4,'PENDING',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,$15,$16,$17)`,
       [
         deps.ids.next(),
         taskId,
@@ -98,6 +99,8 @@ export async function insertSteps(
         // Stable across attempts and restarts: the key workers hand to external systems.
         `${taskId}:${s.key}`,
         now,
+        s.concurrency?.key ?? null,
+        s.concurrency?.limit ?? null,
       ],
     );
   }

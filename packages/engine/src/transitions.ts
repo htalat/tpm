@@ -63,6 +63,9 @@ const STEP_PATCH = [
   'attempt_count',
   'started_at',
   'completed_at',
+  'concurrency_key',
+  'concurrency_limit',
+  'uncharged_attempts',
 ] as const;
 const ATTEMPT_PATCH = ['output', 'error_type', 'error_message', 'completed_at', 'metadata'] as const;
 const JSON_COLUMNS = new Set(['output', 'error', 'failure', 'input', 'wait', 'metadata']);
