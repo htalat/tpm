@@ -19,7 +19,9 @@ const rank = (l: Level) => LEVELS.indexOf(l);
 export const stricter = (a: Level, b: Level): Level => (rank(a) >= rank(b) ? a : b);
 
 export const POLICY_PATH = '.tpm/agent-policy.yml';
-const ALWAYS_HUMAN = ['.tpm/**'];
+/** Files an agent can never merge on its own: the policy itself, and CI
+ * workflows (a workflow change can read secrets or push code). */
+const ALWAYS_HUMAN = ['.tpm/**', '.github/**'];
 
 export const PolicySchema = z.object({
   version: z.literal(1),
@@ -116,7 +118,7 @@ export function evaluatePolicy(
   for (const f of change.files) {
     if (matches(f, ALWAYS_HUMAN)) {
       level = 'human-merge';
-      reasons.push(`${f}: the policy itself always needs a human`);
+      reasons.push(`${f}: policy and CI files always need a human`);
       continue;
     }
     const rule = policy.rules.find((r) => matches(f, r.paths));

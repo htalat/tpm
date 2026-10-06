@@ -1,0 +1,33 @@
+# Swift tests for the macOS menu bar app; runs only when the app changes.
+name: menubar
+
+on:
+  push:
+    branches: [main]
+    paths: ['apps/menubar/**', '.github/workflows/menubar.yml']
+  pull_request:
+    paths: ['apps/menubar/**', '.github/workflows/menubar.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: menubar-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swift:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/menubar
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: swift --version
+      # Tests only: the login-shell test needs node on PATH (preinstalled on the runner).
+      - run: swift test
+      - run: swift build -c release --product FactoryMenu

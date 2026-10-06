@@ -1,0 +1,89 @@
+# CI for the durable engine and the agent factory.
+# Security: read-only token, no secrets (tests use fake agents and a throwaway
+# database), `pull_request` only (never `pull_request_target`), actions and
+# images pinned by digest.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check (PostgreSQL ${{ matrix.pg }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pg: 14
+            image: postgres:14-alpine@sha256:4ea9e5ed06591da7ea23eb65465e8d3187fe79f4d5ec3ae976d29a33b013e77a
+          - pg: 17
+            image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    services:
+      postgres:
+        image: ${{ matrix.image }}
+        env:
+          POSTGRES_USER: durable
+          POSTGRES_PASSWORD: durable
+          POSTGRES_DB: durable_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U durable -d durable_test"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      TEST_DATABASE_URL: postgres://durable:durable@localhost:5432/durable_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # format + typecheck + unit + integration (real PostgreSQL)
+      - run: npm run check
+
+  e2e:
+    name: e2e (real processes, SIGKILL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_USER: durable
+          POSTGRES_PASSWORD: durable
+          POSTGRES_DB: durable_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U durable -d durable_test"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      TEST_DATABASE_URL: postgres://durable:durable@localhost:5432/durable_test
+      DATABASE_URL: postgres://durable:durable@localhost:5432/durable_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # chaos test, durability demo, agent-runner (fake gh / fake claude)
+      - run: npm run test:e2e
+      - name: process logs
+        if: failure()
+        run: tail -n 200 data/logs/*.log || true

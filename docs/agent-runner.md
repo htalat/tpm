@@ -191,8 +191,9 @@ maxAutoMergesPerDay: 5
 maxChangedLines: 400 # bigger changes need at least human-approve
 ```
 
-Rules that cannot be configured away: a change to `.tpm/**` always needs a
-human merge (an agent cannot raise its own autonomy); no policy file means a
+Rules that cannot be configured away: a change to `.tpm/**` (the policy) or
+`.github/**` (CI workflows, which can read secrets or push code) always needs a
+human merge; no policy file means a
 human merges; an approval only counts if given after the newest commit and by
 a listed approver; signals only escalate. On platforms with rules (rulesets,
 CODEOWNERS, ADO branch policies) a `BLOCKED` merge state also waits, so the

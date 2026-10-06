@@ -35,8 +35,15 @@ describe('agent policy', () => {
     expect(ev(['docs/a.md', 'scripts/deploy.mjs']).level).toBe('human-merge'); // default
   });
 
-  it('never lets a change to the policy itself merge without a human', () => {
+  it('never lets a change to the policy itself or to CI workflows merge without a human', () => {
     expect(ev(['.tpm/agent-policy.yml']).level).toBe('human-merge');
+    expect(ev(['docs/a.md', '.github/workflows/deploy.yml']).level).toBe('human-merge');
+    const permissive = parsePolicy(
+      'version: 1\ndefault: auto-merge\nrules:\n  - paths: ["**"]\n    level: auto-merge\n',
+    );
+    expect(
+      evaluatePolicy(permissive, { files: ['.github/workflows/ci.yml'], additions: 1, deletions: 0 }).level,
+    ).toBe('human-merge');
   });
 
   it('escalates big changes, never relaxes', () => {

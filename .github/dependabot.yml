@@ -1,0 +1,10 @@
+# Keep pinned actions and npm dependencies current (PRs are reviewed by a human).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
