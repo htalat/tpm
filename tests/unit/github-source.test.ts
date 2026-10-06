@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { detectRateLimit, GitHubIssuesSource, parseRef, type CommandRunner } from '@durable/agent-runner';
+import {
+  classifyPullRequest,
+  detectRateLimit,
+  GitHubIssuesSource,
+  parseRef,
+  type CommandRunner,
+} from '@durable/agent-runner';
 
 function fakeGh(responses: Record<string, unknown>) {
   const calls: string[][] = [];
@@ -97,5 +103,41 @@ describe('rate limit detection', () => {
       limited: true,
       retryAfterMs: 6 * 3600_000,
     });
+  });
+});
+
+describe('classifyPullRequest (ported from tpm)', () => {
+  const base = {
+    url: 'u',
+    state: 'OPEN',
+    headSha: 'abc',
+    isDraft: false,
+    reviewDecision: null as string | null,
+    mergeStateStatus: 'CLEAN',
+    checks: [] as Array<{ name: string; conclusion: string | null }>,
+    latestReviews: [] as Array<{ state: string; submittedAt: string }>,
+    lastCommitAt: '2026-01-02T00:00:00Z',
+  };
+  const kind = (p: Partial<typeof base>) => classifyPullRequest({ ...base, ...p }).kind;
+
+  it('applies the priority order', () => {
+    expect(kind({ state: 'MERGED' })).toBe('merged');
+    expect(kind({ state: 'CLOSED' })).toBe('abandoned');
+    expect(kind({ isDraft: true, mergeStateStatus: 'DIRTY' })).toBe('no-action');
+    expect(kind({ reviewDecision: 'CHANGES_REQUESTED', mergeStateStatus: 'DIRTY' })).toBe('needs-human');
+    expect(kind({ mergeStateStatus: 'DIRTY' })).toBe('needs-agent');
+    expect(kind({ checks: [{ name: 'ci', conclusion: 'FAILURE' }] })).toBe('needs-agent');
+    expect(kind({ checks: [{ name: 'ci', conclusion: 'SUCCESS' }] })).toBe('no-action');
+    expect(kind({ mergeStateStatus: 'BEHIND' })).toBe('needs-agent');
+    expect(kind({})).toBe('no-action');
+  });
+
+  it('ignores review comments older than the newest commit', () => {
+    expect(kind({ latestReviews: [{ state: 'COMMENTED', submittedAt: '2026-01-01T00:00:00Z' }] })).toBe(
+      'no-action',
+    );
+    expect(kind({ latestReviews: [{ state: 'COMMENTED', submittedAt: '2026-01-03T00:00:00Z' }] })).toBe(
+      'needs-agent',
+    );
   });
 });

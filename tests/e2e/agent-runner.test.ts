@@ -21,7 +21,7 @@ import { describe, expect, it } from 'vitest';
 const API_PORT = 3213;
 
 describe('agent-runner end to end', () => {
-  it('issue -> PR survives a worker crash after the side effect, with one agent run', async () => {
+  it('issue -> PR -> review -> merged, across a worker crash and a full restart, with one agent run', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'agent-runner-e2e-'));
     const repoDir = join(dir, 'repo');
     execFileSync('git', ['init', '-q', '-b', 'main', repoDir]);
@@ -119,28 +119,50 @@ describe('agent-runner end to end', () => {
 
       // A fresh worker: the lease expires, the retry reconciles instead of running the agent again.
       sup.start('worker-2', runner, { WORKER_NAME: 'worker-2' }, ['worker']);
-      const task = await waitFor(
-        async () => {
-          const r = (await pool.query(`SELECT status, output FROM tasks WHERE type = 'agent-run'`)).rows[0];
-          return r && ['COMPLETED', 'FAILED'].includes(r.status) ? r : undefined;
-        },
-        { timeoutMs: 120_000, intervalMs: 250, message: 'agent-run to finish' },
-      );
-      expect(task.status).toBe('COMPLETED');
-      expect(task.output).toMatchObject({
-        reconciled: true,
-        prUrl: 'https://github.example/acme/app/pull/42',
+      const reviewStep = async () =>
+        (await pool.query(`SELECT s.status FROM steps s WHERE s.key = 'review'`)).rows[0]?.status;
+      await waitFor(async () => (await reviewStep()) === 'WAITING', {
+        timeoutMs: 120_000,
+        intervalMs: 250,
+        message: 'run to reach the review wait',
       });
+      const agentOut = (await pool.query(`SELECT output FROM steps WHERE key = 'agent'`)).rows[0].output;
+      expect(agentOut).toMatchObject({ reconciled: true, prUrl: 'https://github.example/acme/app/pull/42' });
       expect(await agentAttempts()).toEqual([
         { attempt_number: 1, status: 'EXPIRED', error_type: 'AMBIGUOUS' },
         { attempt_number: 2, status: 'COMPLETED', error_type: null },
       ]);
       expect(readFileSync(calls, 'utf8').trim().split('\n')).toHaveLength(1); // the agent ran once
-      const issue = gh().issues['acme/app#42'];
+      let issue = gh().issues['acme/app#42'];
       expect(issue.labels).toEqual(['agent:review']);
       expect(issue.comments).toHaveLength(2);
       expect(issue.comments[1]).toContain('https://github.example/acme/app/pull/42');
-      // The item is no longer ready: the sync loop must not start a second run.
+
+      // Kill EVERYTHING while the run waits for review; the PR gets merged meanwhile.
+      await sup.killAll();
+      const state = gh();
+      state.prs['acme/app:agent/issue-42'].state = 'MERGED';
+      writeFileSync(ghState, JSON.stringify(state));
+      expect(await reviewStep()).toBe('WAITING');
+
+      // Restart: the watcher sees the merge, signals, and the run completes.
+      sup.start('api', 'apps/api/src/main.ts');
+      sup.start('orchestrator', 'apps/orchestrator/src/main.ts');
+      sup.start('sync', runner, {}, ['sync']);
+      sup.start('worker-3', runner, { WORKER_NAME: 'worker-3' }, ['worker']);
+      const task = await waitFor(
+        async () => {
+          const r = (await pool.query(`SELECT status, output FROM tasks WHERE type = 'agent-run'`)).rows[0];
+          return r && ['COMPLETED', 'FAILED'].includes(r.status) ? r : undefined;
+        },
+        { timeoutMs: 60_000, intervalMs: 250, message: 'agent-run to finish' },
+      );
+      expect(task.status).toBe('COMPLETED');
+      expect(task.output).toMatchObject({ outcome: { kind: 'merged' }, next: { decision: 'done' } });
+      issue = gh().issues['acme/app#42'];
+      expect(issue.labels).toEqual(['agent:done']);
+      expect(issue.comments.at(-1)).toContain('merged');
+      // Done items are not picked up again.
       await new Promise((r) => setTimeout(r, 2500));
       expect(
         (await pool.query(`SELECT count(*)::int AS n FROM tasks WHERE type = 'agent-run'`)).rows[0].n,

@@ -13,6 +13,7 @@ const ref = /\((github:[^)]+)\)/.exec(prompt)?.[1] ?? 'unknown';
 const branch = /branch name: `([^`]+)`/.exec(prompt)?.[1] ?? 'unknown';
 const mode = process.env.FAKE_AGENT_MODE ?? 'pr';
 if (process.env.FAKE_AGENT_CALLS) appendFileSync(process.env.FAKE_AGENT_CALLS, `${ref} ${mode}\n`);
+if (process.env.FAKE_AGENT_PROMPTS) appendFileSync(process.env.FAKE_AGENT_PROMPTS, `${prompt}\n=====\n`);
 
 if (mode === 'slow') {
   await new Promise((r) => setTimeout(r, 60_000));
@@ -27,7 +28,21 @@ if (mode === 'slow') {
   const state = JSON.parse(readFileSync(f, 'utf8'));
   const repo = /^github:([^#]+)#/.exec(ref)?.[1];
   const n = /#(\d+)$/.exec(ref)?.[1];
-  state.prs[`${repo}:${branch}`] = { url: `https://github.example/${repo}/pull/${n}`, state: 'OPEN' };
+  // Create the PR on the first run; every run "pushes" a new head commit.
+  const pr = (state.prs[`${repo}:${branch}`] ??= {
+    url: `https://github.example/${repo}/pull/${n}`,
+    state: 'OPEN',
+    isDraft: false,
+    reviewDecision: null,
+    mergeStateStatus: 'CLEAN',
+    statusCheckRollup: [],
+    latestReviews: [],
+    reviews: [],
+    comments: [],
+  });
+  pr.headRefOid = Math.random().toString(16).slice(2).padEnd(40, '0');
+  pr.commits = [{ committedDate: new Date().toISOString() }];
+  pr.statusCheckRollup = [];
   const tmp = `${f}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(state, null, 2));
   renameSync(tmp, f);
@@ -35,11 +50,28 @@ if (mode === 'slow') {
 } else if (mode === 'pr') {
   mkdirSync(process.env.FAKE_PR_DIR, { recursive: true });
   const n = /#(\d+)$/.exec(ref)?.[1];
-  writeFileSync(
-    join(process.env.FAKE_PR_DIR, `${ref.replace(/[^A-Za-z0-9]+/g, '_')}.json`),
-    JSON.stringify({ url: `https://github.example/pr/${n}`, state: 'OPEN', branch }),
-  );
-  console.log('opened pull request');
+  const f = join(process.env.FAKE_PR_DIR, `${ref.replace(/[^A-Za-z0-9]+/g, '_')}.json`);
+  let pr;
+  try {
+    pr = JSON.parse(readFileSync(f, 'utf8'));
+  } catch {
+    pr = {
+      url: `https://github.example/pr/${n}`,
+      state: 'OPEN',
+      branch,
+      isDraft: false,
+      reviewDecision: null,
+      mergeStateStatus: 'CLEAN',
+      checks: [],
+      latestReviews: [],
+    };
+  }
+  // A push: new head commit; CI result and stale review comments are reset.
+  pr.headSha = Math.random().toString(16).slice(2).padEnd(40, '0');
+  pr.lastCommitAt = new Date().toISOString();
+  pr.checks = [];
+  writeFileSync(f, JSON.stringify(pr));
+  console.log('pushed to pull request');
 } else {
   console.log('thought about it, did nothing');
 }

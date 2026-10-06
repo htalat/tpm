@@ -26,6 +26,22 @@ export interface PullRequestRef {
   state: string;
 }
 
+/** Everything the PR classifier and the round baseline need. */
+export interface PullRequestState {
+  url: string;
+  /** OPEN | MERGED | CLOSED */
+  state: string;
+  headSha: string;
+  isDraft: boolean;
+  reviewDecision: string | null;
+  /** e.g. CLEAN | DIRTY | BEHIND | BLOCKED | UNKNOWN */
+  mergeStateStatus: string;
+  checks: Array<{ name: string; conclusion: string | null }>;
+  latestReviews: Array<{ state: string; submittedAt: string }>;
+  /** ISO timestamp of the newest commit on the branch. */
+  lastCommitAt: string | null;
+}
+
 export interface TaskSource {
   readonly name: string;
   /** Open items carrying the "ready" label in the given repos. */
@@ -36,6 +52,9 @@ export interface TaskSource {
   comment(ref: string, body: string, marker: string): Promise<{ posted: boolean }>;
   /** PRs opened from the agent's branch for this item (any state). */
   findPullRequests(ref: string, branch: string): Promise<PullRequestRef[]>;
+  getPullRequest(url: string): Promise<PullRequestState>;
+  /** Human-readable review feedback (reviews, comments, failed checks) for the next round's prompt. */
+  getFeedback(url: string): Promise<string>;
 }
 
 export const LABELS = {
@@ -43,6 +62,7 @@ export const LABELS = {
   running: 'agent:running',
   review: 'agent:review',
   failed: 'agent:failed',
+  done: 'agent:done',
 } as const;
 
 /** Deterministic branch name: lets a retry find the work of a crashed attempt. */

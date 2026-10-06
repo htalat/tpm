@@ -32,7 +32,9 @@ export async function syncOnce(
       continue;
     }
     const round = runs.length + 1;
+    const repo = config.repos.find((r) => r.name === item.repo)!;
     const input: AgentRunInput = {
+      maxRounds: repo.maxRounds,
       ref: item.ref,
       repo: item.repo,
       number: item.number,

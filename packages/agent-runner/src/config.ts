@@ -16,6 +16,8 @@ export const RepoConfigSchema = z.object({
     .positive()
     .max(24 * 60)
     .default(30),
+  /** Automatic agent rounds per item before a human must step in. */
+  maxRounds: z.number().int().min(1).max(20).default(3),
   /** Extra instructions appended to the prompt (e.g. "read AGENTS.md"). */
   instructions: z.string().max(10_000).optional(),
 });

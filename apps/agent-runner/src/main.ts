@@ -6,6 +6,7 @@ import {
   createAgentRunnerHandlers,
   GitHubIssuesSource,
   loadAgentRunnerConfig,
+  pollPullRequestsOnce,
   syncOnce,
 } from '@durable/agent-runner';
 import { createLogger } from '@durable/observability';
@@ -16,7 +17,7 @@ import { createRegistry } from '@durable/workflows';
  * agent-runner: GitHub Issues labelled `agent:ready` -> `agent-run` tasks ->
  * coding agent in the local checkout -> PR -> issue labelled `agent:review`.
  *
- *   sync    poll the tracker and create runs (talks to PostgreSQL)
+ *   sync    poll the tracker (create runs) and the PRs of runs in review (signal outcomes)
  *   worker  execute run steps (talks to the API over HTTP, like any worker)
  *   labels  create the agent:* labels in every configured repo
  */
@@ -47,6 +48,8 @@ if (cmd === 'labels') {
     try {
       const r = await syncOnce(engine, source, config);
       if (r.created.length) logger.info({ created: r.created, skipped: r.skipped }, 'runs created');
+      const p = await pollPullRequestsOnce(engine, source);
+      if (p.signalled || p.errors) logger.info(p, 'pull requests polled');
     } catch (e) {
       logger.error({ err: e }, 'sync failed; will retry');
     }

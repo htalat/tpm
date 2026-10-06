@@ -18,43 +18,82 @@ flowchart LR
 
 ## Lifecycle of one item
 
-| Issue label     | Meaning                                   | Set by                  |
-| --------------- | ----------------------------------------- | ----------------------- |
-| `agent:ready`   | A human opts the issue in                 | human                   |
-| `agent:running` | A run has started                         | `start` step            |
-| `agent:review`  | The agent opened a PR; a human reviews it | `finish` step           |
-| `agent:failed`  | The run failed; the comment says why      | compensation of `start` |
+| Issue label     | Meaning                                                    | Set by                      |
+| --------------- | ---------------------------------------------------------- | --------------------------- |
+| `agent:ready`   | Start a round (a human opts in, or the PR needs the agent) | human, or `close` step      |
+| `agent:running` | A round is running                                         | `start` step                |
+| `agent:review`  | The PR is ready; waiting for review / CI / merge           | `finish` step               |
+| `agent:done`    | The PR was merged                                          | `close` step                |
+| `agent:failed`  | The round failed or the PR was closed; comment says why    | compensation / `close` step |
 
-To retry a failed item, or to ask for another round after review, add
-`agent:ready` again. Each time creates a new run (round 2, 3, …).
+```mermaid
+stateDiagram-v2
+  [*] --> ready: human adds agent:ready
+  ready --> running: sync creates round N (start step)
+  running --> review: agent pushed (finish step)
+  running --> failed: no PR / no new commits / dirty checkout (compensation)
+  review --> done: PR merged
+  review --> ready: CI red, conflict, behind, new review comments (round < maxRounds)
+  review --> review: changes requested, or maxRounds reached (comment for a human)
+  review --> failed: PR closed without merge
+  failed --> ready: human
+  done --> [*]
+```
 
-## The `agent-run` workflow
+Each round is one `agent-run` task. A new round is a new task, started by the
+label ("continue as new"), so every task stays finite and auditable.
+
+## The `agent-run` workflow (version 2)
 
 ```
-start   tracker: ready -> running, comment            compensate: running -> failed, comment
-agent   agent CLI in the checkout                     one per repo (concurrency group); reconcile = PR on branch?
-finish  tracker: running -> review, comment with PR
+start    tracker: ready -> running, comment            compensate: running -> failed, comment
+prepare  snapshot the PR before the agent runs: head SHA + review feedback
+agent    agent CLI in the checkout (one per repo); reconcile uses the same success rule
+finish   tracker: running -> review, comment with PR and head SHA
+review   waitForEvent('pr.outcome', correlationKey = PR URL)   — no process waits
+close    tracker: merged -> done | needs agent -> ready | needs human -> comment | closed -> failed
 ```
 
-- **Success is durable evidence, not an exit code**: the step succeeds when a PR
-  exists on the deterministic branch `agent/issue-<number>`.
-- **Crash after the PR was opened**: the lease expires, the attempt is AMBIGUOUS,
-  the retry runs `reconcile`, finds the PR and completes without starting the
-  agent again (tested with real processes in `tests/e2e/agent-runner.test.ts`).
+- **Success is durable evidence, not an exit code.** Round 1: a PR exists on the
+  deterministic branch `agent/issue-<number>`. Round 2+: the PR head SHA differs
+  from the baseline stored by `prepare`. A round without new commits fails.
+- **Why `prepare` is its own step**: the baseline must be taken once, before the
+  agent runs. If the agent step took it, a retry after a crash would snapshot
+  the agent's own push and wrongly see "no change".
+- **Crash after the PR was pushed**: the lease expires, the attempt is AMBIGUOUS,
+  the retry runs `reconcile` against the stored baseline, finds the new head and
+  completes without starting the agent again.
+- **Feedback** (failed checks, conflict/behind state, review bodies, PR comments
+  except our own) is stored in the `prepare` output (max 20 000 chars) and put
+  into the round-2+ prompt.
 - **One agent per checkout**: `concurrencyGroup: { key: repo, limit: 1 }`.
-  Other repos run in parallel.
-- **Dirty checkout or wrong branch**: POLICY failure, no retry, issue labelled
-  `agent:failed` with the reason (a human must look).
-- **Provider usage limit** (e.g. "Claude usage limit reached"): TRANSIENT with
-  `chargeAttempt: false` and the reset time from the output (default 30 min,
-  max 6 h). It does not use up one of the 3 attempts.
+- **Dirty checkout or wrong branch**: POLICY failure, no retry, issue `agent:failed`.
+- **Provider usage limit**: TRANSIENT with `chargeAttempt: false` and the reset
+  time from the output (default 30 min, max 6 h).
 - **Time bound** (`timeBoundMinutes`, default 30): the worker kills the agent's
-  whole process group; TIMEOUT, retried.
-- **Agent exits without a PR**: TRANSIENT, retried (backoff from 60 s); after
-  3 attempts the run fails and compensation labels the issue `agent:failed`.
-- **Every tracker write is idempotent**: label edits converge, and comments
-  carry a hidden `<!-- durable:<idempotency key> -->` marker that is checked
-  before posting.
+  process group; TIMEOUT, retried.
+- **Every tracker write is idempotent**: label edits converge; comments carry a
+  hidden `<!-- durable:<idempotency key> -->` marker that is checked first.
+
+## PR watcher
+
+`npm run agent-runner -- sync` also polls the PR of every run that waits in
+`review` and classifies it (ported from tpm):
+
+| PR state                                                                                      | Outcome       |
+| --------------------------------------------------------------------------------------------- | ------------- |
+| merged                                                                                        | `merged`      |
+| closed without merge                                                                          | `abandoned`   |
+| draft                                                                                         | no action     |
+| review decision CHANGES_REQUESTED                                                             | `needs-human` |
+| merge conflict, failed check, behind base, or a COMMENTED review newer than the newest commit | `needs-agent` |
+| otherwise                                                                                     | no action     |
+
+It sends a `pr.outcome` signal with deduplication key
+`<pr url>:<outcome>:<head sha>`: polling the same state again (or from two
+processes) is a duplicate and changes nothing; a new push produces a new event.
+After `maxRounds` (default 3) automatic rounds, `needs-agent` only comments; a
+human adds `agent:ready` to allow another round.
 
 ## Setup
 
@@ -76,11 +115,12 @@ and are recorded as `agent-log` artifacts.
 
 ## Not done yet
 
-- **Review rounds**: a second round on an issue whose PR already exists is
-  treated as done as soon as the PR is found. Detecting "new commits pushed in
-  this round" (or waiting for PR events with `waitForEvent`) is the next step.
-- **PR signals**: tpm's poller (CI red, changes requested, merged) is not
-  ported. Plan: a poller that sends `pr.*` signals into a `waitForEvent` step.
+- **Agent-decided no-op rounds**: a round must push a commit. If a review
+  comment needs only an answer, the round fails and a human handles it.
+- **Review threads**: feedback includes reviews and PR comments, not inline
+  review-thread resolution state (needs the GraphQL API).
 - **Other trackers**: only GitHub Issues. Linear/Jira are a new `TaskSource`.
 - **Worktrees**: one checkout per repo, serialized. Per-run `git worktree`
   would allow parallel runs in one repo.
+- **Webhooks**: the watcher polls (every `syncIntervalMs`). A GitHub webhook
+  receiver could call the same signal API for lower latency.

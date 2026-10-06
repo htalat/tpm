@@ -122,13 +122,16 @@ adapter needs no API key. An optional Anthropic adapter
 
 `packages/agent-runner` + `apps/agent-runner` use the engine to run coding
 agents (Claude Code, Copilot CLI) on GitHub issues labelled `agent:ready`, one
-agent per checkout, and hand the result back as a PR (`agent:review`). A crash
-after the agent opened its PR reconciles instead of running the agent again.
+agent per checkout, and hand the result back as a PR (`agent:review`). The run
+then waits durably for the PR outcome: merged → `agent:done`; CI red, conflict
+or new review comments → next round with the feedback in the prompt (up to
+`maxRounds`). A crash after the agent pushed reconciles instead of running the
+agent again.
 See [docs/agent-runner.md](docs/agent-runner.md).
 
 ```bash
 npm run agent-runner -- labels   # once per repo
-npm run agent-runner -- sync     # GitHub -> runs
+npm run agent-runner -- sync     # GitHub -> runs, PR outcomes -> signals
 npm run agent-runner -- worker   # runs agents
 ```
 

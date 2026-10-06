@@ -18,6 +18,7 @@ const opt = (name) => {
 const all = (name) => args.flatMap((a, i) => (a === name ? [args[i + 1]] : []));
 const [group, verb, num] = args;
 const repo = opt('--repo');
+// `gh pr view <url>` has no --repo
 const s = load();
 const key = `${repo}#${num}`;
 const out = (v) => process.stdout.write(JSON.stringify(v));
@@ -48,6 +49,10 @@ if (group === 'issue' && verb === 'list') {
 } else if (group === 'issue' && verb === 'comment') {
   s.issues[key].comments.push(opt('--body'));
   save(s);
+} else if (group === 'pr' && verb === 'view') {
+  const pr = Object.values(s.prs).find((p) => p.url === num);
+  if (!pr) process.exit(1);
+  out(pr);
 } else if (group === 'pr' && verb === 'list') {
   const pr = s.prs[`${repo}:${opt('--head')}`];
   out(pr ? [pr] : []);
