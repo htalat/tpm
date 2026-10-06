@@ -201,19 +201,20 @@ Errors are `{"error": {"code", "message", "details"}}` with codes such as
 
 ### Example workflows
 
-| Type                   | Shows                                                                 |
-| ---------------------- | --------------------------------------------------------------------- |
-| `example-sequence`     | A → B → C                                                             |
-| `example-parallel`     | A → (B1, B2, B3) → aggregate                                          |
-| `example-retry`        | fails twice, succeeds on attempt 3 (`task history` shows the backoff) |
-| `example-sleep`        | A → durable sleep (default 60 s) → B; kill everything during the wait |
-| `example-approval`     | generate → wait for `approval` → publish                              |
-| `example-agent`        | request → mock AI agent (artifact) → summarize                        |
-| `company-research`     | 1 agent step per company, at most 10 in flight, approval, report      |
-| `saga-order`           | reserve → charge → ship fails → refund → release                      |
-| `parent-with-children` | map of child workflows + a single child task                          |
-| `durability-demo`      | everything above in one run; used by the demo                         |
-| `chaos`                | 80 idempotent side effects + duplicate events; used by the chaos test |
+| Type                   | Shows                                                                                    |
+| ---------------------- | ---------------------------------------------------------------------------------------- |
+| `example-sequence`     | A → B → C                                                                                |
+| `example-parallel`     | A → (B1, B2, B3) → aggregate                                                             |
+| `example-retry`        | fails twice, succeeds on attempt 3 (`task history` shows the backoff)                    |
+| `example-sleep`        | A → durable sleep (default 60 s) → B; kill everything during the wait                    |
+| `example-approval`     | generate → wait for `approval` → publish                                                 |
+| `example-agent`        | request → mock AI agent (artifact) → summarize                                           |
+| `company-research`     | 1 agent step per company, at most 10 in flight, approval, report                         |
+| `saga-order`           | reserve → charge → ship fails → refund → release                                         |
+| `parent-with-children` | map of child workflows + a single child task                                             |
+| `durability-demo`      | everything above in one run; used by the demo                                            |
+| `chaos`                | 80 idempotent side effects + duplicate events; used by the chaos test                    |
+| `agent-run`            | one coding-agent run for one GitHub issue ([docs/agent-runner.md](docs/agent-runner.md)) |
 
 Workers: `compute`/`echo`/`aggregate` (deterministic), `flaky` (deterministic
 failure injection), `slow` (heartbeats), `side-effect`/`charge`/`reserve`/…
