@@ -78,7 +78,7 @@ describe('workflow compilation', () => {
 describe('decide()', () => {
   it('promotes only steps whose dependencies completed', () => {
     const cmds = decide(wf, snap([]));
-    expect(cmds).toEqual([{ kind: 'promote', stepId: 'a', input: null }]);
+    expect(cmds).toEqual([{ kind: 'promote', stepId: 'a', input: null, concurrency: null }]);
   });
 
   it('fans in only when all parallel branches completed', () => {
@@ -99,7 +99,7 @@ describe('decide()', () => {
         { key: 'b2', status: 'COMPLETED', output: 2 },
       ]),
     );
-    expect(all).toEqual([{ kind: 'promote', stepId: 'agg', input: [1, 2] }]);
+    expect(all).toEqual([{ kind: 'promote', stepId: 'agg', input: [1, 2], concurrency: null }]);
   });
 
   it('is a no-op for terminal and paused tasks', () => {

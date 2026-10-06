@@ -44,7 +44,7 @@ interface ClaimRow extends StepRow {
   task_type: string;
 }
 
-const CLAIM_LOOKAHEAD = 20;
+const CLAIM_ROUNDS = 5;
 /** Hard cap so a worker that always says "not my fault" cannot retry forever. */
 export const MAX_UNCHARGED_ATTEMPTS = 20;
 
@@ -90,99 +90,111 @@ export async function claim(
         now,
       ]);
       if (w.rowCount !== 1) throw new NotFoundError('worker', req.workerId);
-      const rows = (
-        await tx.query<ClaimRow>(
-          `SELECT s.*, t.type AS task_type FROM steps s JOIN tasks t ON t.id = s.task_id
+      const items: WorkItem[] = [];
+      const seen: string[] = [];
+      // Usually one round. Extra rounds only when a concurrency group rejected
+      // candidates, so we never lock more rows than we can use.
+      for (let round = 0; round < CLAIM_ROUNDS && items.length < req.maxItems; round++) {
+        const rows = (
+          await tx.query<ClaimRow>(
+            `SELECT s.*, t.type AS task_type FROM steps s JOIN tasks t ON t.id = s.task_id
            WHERE s.status = 'READY' AND s.available_at <= $1 AND s.executor_type = ANY($2::text[])
-             AND t.status = ANY($3::text[])
+             AND t.status = ANY($3::text[]) AND NOT (s.id = ANY($5::uuid[]))
            ORDER BY s.available_at, s.created_at
            LIMIT $4
            FOR UPDATE OF s SKIP LOCKED`,
-          // Look ahead past candidates that a concurrency group may reject.
-          [now, req.capabilities, CLAIMABLE_TASK_STATUSES, req.maxItems + CLAIM_LOOKAHEAD],
-        )
-      ).rows;
-      const items: WorkItem[] = [];
-      for (const s of rows) {
-        if (items.length >= req.maxItems) break;
-        if (s.concurrency_key && !(await concurrencySlotFree(tx, s.concurrency_key, s.concurrency_limit!)))
-          continue;
-        const prev = (
-          await tx.query<Pick<AttemptRow, 'attempt_number' | 'status' | 'error_type' | 'error_message'>>(
-            `SELECT attempt_number, status, error_type, error_message FROM attempts
-             WHERE step_id = $1 ORDER BY attempt_number DESC LIMIT 1`,
-            [s.id],
+            [now, req.capabilities, CLAIMABLE_TASK_STATUSES, req.maxItems - items.length, seen],
           )
-        ).rows[0];
-        const attemptId = deps.ids.next();
-        const leaseToken = deps.ids.next();
-        const attemptNumber = s.attempt_count + 1;
-        const leaseExpiresAt = new Date(now.getTime() + leaseMs);
-        const deadlineAt = new Date(now.getTime() + s.timeout_ms);
-        await tx.query(
-          `INSERT INTO attempts (id, task_id, step_id, attempt_number, worker_id, status, lease_token, lease_expires_at,
+        ).rows;
+        if (rows.length === 0) break;
+        let rejected = 0;
+        for (const s of rows) {
+          seen.push(s.id);
+          if (
+            s.concurrency_key &&
+            !(await concurrencySlotFree(tx, s.concurrency_key, s.concurrency_limit!))
+          ) {
+            rejected++;
+            continue;
+          }
+          const prev = (
+            await tx.query<Pick<AttemptRow, 'attempt_number' | 'status' | 'error_type' | 'error_message'>>(
+              `SELECT attempt_number, status, error_type, error_message FROM attempts
+             WHERE step_id = $1 ORDER BY attempt_number DESC LIMIT 1`,
+              [s.id],
+            )
+          ).rows[0];
+          const attemptId = deps.ids.next();
+          const leaseToken = deps.ids.next();
+          const attemptNumber = s.attempt_count + 1;
+          const leaseExpiresAt = new Date(now.getTime() + leaseMs);
+          const deadlineAt = new Date(now.getTime() + s.timeout_ms);
+          await tx.query(
+            `INSERT INTO attempts (id, task_id, step_id, attempt_number, worker_id, status, lease_token, lease_expires_at,
                                  deadline_at, heartbeat_at, started_at)
            VALUES ($1,$2,$3,$4,$5,'RUNNING',$6,$7,$8,$9,$9)`,
-          [
-            attemptId,
-            s.task_id,
-            s.id,
-            attemptNumber,
-            req.workerId,
-            leaseToken,
-            leaseExpiresAt,
-            deadlineAt,
+            [
+              attemptId,
+              s.task_id,
+              s.id,
+              attemptNumber,
+              req.workerId,
+              leaseToken,
+              leaseExpiresAt,
+              deadlineAt,
+              now,
+            ],
+          );
+          await transitionStep(tx, {
+            step: s,
+            to: 'RUNNING',
             now,
-          ],
-        );
-        await transitionStep(tx, {
-          step: s,
-          to: 'RUNNING',
-          now,
-          attemptId,
-          patch: { attempt_count: attemptNumber, started_at: s.started_at ?? now },
-          payload: { attemptNumber, workerId: req.workerId, leaseId: leaseId(leaseToken), leaseExpiresAt },
-        });
-        items.push({
-          taskId: s.task_id,
-          stepId: s.id,
-          stepKey: s.key,
-          attemptId,
-          attemptNumber,
-          type: s.executor_type!,
-          input: s.input,
-          context: {
-            taskType: s.task_type,
-            previousAttempt: prev
-              ? {
-                  attemptNumber: prev.attempt_number,
-                  status: prev.status,
-                  errorType: prev.error_type,
-                  errorMessage: prev.error_message,
-                }
-              : null,
-            recoveringAmbiguous: prev?.error_type === 'AMBIGUOUS',
-          },
-          idempotencyKey: s.idempotency_key,
-          leaseToken,
-          leaseExpiresAt: leaseExpiresAt.toISOString(),
-          leaseMs,
-          timeoutMs: s.timeout_ms,
-          deadlineAt: deadlineAt.toISOString(),
-        });
-        deps.metrics.workClaimed.inc({ executor: s.executor_type! });
-        deps.logger.info(
-          {
-            task_id: s.task_id,
-            step_id: s.id,
-            attempt_id: attemptId,
-            worker_id: req.workerId,
-            lease_id: leaseId(leaseToken),
-            event_type: 'attempt.claimed',
-            attempt_number: attemptNumber,
-          },
-          'work claimed',
-        );
+            attemptId,
+            patch: { attempt_count: attemptNumber, started_at: s.started_at ?? now },
+            payload: { attemptNumber, workerId: req.workerId, leaseId: leaseId(leaseToken), leaseExpiresAt },
+          });
+          items.push({
+            taskId: s.task_id,
+            stepId: s.id,
+            stepKey: s.key,
+            attemptId,
+            attemptNumber,
+            type: s.executor_type!,
+            input: s.input,
+            context: {
+              taskType: s.task_type,
+              previousAttempt: prev
+                ? {
+                    attemptNumber: prev.attempt_number,
+                    status: prev.status,
+                    errorType: prev.error_type,
+                    errorMessage: prev.error_message,
+                  }
+                : null,
+              recoveringAmbiguous: prev?.error_type === 'AMBIGUOUS',
+            },
+            idempotencyKey: s.idempotency_key,
+            leaseToken,
+            leaseExpiresAt: leaseExpiresAt.toISOString(),
+            leaseMs,
+            timeoutMs: s.timeout_ms,
+            deadlineAt: deadlineAt.toISOString(),
+          });
+          deps.metrics.workClaimed.inc({ executor: s.executor_type! });
+          deps.logger.info(
+            {
+              task_id: s.task_id,
+              step_id: s.id,
+              attempt_id: attemptId,
+              worker_id: req.workerId,
+              lease_id: leaseId(leaseToken),
+              event_type: 'attempt.claimed',
+              attempt_number: attemptNumber,
+            },
+            'work claimed',
+          );
+        }
+        if (rejected === 0) break;
       }
       return items;
     }),
