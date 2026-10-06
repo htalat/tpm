@@ -33,7 +33,7 @@
     "menubar": "apps/menubar/build.sh"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^26.6.4",
     "@types/pg": "^8.11.10",
     "prettier": "^3.6.0",
     "tsx": "^4.20.0",
