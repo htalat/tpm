@@ -4,7 +4,6 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-const TSX = join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
 
 export interface ManagedProcess {
   name: string;
@@ -33,7 +32,9 @@ export class ProcessSupervisor {
 
   start(name: string, script: string, env: Record<string, string | undefined> = {}): ManagedProcess {
     if (this.procs.has(name)) throw new Error(`${name} already running`);
-    const child = spawn(TSX, [join(REPO_ROOT, script)], {
+    // node --import tsx: ONE OS process per component, so SIGKILL really kills it
+    // (the tsx CLI would spawn a grandchild that survives the kill).
+    const child = spawn(process.execPath, ['--import', 'tsx', join(REPO_ROOT, script)], {
       cwd: REPO_ROOT,
       env: { ...process.env, ...this.baseEnv, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
