@@ -1,0 +1,48 @@
+{
+  "name": "durable-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Agent-agnostic durable task orchestration engine backed by PostgreSQL",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "examples"
+  ],
+  "scripts": {
+    "dev": "tsx tools/dev.ts",
+    "api": "tsx apps/api/src/main.ts",
+    "orchestrator": "tsx apps/orchestrator/src/main.ts",
+    "worker": "tsx apps/worker/src/main.ts",
+    "cli": "tsx apps/cli/src/main.ts",
+    "db:migrate": "tsx packages/db/src/migrate-cli.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run --project unit --project integration",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:e2e": "vitest run --project e2e",
+    "test:all": "vitest run",
+    "demo:durability": "tsx apps/cli/src/main.ts demo durability",
+    "check": "npm run format:check && npm run typecheck && npm run test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.11.10",
+    "prettier": "^3.6.0",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.3",
+    "vitest": "^5.0.3"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "fastify": "^5.12.5",
+    "pg": "^8.23.1",
+    "pino": "^10.4.0",
+    "zod": "^4.6.5"
+  }
+}
