@@ -7,10 +7,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@opentelemetry/api": "^1.9.1",
-    "fastify": "^5.12.5",
-    "pg": "^8.23.1",
-    "pino": "^10.4.0",
-    "zod": "^4.6.5"
+    "pg": "^8.23.1"
   }
 }

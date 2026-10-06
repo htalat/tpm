@@ -4,6 +4,14 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./anthropic": "./src/anthropic-adapter.ts"
+  },
+  "dependencies": {
+    "@durable/core": "*",
+    "@durable/db": "*",
+    "@durable/sdk": "*",
+    "zod": "^4.6.5",
+    "@anthropic-ai/sdk": "^0.131.0"
   }
 }

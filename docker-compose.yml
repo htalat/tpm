@@ -1,0 +1,61 @@
+# Local infrastructure. `docker compose up -d postgres` is enough for development;
+# `docker compose up --build` also runs the API, an orchestrator and two workers.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: durable
+      POSTGRES_PASSWORD: durable
+      POSTGRES_DB: durable
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/10-test-db.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U durable -d durable']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    build: .
+    command: ['node', '--import', 'tsx', 'packages/db/src/migrate-cli.ts']
+    environment:
+      DATABASE_URL: postgres://durable:durable@postgres:5432/durable
+    depends_on:
+      postgres: { condition: service_healthy }
+    profiles: ['app']
+
+  api:
+    build: .
+    command: ['node', '--import', 'tsx', 'apps/api/src/main.ts']
+    environment: &appenv
+      DATABASE_URL: postgres://durable:durable@postgres:5432/durable
+      API_URL: http://api:3000
+      API_PORT: '3000'
+      LOG_LEVEL: info
+    ports: ['3000:3000']
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    profiles: ['app']
+
+  orchestrator:
+    build: .
+    command: ['node', '--import', 'tsx', 'apps/orchestrator/src/main.ts']
+    environment: *appenv
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    profiles: ['app']
+
+  worker:
+    build: .
+    command: ['node', '--import', 'tsx', 'apps/worker/src/main.ts']
+    environment: *appenv
+    deploy:
+      replicas: 2
+    depends_on: [api]
+    profiles: ['app']
+
+volumes:
+  pgdata:

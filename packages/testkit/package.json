@@ -5,5 +5,11 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@durable/core": "*",
+    "@durable/db": "*",
+    "@durable/engine": "*",
+    "@durable/sdk": "*"
   }
 }

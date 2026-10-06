@@ -4,10 +4,12 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@opentelemetry/api": "^1.9.1",
+    "@durable/core": "*",
+    "@durable/db": "*",
+    "@durable/engine": "*",
+    "@durable/examples": "*",
+    "@durable/observability": "*",
     "fastify": "^5.12.5",
-    "pg": "^8.23.1",
-    "pino": "^10.4.0",
     "zod": "^4.6.5"
   }
 }

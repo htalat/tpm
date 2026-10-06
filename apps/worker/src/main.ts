@@ -19,7 +19,14 @@ const external = new ExternalSystem(
     max: 4,
   }),
 );
-const all: Record<string, WorkerHandler<never, unknown>> = exampleHandlers(external);
+// The agent adapter is the only provider-specific choice, and it is the worker's, not the engine's.
+const agent =
+  process.env.AGENT_ADAPTER === 'anthropic'
+    ? new (await import('@durable/examples/anthropic')).AnthropicAgentAdapter(
+        process.env.AGENT_MODEL || undefined,
+      )
+    : undefined;
+const all: Record<string, WorkerHandler<never, unknown>> = exampleHandlers(external, agent);
 const wanted = (process.env.WORKER_CAPABILITIES ?? Object.keys(all).join(','))
   .split(',')
   .map((s) => s.trim())
