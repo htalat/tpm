@@ -4,6 +4,7 @@
 //   FAKE_PR_DIR:     where "opened PRs" are recorded (read by FakeSource)
 //   FAKE_AGENT_CALLS: file that gets one line per invocation
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
 // Called either as `fake-agent <prompt>` or with claude's flags (`-p <prompt> ...`).
@@ -14,6 +15,18 @@ const branch = /branch name: `([^`]+)`/.exec(prompt)?.[1] ?? 'unknown';
 const mode = process.env.FAKE_AGENT_MODE ?? 'pr';
 if (process.env.FAKE_AGENT_CALLS) appendFileSync(process.env.FAKE_AGENT_CALLS, `${ref} ${mode}\n`);
 if (process.env.FAKE_AGENT_PROMPTS) appendFileSync(process.env.FAKE_AGENT_PROMPTS, `${prompt}\n=====\n`);
+
+console.log(
+  JSON.stringify({
+    type: 'rate_limit_event',
+    rate_limit_info: {
+      status: 'allowed',
+      rateLimitType: 'five_hour',
+      overageStatus: 'rejected',
+      overageDisabledReason: 'out_of_credits',
+    },
+  }),
+);
 
 if (mode === 'slow') {
   await new Promise((r) => setTimeout(r, 60_000));
@@ -71,7 +84,18 @@ if (mode === 'slow') {
   pr.lastCommitAt = new Date().toISOString();
   pr.checks = [];
   writeFileSync(f, JSON.stringify(pr));
-  console.log('pushed to pull request');
+  try {
+    execFileSync('git', ['checkout', '-q', '-B', branch], { stdio: 'ignore' });
+  } catch {
+    // not a git checkout (unit-style use)
+  }
+  console.log(
+    JSON.stringify({
+      type: 'result',
+      is_error: process.env.FAKE_AGENT_RESULT_ERROR === '1',
+      result: 'pushed',
+    }),
+  );
 } else {
   console.log('thought about it, did nothing');
 }

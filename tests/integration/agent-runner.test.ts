@@ -326,6 +326,58 @@ describe('agent-runner: tracker -> rounds of agent work -> PR outcome', () => {
     expect((await agentAttempts(taskId!))[0]).toMatchObject({ error_type: 'TIMEOUT' });
   });
 
+  it('trial regression: a limit-looking status event in a successful run does not hide the PR', async () => {
+    // Real claude output contains "overageDisabledReason":"out_of_credits" on successful runs,
+    // and the process may still exit non-zero with limit text after the PR was opened.
+    process.env.FAKE_AGENT_RESULT_ERROR = '1';
+    try {
+      const ref = source.add(REPO, 30);
+      const r = await runRound();
+      expect(r.task.status).toBe('WAITING');
+      expect(source.item(ref).labels).toEqual([LABELS.review]);
+      expect(calls()).toHaveLength(1);
+    } finally {
+      delete process.env.FAKE_AGENT_RESULT_ERROR;
+    }
+  });
+
+  it('trial regression: the agent leaves the checkout on its branch; the next round still starts', async () => {
+    const ref = source.add(REPO, 31);
+    const r1 = await runRound();
+    const branch = execFileSync('git', ['-C', join(dir, 'repo'), 'rev-parse', '--abbrev-ref', 'HEAD'])
+      .toString()
+      .trim();
+    expect(branch).toBe('main'); // the worker switched the clean checkout back
+    source.patchPr(ref, { checks: [{ name: 'ci', conclusion: 'FAILURE' }] });
+    await settle(r1.taskId);
+    // Even if something else leaves it on another clean branch, the run resets it.
+    execFileSync('git', ['-C', join(dir, 'repo'), 'checkout', '-q', '-b', 'stray']);
+    const r2 = await runRound();
+    expect(r2.task.status).toBe('WAITING');
+    expect(calls()).toHaveLength(2);
+  });
+
+  it('trial regression: any retry checks for evidence first and does not run the agent again', async () => {
+    source.add(REPO, 32);
+    source.failFinds = 0;
+    const [taskId] = (await syncOnce(h.engine, source, config)).created;
+    for (let i = 0; i < 2; i++) {
+      await h.engine.runUntilIdle();
+      await worker().pollOnce(); // start, prepare
+    }
+    await h.engine.runUntilIdle();
+    source.failFinds = 1; // the agent pushes, then the PR lookup fails: a TRANSIENT failure, not AMBIGUOUS
+    expect(await worker().pollOnce()).toEqual(['failed']);
+    expect(calls()).toHaveLength(1);
+    const t = await h.drive(taskId!, [worker()], { advanceMs: 60_000 });
+    expect(t.status).toBe('WAITING');
+    expect(calls()).toHaveLength(1); // the retry found the PR instead of running the agent
+    const out = (
+      await h.pool.query(`SELECT output FROM steps WHERE task_id = $1 AND key = 'agent'`, [taskId])
+    ).rows[0].output;
+    expect(out).toMatchObject({ reconciled: true });
+  });
+
   it('concurrent syncers create one run per item', async () => {
     source.add(REPO, 8);
     const results = await Promise.all([1, 2, 3].map(() => syncOnce(h.engine, source, config)));

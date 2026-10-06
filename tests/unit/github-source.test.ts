@@ -92,6 +92,30 @@ describe('GitHubIssuesSource', () => {
 
 describe('rate limit detection', () => {
   const now = Date.parse('2026-01-01T00:00:00Z');
+  const statusEvent = (status: string, resetsAt?: number) =>
+    JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: {
+        status,
+        resetsAt,
+        overageStatus: 'rejected',
+        overageDisabledReason: 'out_of_credits',
+      },
+    });
+  it('ignores status events and trusts a successful result (trial regression)', () => {
+    const ok = [
+      statusEvent('allowed'),
+      JSON.stringify({ type: 'result', is_error: false, result: 'done' }),
+    ].join('\n');
+    expect(detectRateLimit(ok, now)).toEqual({ limited: false });
+    expect(detectRateLimit(statusEvent('allowed'), now)).toEqual({ limited: false });
+  });
+  it('uses a rejected status event and its reset time', () => {
+    expect(detectRateLimit(statusEvent('rejected', now / 1000 + 3600), now)).toEqual({
+      limited: true,
+      retryAfterMs: 3600_000,
+    });
+  });
   it('detects provider limits and honours a machine-readable reset time (capped)', () => {
     expect(detectRateLimit('all good', now)).toEqual({ limited: false });
     expect(detectRateLimit('Claude usage limit reached. resets at 2026-01-01T02:00:00Z', now)).toEqual({

@@ -22,10 +22,39 @@ export function detectRateLimit(
   text: string,
   nowMs: number,
 ): { limited: false } | { limited: true; retryAfterMs: number } {
-  if (!SIGNATURES.some((re) => re.test(text))) return { limited: false };
-  const reset = parseResetAtMs(text);
-  const retryAfterMs = reset && reset > nowMs ? Math.min(reset - nowMs, MAX_BACKOFF_MS) : DEFAULT_BACKOFF_MS;
-  return { limited: true, retryAfterMs };
+  const window = (resetMs: number | undefined) =>
+    resetMs && resetMs > nowMs ? Math.min(resetMs - nowMs, MAX_BACKOFF_MS) : DEFAULT_BACKOFF_MS;
+  // Structured output first (claude --output-format stream-json). Status
+  // events report limits on every run ("status":"allowed", even fields like
+  // "overageDisabledReason":"out_of_credits"), so they must never be matched
+  // as text. A successful final result means the run was not limited.
+  const free: string[] = [];
+  for (const line of text.split('\n')) {
+    const t = line.trim();
+    if (!t.startsWith('{')) {
+      free.push(line);
+      continue;
+    }
+    let ev: { type?: string; is_error?: boolean; rate_limit_info?: { status?: string; resetsAt?: number } };
+    try {
+      ev = JSON.parse(t);
+    } catch {
+      free.push(line); // a truncated line at the start of the tail
+      continue;
+    }
+    if (ev.type === 'result' && ev.is_error === false) return { limited: false };
+    if (ev.type === 'rate_limit_event') {
+      const info = ev.rate_limit_info ?? {};
+      if (info.status && info.status !== 'allowed') {
+        return { limited: true, retryAfterMs: window(info.resetsAt ? info.resetsAt * 1000 : undefined) };
+      }
+      continue;
+    }
+    free.push(line);
+  }
+  const rest = free.join('\n');
+  if (!SIGNATURES.some((re) => re.test(rest))) return { limited: false };
+  return { limited: true, retryAfterMs: window(parseResetAtMs(rest)) };
 }
 
 /** Only machine-unambiguous reset times (ISO-8601 or unix epoch after "reset"). */

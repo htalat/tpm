@@ -20,6 +20,8 @@ export class FakeSource implements TaskSource {
   readonly name = 'fake';
   readonly items = new Map<string, SourceTask & { comments: string[] }>();
   prReads = 0;
+  /** Make the next N findPullRequests calls fail (tracker outage). */
+  failFinds = 0;
   constructor(readonly prDir: string) {}
 
   add(repo: string, number: number, title = `Issue ${number}`, labels: string[] = [LABELS.ready]) {
@@ -72,6 +74,10 @@ export class FakeSource implements TaskSource {
     return { posted: true };
   }
   async findPullRequests(ref: string, branch: string): Promise<PullRequestRef[]> {
+    if (this.failFinds > 0) {
+      this.failFinds--;
+      throw new Error('tracker unavailable');
+    }
     if (!existsSync(this.prFile(ref))) return [];
     const pr = this.pr(ref);
     return pr.branch === branch ? [{ url: pr.url, state: pr.state }] : [];

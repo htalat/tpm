@@ -29,3 +29,25 @@ export async function checkCheckout(
   if (status) return { ok: false, reason: `checkout has uncommitted changes:\n${status.slice(0, 500)}` };
   return { ok: true };
 }
+
+/**
+ * The worker owns the checkout between runs. Agents leave it on their feature
+ * branch; if the tree is clean, switching back to the default branch loses
+ * nothing, so do it. A dirty tree is never touched: that needs a human.
+ */
+export async function resetCheckout(
+  path: string,
+  defaultBranch: string,
+): Promise<{ ok: true; switchedFrom?: string } | { ok: false; reason: string }> {
+  let branch: string;
+  try {
+    const status = await git(path, ['status', '--porcelain']);
+    if (status) return { ok: false, reason: `checkout has uncommitted changes:\n${status.slice(0, 500)}` };
+    branch = await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    if (branch === defaultBranch) return { ok: true };
+    await git(path, ['checkout', '-q', defaultBranch]);
+  } catch (e) {
+    return { ok: false, reason: `not a usable git checkout: ${(e as Error).message}` };
+  }
+  return { ok: true, switchedFrom: branch };
+}

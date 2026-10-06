@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { WorkerError } from '@durable/core';
 import type { WorkerHandler } from '@durable/sdk';
 import { AGENT_CLIS, resolveAgentCli, runAgentProcess, type AgentCli } from './agent-cli';
-import { checkCheckout } from './checkout';
+import { resetCheckout } from './checkout';
 import { repoConfig, type AgentRunnerConfig } from './config';
 import { buildPrompt } from './prompt';
 import { detectRateLimit } from './rate-limit';
@@ -172,8 +172,34 @@ export function createAgentCliHandler(
       const repo = repoConfig(deps.config, input.repo);
       if (!repo) throw new WorkerError('PERMANENT', `repo ${input.repo} is not configured`);
       if (!existsSync(repo.path)) throw new WorkerError('POLICY', `checkout ${repo.path} does not exist`);
-      const check = await checkCheckout(repo.path, repo.defaultBranch);
-      if (!check.ok) throw new WorkerError('POLICY', check.reason);
+      const baseline = input.baseline ?? { pr: null, feedback: null };
+
+      // Any retry first looks for durable evidence that an earlier attempt
+      // already did the work (success is defined by evidence, so this is
+      // always safe). It saves an agent run, whatever the earlier failure was.
+      if (ctx.attemptNumber > 1) {
+        const task0 = await deps.source.get(input.ref);
+        const earlier = await roundResult(deps.source, input.ref, branchFor(task0), baseline);
+        if ('pr' in earlier) {
+          ctx.logger.info(
+            { event_type: 'agent.already_done', pr: earlier.pr.url },
+            'earlier attempt already did the work',
+          );
+          return {
+            prUrl: earlier.pr.url,
+            prState: earlier.pr.state,
+            headSha: earlier.pr.headSha,
+            branch: branchFor(task0),
+            exitCode: null,
+            reconciled: true,
+          };
+        }
+      }
+
+      const ready = await resetCheckout(repo.path, repo.defaultBranch);
+      if (!ready.ok) throw new WorkerError('POLICY', ready.reason);
+      if (ready.switchedFrom)
+        ctx.logger.info({ from: ready.switchedFrom }, 'switched clean checkout back to the default branch');
 
       const task = await deps.source.get(input.ref);
       const branch = branchFor(task);
@@ -211,15 +237,12 @@ export function createAgentCliHandler(
         });
       } finally {
         clearTimeout(timer);
+        // Leave the checkout ready for the next run (only if clean).
+        const after = await resetCheckout(repo.path, repo.defaultBranch);
+        if (!after.ok) ctx.logger.warn({ reason: after.reason }, 'checkout left as is after the agent run');
       }
       ctx.addArtifact({ type: 'agent-log', uri: pathToFileURL(logFile).href, metadata: { agent: cli.name } });
       if (res.spawnError) throw new WorkerError('PERMANENT', `could not start ${cli.bin}: ${res.spawnError}`);
-
-      const limit = detectRateLimit(res.tail, Date.now());
-      if (limit.limited) {
-        // The account is out of usage, not the task: retry later without using an attempt.
-        throw new WorkerError('TRANSIENT', 'agent provider usage limit reached', limit.retryAfterMs, false);
-      }
 
       const result = await roundResult(
         deps.source,
@@ -238,6 +261,13 @@ export function createAgentCliHandler(
           exitCode: res.exitCode,
         };
       }
+      // No evidence of work. Only now is a provider limit a plausible explanation.
+      const limit = detectRateLimit(res.tail, Date.now());
+      if (limit.limited) {
+        // The account is out of usage, not the task: retry later without using an attempt.
+        throw new WorkerError('TRANSIENT', 'agent provider usage limit reached', limit.retryAfterMs, false);
+      }
+
       const lastLine = res.tail.trim().split('\n').pop()?.slice(0, 300) ?? '';
       throw new WorkerError(
         'TRANSIENT',
