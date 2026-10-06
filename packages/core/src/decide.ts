@@ -366,8 +366,9 @@ function decideFailure(
       .filter((x): x is { s: StepState; comp: NonNullable<ReturnType<typeof compensationOf>> } => !!x.comp)
       .sort(
         (a, b) =>
+          // Reverse completion order; ties broken by reverse definition (topological) order.
           (b.s.completedAt?.getTime() ?? 0) - (a.s.completedAt?.getTime() ?? 0) ||
-          (a.s.key < b.s.key ? 1 : -1),
+          def.order.indexOf(b.s.key) - def.order.indexOf(a.s.key),
       );
     if (compensable.length === 0) return [{ kind: 'finishTask', to: 'FAILED', error: failure }];
     const compCtx: WorkflowContext = { ...ctx, failure };

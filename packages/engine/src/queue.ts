@@ -137,6 +137,7 @@ export async function claim(
           idempotencyKey: s.idempotency_key,
           leaseToken,
           leaseExpiresAt: leaseExpiresAt.toISOString(),
+          leaseMs,
           timeoutMs: s.timeout_ms,
           deadlineAt: deadlineAt.toISOString(),
         });

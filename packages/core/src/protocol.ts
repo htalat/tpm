@@ -101,6 +101,8 @@ export interface WorkItem {
   idempotencyKey: string;
   leaseToken: string;
   leaseExpiresAt: string;
+  /** Lease duration granted. Workers schedule heartbeats from this relative value, not from absolute timestamps (clock skew). */
+  leaseMs: number;
   timeoutMs: number;
   deadlineAt: string;
 }

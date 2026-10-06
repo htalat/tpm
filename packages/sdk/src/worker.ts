@@ -167,7 +167,8 @@ export class WorkerRuntime {
     const controller = new AbortController();
     let lost = false;
     const artifacts: ArtifactRef[] = [];
-    const leaseMs = Math.max(1000, new Date(item.leaseExpiresAt).getTime() - Date.now());
+    // Relative durations only: the worker's clock may differ from the engine's.
+    const leaseMs = Math.max(1000, item.leaseMs);
     const hb = setInterval(
       () => {
         if (this.dead) return;
@@ -191,7 +192,7 @@ export class WorkerRuntime {
     );
     const timeout = setTimeout(
       () => controller.abort(new WorkerError('TIMEOUT', `exceeded ${item.timeoutMs}ms`)),
-      Math.max(0, new Date(item.deadlineAt).getTime() - Date.now()),
+      item.timeoutMs,
     );
     const ctx: WorkContext = {
       item,
