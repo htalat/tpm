@@ -212,6 +212,11 @@ cost about $0.67 in our test; with a small model about $0.06. Set `model` and
 
 ## Setup
 
+Run `npm run doctor` any time: it checks Node, git, the database and
+migrations, active workflow versions, overdue engine work, the API, and for
+each repo the checkout, the agent CLI, `gh`/`az` login and access, labels, and
+(factory repos) the policy and reviewer CLIs — each problem with a fix.
+
 1. `gh auth login` (the GitHub adapter uses the `gh` CLI).
 2. `cp agent-runner.config.example.json agent-runner.config.json` and list
    your repos with their local checkout paths.

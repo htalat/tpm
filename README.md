@@ -188,6 +188,7 @@ npm run cli -- task resume <task-id>
 npm run cli -- task resolve <task-id> <step-key> retry|complete|fail '{"note":"checked"}'
 npm run cli -- worker run --capabilities agent,compute --name cli-worker
 npm run cli -- db migrate
+npm run doctor                     # read-only health check (exit 1 on failures; --json for tools)
 ```
 
 ### REST API

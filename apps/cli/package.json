@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@durable/agent-runner": "*",
     "@durable/db": "*",
-    "@durable/testkit": "*"
+    "@durable/testkit": "*",
+    "@durable/workflows": "*"
   }
 }

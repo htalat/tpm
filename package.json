@@ -30,7 +30,8 @@
     "demo:durability": "tsx apps/cli/src/main.ts demo durability",
     "check": "npm run format:check && npm run typecheck && npm run test",
     "agent-runner": "tsx apps/agent-runner/src/main.ts",
-    "menubar": "apps/menubar/build.sh"
+    "menubar": "apps/menubar/build.sh",
+    "doctor": "tsx apps/cli/src/main.ts doctor"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",

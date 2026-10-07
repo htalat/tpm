@@ -21,6 +21,7 @@ Usage: npm run cli -- <command> [args]
   workflows
   worker run [--capabilities a,b] [--name N]     (runs an example worker in this process)
   db migrate
+  doctor [--json]                                read-only health check of everything a run needs
   demo durability [--sleep-ms 20000]             (the full crash/restart demonstration)
 
 Environment: API_URL (default http://localhost:3000), API_TOKEN.`;
@@ -140,6 +141,17 @@ async function main(argv: string[]): Promise<number> {
     if (f.name) process.env.WORKER_NAME = f.name;
     await import('../../worker/src/main');
     return -1; // keep running
+  }
+  if (cmd === 'doctor') {
+    const { runDoctor, formatReport } = await import('./doctor');
+    const { resolve } = await import('node:path');
+    const results = await runDoctor({
+      configPath: resolve(process.env.AGENT_RUNNER_CONFIG ?? 'agent-runner.config.json'),
+      dataDir: resolve('data'),
+    });
+    if ([sub, ...rest].includes('--json')) print(results);
+    else console.log(formatReport(results));
+    return results.some((r) => r.status === 'fail') ? 1 : 0;
   }
   if (cmd === 'db' && sub === 'migrate') {
     await import('../../../packages/db/src/migrate-cli');
