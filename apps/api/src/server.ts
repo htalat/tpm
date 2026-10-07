@@ -5,21 +5,32 @@ import Fastify, {
   type FastifyReply,
   type FastifyRequest,
 } from 'fastify';
-import { z, ZodError, type ZodType } from 'zod';
+import { ZodError } from 'zod';
+import { isDomainError, type ErrorCode } from '@durable/core';
 import {
-  ClaimRequestSchema,
-  CompleteRequestSchema,
-  CreateTaskRequestSchema,
-  FailRequestSchema,
-  isDomainError,
-  LeaseRequestSchema,
-  RegisterWorkerRequestSchema,
-  ResolveStepRequestSchema,
-  SignalRequestSchema,
-  type ErrorCode,
-} from '@durable/core';
+  buildOpenApi,
+  routes,
+  toHistoryEvent,
+  toStep,
+  toTask,
+  toTaskDetail,
+  type CallOutput,
+  type RouteDef,
+  type RouteId,
+  type RouteInputBase,
+} from '@durable/contract';
 import type { Engine } from '@durable/engine';
 import type { Logger } from '@durable/observability';
+
+export interface RouteInput<K extends RouteId> extends RouteInputBase<K> {
+  req: FastifyRequest;
+  reply: FastifyReply;
+}
+/** Register a handler for a contract route. Path, validation and auth come from the route table. */
+export type Register = <K extends RouteId>(
+  id: K,
+  handler: (input: RouteInput<K>) => Promise<CallOutput<K> | void>,
+) => void;
 
 export interface ServerOptions {
   engine: Engine;
@@ -29,11 +40,10 @@ export interface ServerOptions {
   /** If set, required as a Bearer token on worker endpoints. */
   workerToken?: string;
   bodyLimitBytes?: number;
-  /** Extra routes (e.g. the agent-runner read model), registered with the admin guard. */
-  extend?: (
-    app: FastifyInstance,
-    adminGuard: (req: FastifyRequest, reply: FastifyReply) => Promise<void>,
-  ) => void;
+  /** Validate every response against the contract (tests; off in production). */
+  validateResponses?: boolean;
+  /** More contract routes (e.g. the agent-runner read model and live events). */
+  extend?: (register: Register, app: FastifyInstance) => void;
 }
 
 const STATUS: Record<ErrorCode, number> = {
@@ -49,22 +59,14 @@ const STATUS: Record<ErrorCode, number> = {
   UNAUTHORIZED: 401,
 };
 
-const IdParams = z.object({ id: z.string().uuid() });
-const StepParams = z.object({ id: z.string().uuid(), key: z.string().min(1).max(200) });
-const CancelBody = z.object({ reason: z.string().max(1000).optional() }).default({});
-const ListQuery = z.object({
-  status: z.string().max(32).optional(),
-  limit: z.coerce.number().int().min(1).max(500).default(50),
-});
-
-const parse = <T>(schema: ZodType<T>, v: unknown): T => schema.parse(v ?? undefined);
-
 function tokenMatches(header: string | undefined, expected: string): boolean {
   const got = header?.startsWith('Bearer ') ? header.slice(7) : '';
   const a = Buffer.from(got);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
 }
+
+class ContractViolation extends Error {}
 
 export async function buildServer(o: ServerOptions): Promise<FastifyInstance> {
   const { engine } = o;
@@ -80,10 +82,13 @@ export async function buildServer(o: ServerOptions): Promise<FastifyInstance> {
         .send({ error: { code: 'UNAUTHORIZED', message: 'missing or invalid bearer token' } });
     }
   };
-  const admin = { preHandler: guard(o.apiToken) };
-  const workerAuth = { preHandler: guard(o.workerToken) };
+  const guards = { admin: guard(o.apiToken), worker: guard(o.workerToken), none: undefined };
 
   app.setErrorHandler((err, req, reply) => {
+    if (err instanceof ContractViolation) {
+      req.log.error({ err }, 'response violates the API contract');
+      return reply.code(500).send({ error: { code: 'CONTRACT_VIOLATION', message: err.message } });
+    }
     if (err instanceof ZodError) {
       return reply.code(400).send({
         error: { code: 'VALIDATION_ERROR', message: 'invalid request', details: { issues: err.issues } },
@@ -103,7 +108,34 @@ export async function buildServer(o: ServerOptions): Promise<FastifyInstance> {
     return reply.code(500).send({ error: { code: 'INTERNAL', message: 'internal error' } });
   });
 
-  // ---- health ----------------------------------------------------------------
+  const register: Register = (id, handler) => {
+    const r = routes[id] as RouteDef;
+    const guardFn = guards[r.auth];
+    app.route({
+      method: r.method,
+      url: r.path,
+      ...(guardFn ? { preHandler: guardFn } : {}),
+      handler: async (req, reply) => {
+        const input = {
+          params: r.params ? r.params.parse(req.params ?? {}) : undefined,
+          query: r.query ? r.query.parse(req.query ?? {}) : undefined,
+          body: r.body ? r.body.parse(req.body ?? undefined) : undefined,
+          req,
+          reply,
+        } as never;
+        const out = await handler(input);
+        if (reply.sent || out === undefined) return reply;
+        if (o.validateResponses) {
+          const check = r.response.safeParse(out);
+          if (!check.success) throw new ContractViolation(`${id}: ${check.error.message.slice(0, 2000)}`);
+        }
+        if (reply.statusCode === 200 && r.status[0] !== 200) reply.code(r.status[0]!);
+        return out;
+      },
+    });
+  };
+
+  // ---- operational (not versioned) --------------------------------------------------------------
   app.get('/health', async () => ({ status: 'ok' }));
   app.get('/ready', async (_req, reply) => {
     try {
@@ -116,77 +148,71 @@ export async function buildServer(o: ServerOptions): Promise<FastifyInstance> {
   app.get('/metrics', async (_req, reply) =>
     reply.type('text/plain; version=0.0.4').send(await engine.deps.metrics.render()),
   );
-  app.get('/workflows', admin, async () => ({
+  const openapi = buildOpenApi();
+  app.get('/v1/openapi.json', async () => openapi);
+
+  // ---- tasks -------------------------------------------------------------------------------------
+  register('listWorkflows', async () => ({
     workflows: engine.deps.registry.list().map((w) => ({
       name: w.name,
       version: w.version,
       description: w.spec.description ?? null,
-      steps: w.order,
+      steps: [...w.order],
     })),
   }));
-
-  // ---- tasks -----------------------------------------------------------------
-  app.post('/tasks', admin, async (req, reply) => {
-    const body = parse(CreateTaskRequestSchema, req.body);
+  register('createTask', async ({ body, req, reply }) => {
     const key = req.headers['idempotency-key'];
     const idem = typeof key === 'string' && key.length > 0 && key.length <= 256 ? key : undefined;
     const { task, created } = await engine.createTask(body, idem);
-    return reply.code(created ? 201 : 200).send({ task, created });
+    reply.code(created ? 201 : 200);
+    return { task: toTask(task as never), created } as never;
   });
-  app.get('/tasks', admin, async (req) => {
-    const q = parse(ListQuery, req.query);
-    return { tasks: await engine.listTasks(q) };
+  register(
+    'listTasks',
+    async ({ query }) => ({ tasks: (await engine.listTasks(query)).map((t) => toTask(t as never)) }) as never,
+  );
+  register(
+    'getTask',
+    async ({ params }) => toTaskDetail((await engine.getTask(params.id)) as never) as never,
+  );
+  register('getTaskHistory', async ({ params }) => {
+    await engine.getTask(params.id); // 404 for unknown tasks
+    return { history: (await engine.getHistory(params.id)).map((h) => toHistoryEvent(h as never)) };
   });
-  app.get('/tasks/:id', admin, async (req) => engine.getTask(parse(IdParams, req.params).id));
-  app.get('/tasks/:id/history', admin, async (req) => {
-    const { id } = parse(IdParams, req.params);
-    await engine.getTask(id); // 404 for unknown tasks
-    return { history: await engine.getHistory(id) };
+  register('cancelTask', async ({ params, body }) => {
+    const r = await engine.cancelTask(params.id, body.reason);
+    return { task: toTask(r.task as never), alreadyCancelled: r.alreadyCancelled } as never;
   });
-  app.post('/tasks/:id/cancel', admin, async (req) => {
-    const { id } = parse(IdParams, req.params);
-    const { reason } = parse(CancelBody, req.body);
-    return engine.cancelTask(id, reason);
+  register(
+    'pauseTask',
+    async ({ params }) => ({ task: toTask((await engine.pauseTask(params.id)) as never) }) as never,
+  );
+  register(
+    'resumeTask',
+    async ({ params }) => ({ task: toTask((await engine.resumeTask(params.id)) as never) }) as never,
+  );
+  register('signalTask', async ({ params, body, reply }) => {
+    const r = await engine.signal(params.id, body);
+    reply.code(r.duplicate ? 200 : 202);
+    return r;
   });
-  app.post('/tasks/:id/pause', admin, async (req) => ({
-    task: await engine.pauseTask(parse(IdParams, req.params).id),
-  }));
-  app.post('/tasks/:id/resume', admin, async (req) => ({
-    task: await engine.resumeTask(parse(IdParams, req.params).id),
-  }));
-  app.post('/tasks/:id/signals', admin, async (req, reply) => {
-    const { id } = parse(IdParams, req.params);
-    const sig = parse(SignalRequestSchema, req.body);
-    const r = await engine.signal(id, sig);
-    return reply.code(r.duplicate ? 200 : 202).send(r);
-  });
-  app.post('/tasks/:id/steps/:key/resolve', admin, async (req) => {
-    const { id, key } = parse(StepParams, req.params);
-    const b = parse(ResolveStepRequestSchema, req.body);
-    return { step: await engine.resolveStep(id, key, b.action, b.output, b.reason) };
-  });
+  register(
+    'resolveStep',
+    async ({ params, body }) =>
+      ({
+        step: toStep(
+          (await engine.resolveStep(params.id, params.key, body.action, body.output, body.reason)) as never,
+        ),
+      }) as never,
+  );
 
-  // ---- worker protocol ---------------------------------------------------------
-  app.post('/workers/register', workerAuth, async (req, reply) => {
-    const b = parse(RegisterWorkerRequestSchema, req.body);
-    return reply.code(201).send(await engine.registerWorker(b.name, b.capabilities));
-  });
-  app.post('/workers/claim', workerAuth, async (req) => ({
-    items: await engine.claim(parse(ClaimRequestSchema, req.body)),
-  }));
-  app.post('/attempts/:id/heartbeat', workerAuth, async (req) => {
-    const { id } = parse(IdParams, req.params);
-    return engine.heartbeat(id, parse(LeaseRequestSchema, req.body).leaseToken);
-  });
-  app.post('/attempts/:id/complete', workerAuth, async (req) => {
-    const { id } = parse(IdParams, req.params);
-    return engine.complete(id, parse(CompleteRequestSchema, req.body));
-  });
-  app.post('/attempts/:id/fail', workerAuth, async (req) => {
-    const { id } = parse(IdParams, req.params);
-    return engine.fail(id, parse(FailRequestSchema, req.body));
-  });
+  // ---- worker protocol -----------------------------------------------------------------------------
+  register('registerWorker', async ({ body }) => engine.registerWorker(body.name, body.capabilities));
+  register('claim', async ({ body }) => ({ items: await engine.claim(body) }));
+  register('heartbeat', async ({ params, body }) => engine.heartbeat(params.id, body.leaseToken));
+  register('complete', async ({ params, body }) => engine.complete(params.id, body));
+  register('fail', async ({ params, body }) => engine.fail(params.id, body));
 
-  o.extend?.(app, guard(o.apiToken));
+  o.extend?.(register, app);
   return app;
 }

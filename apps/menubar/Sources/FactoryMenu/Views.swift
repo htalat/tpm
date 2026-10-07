@@ -217,9 +217,9 @@ struct HistoryView: View {
                     }
                     Table(d.history) {
                         TableColumn("Time") { e in Text(String(e.timestamp.dropFirst(11).prefix(8))).monospacedDigit() }.width(70)
-                        TableColumn("Event", value: \.event_type).width(150)
+                        TableColumn("Event", value: \.eventType).width(150)
                         TableColumn("Step") { e in Text(e.stepKey ?? "") }.width(110)
-                        TableColumn("State") { e in Text([e.previous_state, e.new_state].compactMap { $0 }.joined(separator: " → ")) }.width(160)
+                        TableColumn("State") { e in Text([e.previousState, e.newState].compactMap { $0 }.joined(separator: " → ")) }.width(160)
                         TableColumn("Details") { e in
                             Text((e.payload ?? [:]).filter { $0.key != "stepKey" }.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.display)" }.joined(separator: " "))
                                 .lineLimit(1).help((e.payload ?? [:]).map { "\($0.key): \($0.value.display)" }.joined(separator: "\n"))

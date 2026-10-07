@@ -1,4 +1,4 @@
-import type { FastifyInstance, preHandlerHookHandler } from 'fastify';
+import { toHistoryEvent, type RegisterRoute } from '@durable/contract';
 import { z } from 'zod';
 import { DomainError, isTerminalTask, NotFoundError, type TaskStatus } from '@durable/core';
 import type { Engine } from '@durable/engine';
@@ -163,13 +163,10 @@ export function overview(runs: AgentRunSummary[], now: Date) {
   };
 }
 
-const IdParams = z.object({ id: z.string().uuid() });
-
 export function registerAgentRunRoutes(
-  app: FastifyInstance,
-  deps: { engine: Engine; config: AgentRunnerConfig; sources: SourceResolver; guard?: preHandlerHookHandler },
+  register: RegisterRoute,
+  deps: { engine: Engine; config: AgentRunnerConfig; sources: SourceResolver },
 ): void {
-  const opts = deps.guard ? { preHandler: deps.guard } : {};
   const one = async (id: string) => {
     const [run] = await listAgentRuns(deps.engine, 1, [id]);
     if (!run) throw new NotFoundError('agent-run', id);
@@ -178,11 +175,8 @@ export function registerAgentRunRoutes(
     return { run, repo, source: deps.sources(repo) };
   };
 
-  app.get('/agent-runs', opts, async (req) => {
-    const { limit } = z
-      .object({ limit: z.coerce.number().int().min(1).max(200).default(50) })
-      .parse(req.query ?? {});
-    const runs = await listAgentRuns(deps.engine, limit);
+  register('listAgentRuns', async ({ query }) => {
+    const runs = await listAgentRuns(deps.engine, query.limit);
     return {
       runs,
       overview: overview(runs, deps.engine.deps.clock.now()),
@@ -190,37 +184,36 @@ export function registerAgentRunRoutes(
     };
   });
 
-  app.get('/agent-runs/:id', opts, async (req) => {
-    const { id } = IdParams.parse(req.params);
-    const { run } = await one(id);
-    return { run, history: await deps.engine.getHistory(id) };
+  register('getAgentRun', async ({ params }) => {
+    const { run } = await one(params.id);
+    return { run, history: (await deps.engine.getHistory(params.id)).map((h) => toHistoryEvent(h as never)) };
   });
 
   /** Add the approve label to the run's PR, as the human approver would. */
-  app.post('/agent-runs/:id/approve', opts, async (req) => {
-    const { run, source } = await one(IdParams.parse(req.params).id);
+  register('approveAgentRun', async ({ params }) => {
+    const { run, source } = await one(params.id);
     if (run.attention?.kind !== 'approve' || !run.prUrl)
       throw new DomainError('CONFLICT', 'this run is not waiting for an approval');
     if (!source.factory) throw new DomainError('CONFLICT', 'the PR host does not support approvals');
     await source.factory.addPrLabel(run.prUrl, LABELS.approve);
-    return { ok: true };
+    return { ok: true as const };
   });
 
   /** Put the item back in the queue (a new round starts on the next sync). */
-  app.post('/agent-runs/:id/retry', opts, async (req) => {
-    const { run, source } = await one(IdParams.parse(req.params).id);
+  register('retryAgentRun', async ({ params }) => {
+    const { run, source } = await one(params.id);
     if (!isTerminalTask(run.status) && run.status !== 'BLOCKED')
       throw new DomainError('CONFLICT', 'the run is still active; cancel it first');
     await source.updateLabels(run.ref, {
       add: [LABELS.ready],
       remove: [LABELS.failed, LABELS.review, LABELS.done],
     });
-    return { ok: true };
+    return { ok: true as const };
   });
 
   /** Cancel the run and tell the tracker. Completed side effects are not undone. */
-  app.post('/agent-runs/:id/cancel', opts, async (req) => {
-    const { run, source } = await one(IdParams.parse(req.params).id);
+  register('cancelAgentRun', async ({ params }) => {
+    const { run, source } = await one(params.id);
     await deps.engine.cancelTask(run.id, 'cancelled from the menu bar');
     await source.updateLabels(run.ref, {
       add: [LABELS.failed],
@@ -231,6 +224,6 @@ export function registerAgentRunRoutes(
       `🛑 Agent run cancelled by a human (round ${run.round}).`,
       `cancel:${run.id}`,
     );
-    return { ok: true };
+    return { ok: true as const };
   });
 }

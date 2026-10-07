@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { createPool, migrate } from '@durable/db';
 import { ProcessSupervisor, REPO_ROOT, waitFor, delay } from '@durable/testkit';
-import { ApiClient } from './client';
+import { ApiError, createClient, isReady } from './client';
 
 /**
  * The durability demonstration (README "Definition of Done").
@@ -28,7 +28,8 @@ export async function runDurabilityDemo(o: DemoOptions): Promise<boolean> {
   const log = (m: string) => o.log(`\n▶ ${m}`);
   const info = (m: string) => o.log(`  ${m}`);
   const pool = createPool({ connectionString: o.databaseUrl, applicationName: 'durable-demo', max: 4 });
-  const api = new ApiClient(`http://127.0.0.1:${o.apiPort}`);
+  const baseUrl = `http://127.0.0.1:${o.apiPort}`;
+  const api = createClient({ baseUrl });
   const logFile = join(REPO_ROOT, 'data', 'logs', `demo-${Date.now()}.log`);
   const sup = new ProcessSupervisor(
     {
@@ -70,13 +71,10 @@ export async function runDurabilityDemo(o: DemoOptions): Promise<boolean> {
         ...(paymentsCrash ? { CRASH_AT: 'AFTER_SIDE_EFFECT' } : {}),
       });
     }
-    await waitFor(
-      async () => (await api.request('GET', '/ready').catch(() => ({ status: 0 }))).status === 200,
-      {
-        timeoutMs: 30_000,
-        message: 'API ready',
-      },
-    );
+    await waitFor(async () => isReady(baseUrl), {
+      timeoutMs: 30_000,
+      message: 'API ready',
+    });
   };
   const stepStatus = async (taskId: string, key: string) =>
     (
@@ -92,9 +90,8 @@ export async function runDurabilityDemo(o: DemoOptions): Promise<boolean> {
     info('payments worker started with CRASH_AT=AFTER_SIDE_EFFECT');
 
     log('2-4. Submit the durability-demo workflow');
-    const created = await api.ok<{ task: { id: string } }>('POST', '/tasks', {
-      type: 'durability-demo',
-      input: { items: 4, workMs: 3000, sleepMs: o.sleepMs },
+    const created = await api.call('createTask', {
+      body: { type: 'durability-demo', input: { items: 4, workMs: 3000, sleepMs: o.sleepMs } },
     });
     const taskId = created.task.id;
     info(`task ${taskId}`);
@@ -260,8 +257,8 @@ export async function runDurabilityDemo(o: DemoOptions): Promise<boolean> {
       payload: { approved: true, by: 'demo-operator' },
       deduplicationKey: `approval-${taskId}`,
     };
-    const s1 = await api.ok<{ eventId: string; duplicate: boolean }>('POST', `/tasks/${taskId}/signals`, sig);
-    const s2 = await api.ok<{ eventId: string; duplicate: boolean }>('POST', `/tasks/${taskId}/signals`, sig);
+    const s1 = await api.call('signalTask', { params: { id: taskId }, body: sig });
+    const s2 = await api.call('signalTask', { params: { id: taskId }, body: sig });
     info(`first: duplicate=${s1.duplicate}; second: duplicate=${s2.duplicate}`);
     check('duplicate signal recognised', !s1.duplicate && s2.duplicate && s1.eventId === s2.eventId);
 
@@ -293,11 +290,9 @@ export async function runDurabilityDemo(o: DemoOptions): Promise<boolean> {
     check('workflow COMPLETED', final.status === 'COMPLETED', final.status);
 
     log('22. Full durable history');
-    const history = await api.ok<{
-      history: Array<{ event_type: string; new_state: string | null; payload: { stepKey?: string } }>;
-    }>('GET', `/tasks/${taskId}/history`);
+    const history = await api.call('getTaskHistory', { params: { id: taskId } });
     for (const h of history.history)
-      info(`${h.event_type.padEnd(24)} ${(h.new_state ?? '').padEnd(10)} ${h.payload.stepKey ?? ''}`);
+      info(`${h.eventType.padEnd(24)} ${(h.newState ?? '').padEnd(10)} ${String(h.payload.stepKey ?? '')}`);
 
     log('23-25. Verify invariants against PostgreSQL');
     const received = (
@@ -318,21 +313,23 @@ export async function runDurabilityDemo(o: DemoOptions): Promise<boolean> {
       `${received} event(s), ${approvalCompletions} approval transition(s)`,
     );
 
-    const stale = await api.request<{ error: { code: string } }>(
-      'POST',
-      `/attempts/${victim.attempt_id}/complete`,
-      {
-        leaseToken: victim.lease_token,
-        output: { stale: true },
-      },
-    );
+    const stale = await api
+      .call('complete', {
+        params: { id: victim.attempt_id },
+        body: { leaseToken: victim.lease_token, output: { stale: true } },
+      })
+      .then(
+        () => ({ status: 200, code: 'ACCEPTED' }),
+        (e: unknown) =>
+          e instanceof ApiError ? { status: e.status, code: e.code } : { status: 0, code: String(e) },
+      );
     const victimStep = (
       await q<{ output: { stale?: boolean } }>(`SELECT output FROM steps WHERE id = $1`, [victim.step_id])
     )[0]!;
     check(
       'stale worker could not overwrite the newer attempt',
-      stale.status === 409 && stale.body.error.code === 'LEASE_LOST' && !victimStep.output?.stale,
-      `HTTP ${stale.status} ${stale.body.error?.code}`,
+      stale.status === 409 && stale.code === 'LEASE_LOST' && !victimStep.output?.stale,
+      `HTTP ${stale.status} ${stale.code}`,
     );
 
     const multi = (

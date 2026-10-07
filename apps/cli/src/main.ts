@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { loadEnv } from '@durable/db';
-import { ApiClient } from './client';
+import { createClient } from './client';
 
 loadEnv();
 
@@ -19,6 +19,7 @@ Usage: npm run cli -- <command> [args]
   task resolve <task-id> <step-key> <retry|complete|fail> ['output-json']
   task wait <task-id> [--status COMPLETED] [--timeout-ms 60000]
   workflows
+  openapi [file]                                 print or write the v1 OpenAPI document
   worker run [--capabilities a,b] [--name N]     (runs an example worker in this process)
   db migrate
   doctor [--json]                                read-only health check of everything a run needs
@@ -49,11 +50,12 @@ const print = (v: unknown) => console.log(JSON.stringify(v, null, 2));
 
 async function main(argv: string[]): Promise<number> {
   const [cmd, sub, ...rest] = argv;
-  const api = new ApiClient(
-    process.env.API_URL ?? 'http://localhost:3000',
-    process.env.API_TOKEN || undefined,
-  );
+  const api = createClient({
+    baseUrl: process.env.API_URL ?? 'http://localhost:3000',
+    token: process.env.API_TOKEN || undefined,
+  });
   const { pos, f } = flags(rest);
+  const id = pos[0] ?? '';
 
   if (cmd === 'task') {
     switch (sub) {
@@ -61,56 +63,56 @@ async function main(argv: string[]): Promise<number> {
         const headers: Record<string, string> = f['idempotency-key']
           ? { 'idempotency-key': f['idempotency-key'] }
           : {};
-        const r = await api.ok<{ task: { id: string; status: string } }>(
-          'POST',
-          '/tasks',
-          { type: pos[0], input: json(pos[1]) },
-          headers,
-        );
-        print(r);
+        print(await api.call('createTask', { body: { type: pos[0] ?? '', input: json(pos[1]) }, headers }));
         return 0;
       }
       case 'list':
-        print(await api.ok('GET', `/tasks${f.status ? `?status=${encodeURIComponent(f.status)}` : ''}`));
+        print(await api.call('listTasks', { query: { status: f.status } }));
         return 0;
       case 'get':
-        print(await api.ok('GET', `/tasks/${pos[0]}`));
+        print(await api.call('getTask', { params: { id } }));
         return 0;
       case 'history': {
-        const r = await api.ok<{ history: Array<Record<string, unknown>> }>(
-          'GET',
-          `/tasks/${pos[0]}/history`,
-        );
+        const r = await api.call('getTaskHistory', { params: { id } });
         for (const h of r.history) {
-          const p = h.payload as Record<string, unknown>;
+          const p = h.payload;
+          const rest = Object.fromEntries(Object.entries(p).filter(([k]) => k !== 'stepKey'));
           console.log(
-            `${String(h.timestamp)}  ${String(h.event_type).padEnd(26)} ${String(h.previous_state ?? '').padStart(9)} -> ${String(h.new_state ?? '').padEnd(9)} ${p.stepKey ? `[${String(p.stepKey)}]` : ''} ${JSON.stringify(Object.fromEntries(Object.entries(p).filter(([k]) => k !== 'stepKey')))}`,
+            `${h.timestamp}  ${h.eventType.padEnd(26)} ${(h.previousState ?? '').padStart(9)} -> ${(h.newState ?? '').padEnd(9)} ${p.stepKey ? `[${String(p.stepKey)}]` : ''} ${JSON.stringify(rest)}`,
           );
         }
         return 0;
       }
       case 'signal':
         print(
-          await api.ok('POST', `/tasks/${pos[0]}/signals`, {
-            type: pos[1],
-            payload: json(pos[2]),
-            correlationKey: f.correlation,
-            deduplicationKey: f.dedup,
+          await api.call('signalTask', {
+            params: { id },
+            body: {
+              type: pos[1] ?? '',
+              payload: json(pos[2]),
+              correlationKey: f.correlation,
+              deduplicationKey: f.dedup,
+            },
           }),
         );
         return 0;
       case 'cancel':
-        print(await api.ok('POST', `/tasks/${pos[0]}/cancel`, { reason: pos[1] }));
+        print(await api.call('cancelTask', { params: { id }, body: { reason: pos[1] } }));
         return 0;
       case 'pause':
+        print(await api.call('pauseTask', { params: { id } }));
+        return 0;
       case 'resume':
-        print(await api.ok('POST', `/tasks/${pos[0]}/${sub}`, {}));
+        print(await api.call('resumeTask', { params: { id } }));
         return 0;
       case 'resolve':
         print(
-          await api.ok('POST', `/tasks/${pos[0]}/steps/${encodeURIComponent(pos[1]!)}/resolve`, {
-            action: pos[2],
-            output: pos[3] ? json(pos[3]) : undefined,
+          await api.call('resolveStep', {
+            params: { id, key: pos[1] ?? '' },
+            body: {
+              action: pos[2] as 'retry' | 'complete' | 'fail',
+              output: pos[3] ? json(pos[3]) : undefined,
+            },
           }),
         );
         return 0;
@@ -118,7 +120,7 @@ async function main(argv: string[]): Promise<number> {
         const want = f.status ?? 'COMPLETED';
         const deadline = Date.now() + Number(f['timeout-ms'] ?? 60_000);
         for (;;) {
-          const t = await api.ok<{ task: { status: string } }>('GET', `/tasks/${pos[0]}`);
+          const t = await api.call('getTask', { params: { id } });
           if (t.task.status === want) {
             print(t.task);
             return 0;
@@ -133,7 +135,17 @@ async function main(argv: string[]): Promise<number> {
     }
   }
   if (cmd === 'workflows') {
-    print(await api.ok('GET', '/workflows'));
+    print(await api.call('listWorkflows'));
+    return 0;
+  }
+  if (cmd === 'openapi') {
+    const { buildOpenApi } = await import('@durable/contract');
+    const doc = JSON.stringify(buildOpenApi(), null, 2) + '\n';
+    if (pos[0] ?? sub) {
+      const { writeFileSync } = await import('node:fs');
+      writeFileSync(sub ?? pos[0]!, doc);
+      console.log(`wrote ${sub ?? pos[0]}`);
+    } else process.stdout.write(doc);
     return 0;
   }
   if (cmd === 'worker' && sub === 'run') {

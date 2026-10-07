@@ -10,7 +10,7 @@ import {
 } from '@durable/testkit';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ApiClient } from '../../apps/cli/src/client';
+import { ApiError, createClient, isReady } from '../../apps/cli/src/client';
 
 /**
  * Chaos test with REAL processes. Seeded: the same CHAOS_SEED replays the same
@@ -27,7 +27,8 @@ describe('chaos', () => {
     const pick = <T>(xs: T[]) => xs[Math.floor(rng() * xs.length)]!;
     const pool = createTestPool(4);
     await truncateAll(pool);
-    const api = new ApiClient(`http://127.0.0.1:${API_PORT}`);
+    const baseUrl = `http://127.0.0.1:${API_PORT}`;
+    const api = createClient({ baseUrl });
     const sup = new ProcessSupervisor(
       {
         DATABASE_URL: testDatabaseUrl(),
@@ -63,14 +64,15 @@ describe('chaos', () => {
     const stats = { workerKills: 0, orchestratorKills: 0, apiKills: 0, duplicateSignals: 0 };
     try {
       ensureAll();
-      await waitFor(
-        async () => (await api.request('GET', '/ready').catch(() => ({ status: 0 }))).status === 200,
-        { timeoutMs: 30_000 },
-      );
-      const { task } = await api.ok<{ task: { id: string } }>('POST', '/tasks', {
-        type: 'chaos',
-        input: { items: ITEMS, maxDelayMs: 2500 },
+      await waitFor(async () => isReady(baseUrl), { timeoutMs: 30_000 });
+      const { task } = await api.call('createTask', {
+        body: { type: 'chaos', input: { items: ITEMS, maxDelayMs: 2500 } },
       });
+      const go = (n: number, key: string) =>
+        api.call('signalTask', {
+          params: { id: task.id },
+          body: { type: 'go', payload: { n }, deduplicationKey: key },
+        });
 
       // --- chaos phase -------------------------------------------------------
       const until = Date.now() + 25_000;
@@ -94,40 +96,25 @@ describe('chaos', () => {
           stats.apiKills++;
         } else if (r < 0.85) {
           // duplicate deliveries of the same event, sometimes before the step waits for it
-          const res = await api
-            .request('POST', `/tasks/${task.id}/signals`, {
-              type: 'go',
-              payload: { n: 1 },
-              deduplicationKey: 'go-1',
-            })
-            .catch(() => null);
-          if (res && res.status < 300) stats.duplicateSignals++;
+          const res = await go(1, 'go-1').catch(() => null);
+          if (res) stats.duplicateSignals++;
         }
         if (rng() < 0.6) ensureAll();
       }
 
       // --- recovery phase: stop injecting, everything up --------------------
       ensureAll();
-      await waitFor(
-        async () => (await api.request('GET', '/ready').catch(() => ({ status: 0 }))).status === 200,
-        { timeoutMs: 30_000 },
-      );
+      await waitFor(async () => isReady(baseUrl), { timeoutMs: 30_000 });
       for (let i = 0; i < 3; i++) {
-        const r = await api.request<{ duplicate: boolean }>('POST', `/tasks/${task.id}/signals`, {
-          type: 'go',
-          payload: { n: 1 },
-          deduplicationKey: 'go-1',
-        });
-        expect(r.status).toBeLessThan(300); // a known duplicate is accepted even after completion
+        await go(1, 'go-1'); // a known duplicate is accepted even after completion (no throw)
       }
       // A second, distinct "go" must not drive the single wait step twice
       // (409 if the task already finished, which is also correct).
-      const go2 = await api.request('POST', `/tasks/${task.id}/signals`, {
-        type: 'go',
-        payload: { n: 2 },
-        deduplicationKey: 'go-2',
-      });
-      expect([202, 409]).toContain(go2.status);
+      const go2 = await go(2, 'go-2').then(
+        () => 202,
+        (e: unknown) => (e instanceof ApiError ? e.status : 0),
+      );
+      expect([202, 409]).toContain(go2);
 
       const final = await waitFor(
         async () => {

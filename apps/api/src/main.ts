@@ -36,12 +36,12 @@ const app = await buildServer({
   logger,
   apiToken: process.env.API_TOKEN || undefined,
   workerToken: process.env.WORKER_TOKEN || undefined,
-  extend: (app, guard) => {
+  extend: (register) => {
     // Agent-runner read model + actions for the menu bar app, when configured.
     const configPath = resolve(process.env.AGENT_RUNNER_CONFIG ?? 'agent-runner.config.json');
     if (!existsSync(configPath)) return;
     const config = loadAgentRunnerConfig(configPath);
-    registerAgentRunRoutes(app, { engine, config, sources: createDefaultIntegrations().sources, guard });
+    registerAgentRunRoutes(register, { engine, config, sources: createDefaultIntegrations().sources });
     logger.info({ config: configPath, repos: config.repos.length }, 'agent-run routes enabled');
   },
 });

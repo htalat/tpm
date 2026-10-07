@@ -1,7 +1,7 @@
 {
   "runs": [
     {
-      "id": "3234852b-6e30-4395-9ffa-38ab942ac150",
+      "id": "79ebc975-e1e7-40dc-b687-75c54641caea",
       "ref": "github:acme/site#20",
       "url": "https://github.example/acme/site/issues/20",
       "repo": "acme/site",
@@ -53,7 +53,7 @@
         }
       ],
       "prUrl": "https://github.example/pr/20",
-      "headSha": "7c8ee4a3f69947ccc75b7724819d5a1edab95943",
+      "headSha": "79adc7851fe71ae479adbf0d9046741aefefbe9b",
       "watch": {
         "kind": "no-action",
         "reason": "policy: waiting for approval by htalat (dist/menu-20.html: human-approve)",

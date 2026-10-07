@@ -7,11 +7,11 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@durable/contract": "*",
     "@durable/core": "*",
     "@durable/engine": "*",
     "@durable/sdk": "*",
     "yaml": "^2.9.1",
-    "zod": "^4.6.5",
-    "fastify": "^5.12.5"
+    "zod": "^4.6.5"
   }
 }

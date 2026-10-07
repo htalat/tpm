@@ -1,3 +1,4 @@
+import { ApiError, ApiUnavailable, createClient, type ApiClient } from '@durable/contract';
 import type {
   ArtifactRef,
   CompletionResponse,
@@ -51,48 +52,36 @@ export class TransportUnavailable extends Error {
   }
 }
 
+/** Worker protocol over the v1 HTTP API (typed, response-validated client from @durable/contract). */
 export class HttpTransport implements WorkerTransport {
-  constructor(
-    private readonly baseUrl: string,
-    private readonly token?: string,
-    private readonly timeoutMs = 10_000,
-  ) {}
+  private readonly api: ApiClient;
 
-  private async call<T>(path: string, body: unknown): Promise<T> {
-    let res: Response;
+  constructor(baseUrl: string, token?: string, timeoutMs = 10_000) {
+    this.api = createClient({ baseUrl, token, timeoutMs });
+  }
+
+  /** Map client errors to the worker runtime's vocabulary. */
+  private async wrap<T>(f: () => Promise<T>): Promise<T> {
     try {
-      res = await fetch(`${this.baseUrl}${path}`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
-        },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
+      return await f();
     } catch (e) {
-      throw new TransportUnavailable(`${path}: ${(e as Error).message}`);
+      if (e instanceof ApiError && e.code === 'LEASE_LOST') throw new LeaseLost(e.message);
+      if (e instanceof ApiUnavailable) throw new TransportUnavailable(e.message);
+      throw e;
     }
-    const text = await res.text();
-    const json = text ? (JSON.parse(text) as { error?: { code: string; message: string } }) : {};
-    if (res.ok) return json as T;
-    if (json.error?.code === 'LEASE_LOST') throw new LeaseLost(json.error.message);
-    if (res.status >= 500)
-      throw new TransportUnavailable(`${path}: HTTP ${res.status} ${json.error?.message ?? ''}`);
-    throw new Error(`${path}: HTTP ${res.status} ${json.error?.code ?? ''} ${json.error?.message ?? text}`);
   }
 
   register(name: string, capabilities: string[]) {
-    return this.call<{ workerId: string }>('/workers/register', { name, capabilities });
+    return this.wrap(() => this.api.call('registerWorker', { body: { name, capabilities } }));
   }
   async claim(req: { workerId: string; capabilities: string[]; maxItems: number; leaseMs?: number }) {
-    return (await this.call<{ items: WorkItem[] }>('/workers/claim', req)).items;
+    return (await this.wrap(() => this.api.call('claim', { body: req }))).items as WorkItem[];
   }
   heartbeat(attemptId: string, leaseToken: string) {
-    return this.call<HeartbeatResponse>(`/attempts/${attemptId}/heartbeat`, { leaseToken });
+    return this.wrap(() => this.api.call('heartbeat', { params: { id: attemptId }, body: { leaseToken } }));
   }
   complete(attemptId: string, req: { leaseToken: string; output: unknown; artifacts: ArtifactRef[] }) {
-    return this.call<CompletionResponse>(`/attempts/${attemptId}/complete`, req);
+    return this.wrap(() => this.api.call('complete', { params: { id: attemptId }, body: req }));
   }
   fail(
     attemptId: string,
@@ -103,6 +92,6 @@ export class HttpTransport implements WorkerTransport {
       chargeAttempt?: boolean;
     },
   ) {
-    return this.call<CompletionResponse>(`/attempts/${attemptId}/fail`, req);
+    return this.wrap(() => this.api.call('fail', { params: { id: attemptId }, body: req }));
   }
 }

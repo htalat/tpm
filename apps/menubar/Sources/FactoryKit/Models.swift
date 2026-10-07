@@ -1,6 +1,6 @@
 import Foundation
 
-/// Mirrors GET /agent-runs (packages/agent-runner/src/api.ts).
+/// Mirrors GET /v1/agent-runs (schemas in packages/contract, docs/openapi.json).
 public struct RunsResponse: Codable, Sendable {
     public var runs: [AgentRun]
     public var overview: Overview
@@ -98,9 +98,11 @@ public struct AgentRun: Codable, Sendable, Identifiable, Hashable {
 
 public struct HistoryEvent: Codable, Sendable, Identifiable, Hashable {
     public var id: Int
-    public var event_type: String
-    public var previous_state: String?
-    public var new_state: String?
+    public var taskId: String
+    public var stepId: String?
+    public var eventType: String
+    public var previousState: String?
+    public var newState: String?
     public var timestamp: String
     public var payload: [String: JSONValue]?
 

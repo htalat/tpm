@@ -1,5 +1,5 @@
 {
-  "name": "@durable/sdk",
+  "name": "@durable/contract",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,8 +7,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@durable/contract": "*",
     "@durable/core": "*",
-    "@durable/observability": "*"
+    "zod": "^4.6.5"
   }
 }

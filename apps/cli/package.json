@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@durable/agent-runner": "*",
+    "@durable/contract": "*",
     "@durable/db": "*",
     "@durable/testkit": "*",
     "@durable/workflows": "*"

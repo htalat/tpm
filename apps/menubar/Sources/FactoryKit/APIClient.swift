@@ -54,16 +54,16 @@ public struct APIClient: Sendable {
 
     /// The 50 newest runs (the API's default page).
     public func runs() async throws -> RunsResponse {
-        try JSONDecoder().decode(RunsResponse.self, from: try await request("GET", "agent-runs"))
+        try JSONDecoder().decode(RunsResponse.self, from: try await request("GET", "v1/agent-runs"))
     }
 
     public func detail(_ id: String) async throws -> RunDetail {
-        try JSONDecoder().decode(RunDetail.self, from: try await request("GET", "agent-runs/\(id)"))
+        try JSONDecoder().decode(RunDetail.self, from: try await request("GET", "v1/agent-runs/\(id)"))
     }
 
     public enum Action: String, Sendable { case approve, retry, cancel }
 
     public func perform(_ action: Action, run id: String) async throws {
-        _ = try await request("POST", "agent-runs/\(id)/\(action.rawValue)")
+        _ = try await request("POST", "v1/agent-runs/\(id)/\(action.rawValue)")
     }
 }

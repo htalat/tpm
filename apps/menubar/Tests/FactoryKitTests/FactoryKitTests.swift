@@ -24,7 +24,7 @@ final class FactoryKitTests: XCTestCase {
     func testDecodesRunDetailWithHistory() throws {
         let d = try JSONDecoder().decode(RunDetail.self, from: fixture("detail"))
         XCTAssertFalse(d.history.isEmpty)
-        XCTAssertTrue(d.history.contains { $0.event_type == "task.created" })
+        XCTAssertTrue(d.history.contains { $0.eventType == "task.created" })
         XCTAssertNotNil(d.history.first { $0.stepKey == "agent" })
     }
 
