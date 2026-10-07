@@ -35,6 +35,7 @@ describe('chaos', () => {
         API_PORT: String(API_PORT),
         API_HOST: '127.0.0.1',
         API_URL: `http://127.0.0.1:${API_PORT}`,
+        EXAMPLE_WORKFLOWS: '1',
         LEASE_MS: '2000',
         ORCHESTRATOR_POLL_MS: '100',
         ORCHESTRATOR_METRICS_PORT: '0',

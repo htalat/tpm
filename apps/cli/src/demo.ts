@@ -37,6 +37,7 @@ export async function runDurabilityDemo(o: DemoOptions): Promise<boolean> {
       API_PORT: String(o.apiPort),
       API_HOST: '127.0.0.1',
       API_URL: `http://127.0.0.1:${o.apiPort}`,
+      EXAMPLE_WORKFLOWS: '1',
       LEASE_MS: '4000',
       ORCHESTRATOR_POLL_MS: '150',
       ORCHESTRATOR_METRICS_PORT: '0',

@@ -2,12 +2,13 @@
  * `npm run dev`: API + orchestrator + two workers with prefixed logs.
  * Ctrl-C stops everything. Each component is a separate OS process, exactly as
  * in production, so you can `kill -9` any of them and watch recovery.
+ * The workers are the example workers, so the example workflows are on.
  */
 import { loadEnv } from '@durable/db';
 import { ProcessSupervisor } from '@durable/testkit';
 
 loadEnv();
-const sup = new ProcessSupervisor({}, undefined, true);
+const sup = new ProcessSupervisor({ EXAMPLE_WORKFLOWS: '1' }, undefined, true);
 sup.start('api', 'apps/api/src/main.ts');
 sup.start('orchestrator', 'apps/orchestrator/src/main.ts');
 sup.start('worker-1', 'apps/worker/src/main.ts', { WORKER_NAME: 'worker-1' });

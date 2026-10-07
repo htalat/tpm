@@ -3,6 +3,12 @@
 These run the durable engine on its own (no coding agents), to see the
 failure model in action.
 
+The example workflows are not part of the production registry. A process
+registers them only when `EXAMPLE_WORKFLOWS=1` is set. `npm run dev`, the
+durability demo, the chaos test and the Docker `app` profile set it
+themselves; set it yourself when you start `npm run api` and
+`npm run orchestrator` by hand for these experiments.
+
 ## Durability demo (all processes killed, twice)
 
 ```bash
@@ -58,6 +64,8 @@ CRASH_AT=AFTER_SIDE_EFFECT WORKER_CAPABILITIES=side-effect WORKER_NAME=payments 
 | `durability-demo`      | everything above in one run; used by the demo                                       |
 | `chaos`                | 80 idempotent side effects + duplicate events; used by the chaos test               |
 | `agent-run`            | one coding-agent run for one GitHub issue ([docs/agent-runner.md](agent-runner.md)) |
+
+`agent-run` is always registered. The others need `EXAMPLE_WORKFLOWS=1`.
 
 Workers: `compute`/`echo`/`aggregate` (deterministic), `flaky` (deterministic
 failure injection), `slow` (heartbeats), `side-effect`/`charge`/`reserve`/…

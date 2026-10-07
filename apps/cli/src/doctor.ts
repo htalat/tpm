@@ -13,7 +13,7 @@ import {
   type RepoConfig,
 } from '@durable/agent-runner';
 import { createPool, MIGRATIONS_DIR, type Pool } from '@durable/db';
-import { createRegistry } from '@durable/workflows';
+import { createRegistry, exampleWorkflowsEnabled } from '@durable/workflows';
 
 /**
  * `npm run doctor`: one read-only pass over everything a run depends on.
@@ -119,7 +119,7 @@ export async function runDoctor(o: DoctorOptions): Promise<CheckResult[]> {
   }
   if (pool) {
     try {
-      await checkDatabase(pool, now(), add);
+      await checkDatabase(pool, now(), add, createRegistry({ examples: exampleWorkflowsEnabled(env) }));
     } finally {
       await pool.end().catch(() => undefined);
     }
@@ -186,6 +186,7 @@ async function checkDatabase(
   pool: Pool,
   now: Date,
   add: (g: string, n: string, s: Status, d: string, f?: string) => void,
+  registry: ReturnType<typeof createRegistry>,
 ) {
   // Migrations: every file in packages/db/migrations must be applied.
   const files = readdirSync(MIGRATIONS_DIR)
@@ -210,7 +211,6 @@ async function checkDatabase(
   if (missing.length && !applied.length) return; // no schema: the checks below cannot run
 
   // Every workflow version still in use must be registered, or those tasks can never finish.
-  const registry = createRegistry();
   const inUse = (
     await pool.query<{ type: string; workflow_version: number; n: number }>(
       `SELECT type, workflow_version, count(*)::int AS n FROM tasks

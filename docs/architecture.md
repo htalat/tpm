@@ -79,12 +79,12 @@ flowchart LR
 | `packages/sdk`           | Worker runtime (poll, heartbeat, timeout, reconcile, report), HTTP transport, artifact stores.                                                          | core, observability         |
 | `packages/contract`      | API v1: response schemas, route table, OpenAPI generator, typed client.                                                                                 | zod, core                   |
 | `packages/agent-runner`  | Software factory: trackers, PR hosts, agent/reviewer CLIs, policy, `agent-run` workflow, read model.                                                    | core, engine, sdk, contract |
-| `packages/workflows`     | The workflow registry loaded by the API and the orchestrator.                                                                                           | examples, agent-runner      |
+| `packages/workflows`     | The workflow registry loaded by the API and the orchestrator: `agent-run`, plus the examples when `EXAMPLE_WORKFLOWS=1`.                                | agent-runner, examples      |
 | `packages/observability` | JSON logger with redaction, metrics (Prometheus text), OpenTelemetry spans.                                                                             | pino, @opentelemetry/api    |
 | `packages/testkit`       | In-process transport, test DB helpers, process supervisor (real SIGKILL).                                                                               | engine, sdk                 |
 | `examples`               | Example workflows, workers, the simulated external system, the agent adapters.                                                                          | core, sdk                   |
-| `apps/api`               | REST API.                                                                                                                                               | engine, examples (registry) |
-| `apps/orchestrator`      | Background loop: promote retries, fire timers, reap leases, run orchestration cycles.                                                                   | engine, examples (registry) |
+| `apps/api`               | REST API.                                                                                                                                               | engine, workflows           |
+| `apps/orchestrator`      | Background loop: promote retries, fire timers, reap leases, run orchestration cycles.                                                                   | engine, workflows           |
 | `apps/worker`            | Example worker process (HTTP transport).                                                                                                                | sdk, examples               |
 | `apps/cli`               | CLI and the durability demo.                                                                                                                            | testkit                     |
 

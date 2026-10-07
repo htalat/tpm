@@ -124,7 +124,7 @@ packages/
   engine/         transactional operations over PostgreSQL
   contract/       API v1: schemas, route table, OpenAPI, typed client
   agent-runner/   trackers, PR hosts, agent/reviewer CLIs, policy, factory workflow
-  workflows/      the registry the API and orchestrator load
+  workflows/      the registry the API and orchestrator load (examples opt-in)
   sdk/            worker runtime and HTTP transport
   observability/  logging, metrics, tracing
   testkit/        test helpers and process supervisor

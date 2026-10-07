@@ -35,6 +35,8 @@ services:
       API_URL: http://api:3000
       API_PORT: '3000'
       LOG_LEVEL: info
+      # This stack runs the example workers, so the example workflows are on.
+      EXAMPLE_WORKFLOWS: '1'
     ports: ['3000:3000']
     depends_on:
       migrate: { condition: service_completed_successfully }
