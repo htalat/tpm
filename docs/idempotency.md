@@ -84,7 +84,7 @@ logic would otherwise assume the effect did not happen.
 
 | Operation          | Mechanism                                                                                 |
 | ------------------ | ----------------------------------------------------------------------------------------- |
-| `POST /tasks`      | `Idempotency-Key` header → `idempotency_records` (request hash checked → 422 on mismatch) |
+| `POST /v1/tasks`   | `Idempotency-Key` header → `idempotency_records` (request hash checked → 422 on mismatch) |
 | complete / fail    | same attempt + same token after success → `ALREADY_ACCEPTED`                              |
 | signals            | `deduplicationKey` → `UNIQUE (task_id, deduplication_key)`                                |
 | timer firing       | event dedup key `timer:<timer_id>`; timer row CAS `SCHEDULED -> FIRED`                    |

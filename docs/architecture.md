@@ -1,5 +1,36 @@
 # Architecture
 
+## Layers
+
+```mermaid
+flowchart TB
+  subgraph Tracker["Tracker (what to do)"]
+    GH[GitHub Issues]
+    AB[Azure Boards]
+  end
+  subgraph Factory["Agent factory (how)"]
+    SYNC[sync: items → runs, PR watcher → signals]
+    WRK[worker: tracker steps, agent CLI, verify, reviewers]
+  end
+  subgraph Engine["Engine (reliably)"]
+    API[API v1 + live events]
+    ORCH[orchestrator]
+  end
+  PG[(PostgreSQL)]
+  UI[Menu bar app / CLI]
+  GH --- SYNC
+  AB --- SYNC
+  SYNC --> PG
+  WRK -- worker protocol --> API
+  API --> PG
+  ORCH --> PG
+  UI -- /v1 + /v1/events --> API
+```
+
+The engine knows nothing about trackers, agents or pull requests: the factory
+is one workflow (`agent-run`) plus worker handlers. Everything below this
+section describes the engine.
+
 ## Summary
 
 The engine is a **persisted state machine** stored in PostgreSQL. Processes are
@@ -46,6 +77,9 @@ flowchart LR
 | `packages/db`            | Pool, transaction helpers, SQL migrations, migration runner.                                                                                            | pg                          |
 | `packages/engine`        | Transactional operations: create/cancel/pause, claim, heartbeat, complete, fail, reaper, timer scheduler, retry promoter, orchestration cycle, signals. | core, db, observability     |
 | `packages/sdk`           | Worker runtime (poll, heartbeat, timeout, reconcile, report), HTTP transport, artifact stores.                                                          | core, observability         |
+| `packages/contract`      | API v1: response schemas, route table, OpenAPI generator, typed client.                                                                                 | zod, core                   |
+| `packages/agent-runner`  | Software factory: trackers, PR hosts, agent/reviewer CLIs, policy, `agent-run` workflow, read model.                                                    | core, engine, sdk, contract |
+| `packages/workflows`     | The workflow registry loaded by the API and the orchestrator.                                                                                           | examples, agent-runner      |
 | `packages/observability` | JSON logger with redaction, metrics (Prometheus text), OpenTelemetry spans.                                                                             | pino, @opentelemetry/api    |
 | `packages/testkit`       | In-process transport, test DB helpers, process supervisor (real SIGKILL).                                                                               | engine, sdk                 |
 | `examples`               | Example workflows, workers, the simulated external system, the agent adapters.                                                                          | core, sdk                   |
@@ -156,6 +190,9 @@ result. They must be pure and deterministic.
   authorization headers are redacted.
 - **History**: `task_history` is the audit record, not the logs. It is
   append-only (a trigger rejects UPDATE/DELETE).
+- **Live events**: a trigger on `task_history` (and on the PR watcher's
+  state) sends `pg_notify` at commit; the API holds one `LISTEN` connection and
+  streams `GET /v1/events` to clients (see [api.md](api.md)).
 - **Metrics**: `/metrics` on the API and (optional) on the orchestrator.
   Counters are per process; `durable_tasks{status}` and
   `durable_attempts_running` are read from PostgreSQL and are global.

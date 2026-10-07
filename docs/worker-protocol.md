@@ -14,22 +14,22 @@ Worker endpoints can require a separate bearer token (`WORKER_TOKEN`).
 sequenceDiagram
   participant W as Worker
   participant A as API / Engine
-  W->>A: POST /workers/register {name, capabilities}
+  W->>A: POST /v1/workers/register {name, capabilities}
   A-->>W: {workerId}
   loop poll
-    W->>A: POST /workers/claim {workerId, capabilities, maxItems, leaseMs}
+    W->>A: POST /v1/workers/claim {workerId, capabilities, maxItems, leaseMs}
     A-->>W: {items: [WorkItem]}
   end
   par execute
     W->>W: handler.execute(input, ctx)
   and every leaseMs/3
-    W->>A: POST /attempts/:id/heartbeat {leaseToken}
+    W->>A: POST /v1/attempts/:id/heartbeat {leaseToken}
     A-->>W: {leaseExpiresAt, cancelRequested}
   end
   alt success
-    W->>A: POST /attempts/:id/complete {leaseToken, output, artifacts}
+    W->>A: POST /v1/attempts/:id/complete {leaseToken, output, artifacts}
   else failure
-    W->>A: POST /attempts/:id/fail {leaseToken, error: {category, message}, retryAfterMs?}
+    W->>A: POST /v1/attempts/:id/fail {leaseToken, error: {category, message}, retryAfterMs?}
   end
   A-->>W: {status: ACCEPTED | ALREADY_ACCEPTED} or 409 LEASE_LOST
 ```
@@ -170,5 +170,5 @@ has no provider code and no AI-specific fields.
 - **Another workflow**: use `childTask()` / `map({ workflow })` in the
   definition instead of a worker.
 - **Humans**: use `waitForEvent('approval')` in the workflow and
-  `POST /tasks/:id/signals` from the UI or the CLI. The wait is durable; no
+  `POST /v1/tasks/:id/signals` from the UI or the CLI. The wait is durable; no
   process needs to stay alive.

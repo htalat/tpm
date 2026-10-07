@@ -53,7 +53,7 @@ status columns, append-only history (trigger).
     attempt has `context.recoveringAmbiguous = true` and the worker's
     `reconcile` hook runs first.
   - `effect: 'unsafe'` → classified `AMBIGUOUS`, step `BLOCKED` for an operator
-    (`POST /tasks/:id/steps/:key/resolve`).
+    (`POST /v1/tasks/:id/steps/:key/resolve`).
 - After the side effect, before reporting (`AFTER_SIDE_EFFECT`): see
   [idempotency.md](idempotency.md).
 - A worker that is only slow (GC pause, network partition) and comes back after

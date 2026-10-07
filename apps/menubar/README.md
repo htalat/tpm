@@ -17,8 +17,10 @@ A native SwiftUI menu bar app for the tpm software factory.
 - **Notifications**: approval needed, needs a human, failed, merged — each once.
   Clicking opens the PR.
 
-The app talks only to the factory REST API (`GET /agent-runs`, `POST
-/agent-runs/:id/approve|retry|cancel`); it never touches PostgreSQL or `gh`.
+The app talks only to the factory API (`GET /v1/agent-runs`, `POST
+/v1/agent-runs/:id/approve|retry|cancel`, and the live stream `GET /v1/events`);
+it never touches PostgreSQL or `gh`. Changes arrive within a second through
+the stream; a 30-second poll is the safety net.
 
 ## Build and run
 

@@ -46,3 +46,37 @@
 8. **Audit**: ship `task_history` and auth events to a tamper-evident store.
 9. **Supply chain**: build a bundled production image without dev dependencies;
    pin and scan dependencies.
+
+## The agent factory
+
+The factory lets agents change code, and — where the repository policy says
+so — merge it. Its safety rests on these rules:
+
+- **The merge decision is not an LLM.** A pure function decides from durable
+  evidence (commit statuses on the reviewed commit, the policy file, approvals)
+  and merges exactly that commit (`sha` guard). A push after the reviews
+  invalidates them.
+- **The policy lives in the repository**, is read only from the default
+  branch, and a change to `.tpm/**` or `.github/**` always needs a human merge:
+  an agent cannot raise its own autonomy or change CI.
+- **Reviewers are read-only by CLI tool permissions** and work in a separate
+  clone. A reviewer that fails or returns unreadable output counts as
+  "needs a human", never as "approve".
+- **Who may start a run** can be limited (`starters` in the policy); approvals
+  count only from listed `approvers` and only after the newest commit.
+- **Known gap (accepted for single-person repositories):** the author agent
+  runs with the operator's own CLI permissions (`gh`, `git`), so it could in
+  principle merge or push itself. In team repositories, branch protection or
+  rulesets (required reviews and checks) are the guard that enforces this;
+  turn them on before enabling auto-merge for others' code.
+- **Issue text is untrusted input** to the agent (prompt injection). Limit
+  `starters` to people you trust, and do not run the factory on public
+  repositories where anyone can open issues without that limit.
+
+## CI
+
+GitHub Actions run with a read-only token, no secrets, `pull_request` only
+(never `pull_request_target`), and actions and images pinned by digest. Tests
+use fake `gh` and fake agents, so a malicious pull request has nothing to
+steal. Require approval for workflows from outside collaborators in the
+repository settings.
