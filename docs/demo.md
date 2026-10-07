@@ -57,7 +57,7 @@ CRASH_AT=AFTER_SIDE_EFFECT WORKER_CAPABILITIES=side-effect WORKER_NAME=payments 
 | `parent-with-children` | map of child workflows + a single child task                                             |
 | `durability-demo`      | everything above in one run; used by the demo                                            |
 | `chaos`                | 80 idempotent side effects + duplicate events; used by the chaos test                    |
-| `agent-run`            | one coding-agent run for one GitHub issue ([docs/agent-runner.md](docs/agent-runner.md)) |
+| `agent-run`            | one coding-agent run for one GitHub issue ([docs/agent-runner.md](agent-runner.md)) |
 
 Workers: `compute`/`echo`/`aggregate` (deterministic), `flaky` (deterministic
 failure injection), `slow` (heartbeats), `side-effect`/`charge`/`reserve`/…
