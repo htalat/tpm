@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import { routes, type RouteDef, type RouteId, type Routes } from './routes';
+import { LiveEvent as LiveEventSchema } from './schemas';
 
 type In<T> = T extends z.ZodType ? z.input<T> : never;
 type ParamsOf<K extends RouteId> = Routes[K] extends { params: infer P }
@@ -102,3 +103,51 @@ export function createClient(o: ClientOptions) {
 }
 
 export type ApiClient = ReturnType<typeof createClient>;
+
+export type StreamItem = { type: 'ready' } | { type: 'event'; event: z.output<typeof LiveEventSchema> };
+
+/**
+ * Read GET /v1/events. Yields `ready` once connected (fetch a snapshot then),
+ * then one item per committed change. Ends when `signal` aborts or the
+ * connection closes; reconnecting is the caller's choice.
+ */
+export async function* streamEvents(o: {
+  baseUrl: string;
+  token?: string;
+  query?: { taskId?: string; taskType?: string };
+  signal?: AbortSignal;
+  fetch?: typeof fetch;
+}): AsyncGenerator<StreamItem> {
+  const qs = new URLSearchParams(
+    Object.entries(o.query ?? {}).filter(([, v]) => v) as Array<[string, string]>,
+  );
+  const res = await (o.fetch ?? fetch)(`${o.baseUrl}/v1/events${[...qs].length ? `?${qs}` : ''}`, {
+    headers: { accept: 'text/event-stream', ...(o.token ? { authorization: `Bearer ${o.token}` } : {}) },
+    signal: o.signal,
+  });
+  if (!res.ok || !res.body) throw new ApiError(res.status, 'HTTP_ERROR', `events: HTTP ${res.status}`);
+  const decoder = new TextDecoder();
+  let buf = '';
+  let event = 'message';
+  let data = '';
+  for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+    buf += decoder.decode(chunk, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).replace(/\r$/, '');
+      buf = buf.slice(nl + 1);
+      if (line === '') {
+        if (event === 'ready') yield { type: 'ready' };
+        else if (data) {
+          const parsed = LiveEventSchema.safeParse(JSON.parse(data));
+          if (parsed.success) yield { type: 'event', event: parsed.data };
+        }
+        event = 'message';
+        data = '';
+      } else if (line.startsWith(':')) {
+        // keep-alive comment
+      } else if (line.startsWith('event:')) event = line.slice(6).trim();
+      else if (line.startsWith('data:')) data += line.slice(5).trim();
+    }
+  }
+}

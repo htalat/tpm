@@ -23,6 +23,10 @@ final class AppModel {
     let supervisor: Supervisor
     private var planner = NotificationPlanner()
     private var pollTask: Task<Void, Never>?
+    private var liveTask: Task<Void, Never>?
+    private var refreshPending = false
+    /// True while the live event stream is connected (then polling is only a safety net).
+    var live = false
     private let notificationsAvailable = Bundle.main.bundleIdentifier != nil
 
     /// Attention items the user dismissed (per run and reason), stored locally.
@@ -47,10 +51,22 @@ final class AppModel {
             s.stop(grace: 10)
         }
         if poll {
+            // Safety-net poll; changes normally arrive through the live stream.
             pollTask = Task { [weak self] in
                 while !Task.isCancelled {
                     await self?.refresh()
-                    try? await Task.sleep(for: .seconds(5))
+                    let live = await MainActor.run { self?.live ?? false }
+                    try? await Task.sleep(for: .seconds(live ? 30 : 5))
+                }
+            }
+            liveTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    guard let api = self?.api else { return }
+                    do {
+                        try await api.events { _ in await MainActor.run { self?.live = true; self?.scheduleRefresh() } }
+                    } catch {}
+                    await MainActor.run { self?.live = false }
+                    try? await Task.sleep(for: .seconds(3))
                 }
             }
         }
@@ -79,7 +95,18 @@ final class AppModel {
         return "hammer.fill"
     }
 
-    // MARK: polling
+    // MARK: refresh
+
+    /// Coalesce bursts of events (one transition writes several history rows).
+    func scheduleRefresh() {
+        guard !refreshPending else { return }
+        refreshPending = true
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            await MainActor.run { self?.refreshPending = false }
+            await self?.refresh()
+        }
+    }
 
     func refresh() async {
         do {

@@ -61,6 +61,28 @@ public struct APIClient: Sendable {
         try JSONDecoder().decode(RunDetail.self, from: try await request("GET", "v1/agent-runs/\(id)"))
     }
 
+    /// Long-lived session for GET /v1/events (the server sends a keep-alive every 15 s).
+    private static let streamSession: URLSession = {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 60
+        cfg.timeoutIntervalForResource = .infinity
+        return URLSession(configuration: cfg)
+    }()
+
+    /// Read server-sent events until the connection ends. Calls `onEvent` with
+    /// the event name: "ready" once connected, then "history" / "watch".
+    public func events(_ onEvent: @escaping @Sendable (String) async -> Void) async throws {
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/events"))
+        req.setValue("text/event-stream", forHTTPHeaderField: "accept")
+        if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "authorization") }
+        let (bytes, response) = try await Self.streamSession.bytes(for: req)
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200 else { throw APIError.http(code, "events") }
+        for try await line in bytes.lines where line.hasPrefix("event:") {
+            await onEvent(line.dropFirst(6).trimmingCharacters(in: .whitespaces))
+        }
+    }
+
     public enum Action: String, Sendable { case approve, retry, cancel }
 
     public func perform(_ action: Action, run id: String) async throws {

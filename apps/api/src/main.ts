@@ -10,6 +10,7 @@ import {
   loadAgentRunnerConfig,
   registerAgentRunRoutes,
 } from '@durable/agent-runner';
+import { LiveEvents } from './live';
 import { buildServer } from './server';
 
 loadEnv();
@@ -31,9 +32,12 @@ const engine = new Engine({
   }),
 });
 engine.registerGauges();
+const live = new LiveEvents(url, logger);
+await live.start();
 const app = await buildServer({
   engine,
   logger,
+  live,
   apiToken: process.env.API_TOKEN || undefined,
   workerToken: process.env.WORKER_TOKEN || undefined,
   extend: (register) => {
@@ -51,6 +55,7 @@ await app.listen({ port, host: process.env.API_HOST ?? '0.0.0.0' });
 const shutdown = async () => {
   logger.info('shutting down');
   await app.close();
+  await live.stop();
   await pool.end();
   process.exit(0);
 };

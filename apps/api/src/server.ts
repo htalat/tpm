@@ -21,6 +21,7 @@ import {
 } from '@durable/contract';
 import type { Engine } from '@durable/engine';
 import type { Logger } from '@durable/observability';
+import type { LiveEvents } from './live';
 
 export interface RouteInput<K extends RouteId> extends RouteInputBase<K> {
   req: FastifyRequest;
@@ -42,7 +43,11 @@ export interface ServerOptions {
   bodyLimitBytes?: number;
   /** Validate every response against the contract (tests; off in production). */
   validateResponses?: boolean;
-  /** More contract routes (e.g. the agent-runner read model and live events). */
+  /** Source for GET /v1/events (server-sent events). */
+  live?: LiveEvents;
+  /** Keep-alive comment interval on event streams. */
+  keepAliveMs?: number;
+  /** More contract routes (e.g. the agent-runner read model). */
   extend?: (register: Register, app: FastifyInstance) => void;
 }
 
@@ -212,6 +217,33 @@ export async function buildServer(o: ServerOptions): Promise<FastifyInstance> {
   register('heartbeat', async ({ params, body }) => engine.heartbeat(params.id, body.leaseToken));
   register('complete', async ({ params, body }) => engine.complete(params.id, body));
   register('fail', async ({ params, body }) => engine.fail(params.id, body));
+
+  // ---- live events (SSE) -------------------------------------------------------------------------
+  if (o.live) {
+    const live = o.live;
+    register('events', async ({ query, req, reply }) => {
+      reply.hijack(); // we write the stream ourselves
+      const res = reply.raw;
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive',
+        'x-accel-buffering': 'no',
+      });
+      // Tell the client it is connected: fetch a snapshot now, then apply events.
+      res.write(`retry: 3000\nevent: ready\ndata: {}\n\n`);
+      const unsubscribe = live.subscribe(query, (e) => {
+        res.write(
+          `${e.kind === 'history' ? `id: ${e.id}\n` : ''}event: ${e.kind}\ndata: ${JSON.stringify(e)}\n\n`,
+        );
+      });
+      const keepAlive = setInterval(() => res.write(': keep-alive\n\n'), o.keepAliveMs ?? 15_000);
+      req.raw.on('close', () => {
+        clearInterval(keepAlive);
+        unsubscribe();
+      });
+    });
+  }
 
   o.extend?.(register, app);
   return app;

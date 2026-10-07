@@ -19,6 +19,7 @@ Usage: npm run cli -- <command> [args]
   task resolve <task-id> <step-key> <retry|complete|fail> ['output-json']
   task wait <task-id> [--status COMPLETED] [--timeout-ms 60000]
   workflows
+  events [--task <id>] [--type <task type>]     live tail of committed changes
   openapi [file]                                 print or write the v1 OpenAPI document
   worker run [--capabilities a,b] [--name N]     (runs an example worker in this process)
   db migrate
@@ -136,6 +137,25 @@ async function main(argv: string[]): Promise<number> {
   }
   if (cmd === 'workflows') {
     print(await api.call('listWorkflows'));
+    return 0;
+  }
+  if (cmd === 'events') {
+    // Live tail of committed changes (Ctrl-C to stop).
+    const { streamEvents } = await import('@durable/contract');
+    const all = flags([sub, ...rest].filter((x): x is string => x !== undefined));
+    for await (const item of streamEvents({
+      baseUrl: process.env.API_URL ?? 'http://localhost:3000',
+      token: process.env.API_TOKEN || undefined,
+      query: { taskId: all.f.task, taskType: all.f.type },
+    })) {
+      if (item.type === 'ready') console.error('connected; waiting for events…');
+      else {
+        const e = item.event;
+        console.log(
+          `${e.at}  ${e.taskType.padEnd(16)} ${e.taskId.slice(0, 8)}  ${e.eventType.padEnd(22)} ${e.newState ?? ''}`,
+        );
+      }
+    }
     return 0;
   }
   if (cmd === 'openapi') {

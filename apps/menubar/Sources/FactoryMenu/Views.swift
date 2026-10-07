@@ -95,7 +95,7 @@ struct MenuView: View {
         HStack {
             Button("Logs") { model.openLogs() }
             if let t = model.lastRefresh {
-                Text("updated \(t.formatted(date: .omitted, time: .standard))").font(.caption2).foregroundStyle(.tertiary)
+                Text("\(model.live ? "live · " : "")updated \(t.formatted(date: .omitted, time: .standard))").font(.caption2).foregroundStyle(.tertiary)
             }
             Spacer()
             Button("Quit") { model.quit() }.keyboardShortcut("q")
