@@ -34,7 +34,7 @@
     "doctor": "tsx apps/cli/src/main.ts doctor"
   },
   "devDependencies": {
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.5",
     "@types/pg": "^8.11.10",
     "prettier": "^3.6.0",
     "tsx": "^4.20.0",
