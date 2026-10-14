@@ -12,6 +12,6 @@
     "@durable/observability": "*",
     "@durable/workflows": "*",
     "fastify": "^5.12.5",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   }
 }
